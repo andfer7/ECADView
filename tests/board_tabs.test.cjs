@@ -557,3 +557,38 @@ test('highlights net tracks and pads across transformed, clipped layers', async 
   assert.equal(await page.locator('#net-highlight').count(), 0);
   assert.equal(await page.locator('[data-net="GND"]').first().getAttribute('stroke'), 'red');
 });
+
+test('component and net highlights coexist with default layers and saved measurements', async t => {
+  const data = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+    <g id="scene"><g id="layer-top" data-layer-family="signal" data-layer-name="Top copper">
+      <rect data-component="R1" data-net="GND" x="10" y="10" width="10" height="5" fill="red"/>
+    </g><g id="layer-mask" data-layer-token="TOPSOLDER" data-layer-name="Top solder"><rect width="100" height="80" fill="purple"/></g></g></svg>` });
+  const { page } = await openPage(t, { render: (route, name) => reply(route, data(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  assert.equal(await page.getByRole('checkbox', { name: 'Top solder', exact: true }).isChecked(), false);
+  await page.locator('#measure-btn').click();
+  await page.locator('#view').click({ position: { x: 200, y: 200 } });
+  await page.locator('#view').click({ position: { x: 400, y: 300 } });
+  await page.locator('#measure-btn').click();
+  await page.locator('#component-query').fill('R1');
+  await page.locator('#net-query').fill('GND');
+  assert.equal(await page.locator('#component-highlight rect').evaluate(el => getComputedStyle(el).fill), 'rgb(255, 224, 102)');
+  assert.equal(await page.locator('#net-highlight rect').evaluate(el => getComputedStyle(el).fill), 'rgb(104, 224, 255)');
+  await page.locator('#net-fit').click();
+  assert.equal(await page.locator('#measure line').count(), 1);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-options option').count(), 1);
+  assert.equal(await page.locator('#net-options option').count(), 1);
+  assert.equal(await page.locator('#layers label').count(), 2, 'highlight overlays stay out of layer controls');
+  assert.equal(await page.locator('#component-highlight rect').count(), 1);
+  assert.equal(await page.locator('#net-highlight rect').count(), 1);
+  await page.locator('#net-clear').click();
+  assert.equal(await page.locator('#component-highlight rect').count(), 1);
+  assert.equal(await page.locator('#net-highlight').count(), 0);
+  await page.locator('#component-clear').click();
+  assert.equal(await page.locator('#component-highlight').count(), 0);
+  await page.locator('#view').click({ position: { x: 300, y: 200 } });
+  await page.keyboard.press('Shift+C');
+  assert.equal(await page.locator('#measure line').count(), 0);
+});
