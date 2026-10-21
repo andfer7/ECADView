@@ -39,6 +39,21 @@ const boardData = (name, components = 1) => ({
   </svg>`,
   stats: { components, pads: 2, tracks: 3, vias: 4, polygons: 5, regions: 6 },
 });
+const layeredBoardData = name => ({
+  ...boardData(name),
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+    <g id="scene" transform="translate(5 5)">
+      <g id="layer-top" data-layer-name="Top copper"><rect width="90" height="70" fill="red"/></g>
+      <g id="layer-bottom" data-layer-name="Bottom copper"><rect width="90" height="70" fill="blue"/></g>
+      <g id="board-outline"><rect width="90" height="70" fill="none" stroke="yellow"/></g>
+    </g>
+  </svg>`,
+});
+const layerOrder = page => page.locator('#scene > g').evaluateAll(groups => groups.map(g => g.id));
+const frontLayer = page => page.locator('#view > svg').evaluate(svg => {
+  const point = new DOMPoint(50, 40).matrixTransform(svg.getScreenCTM());
+  return document.elementFromPoint(point.x, point.y)?.parentElement.id;
+});
 const reply = (route, data, status = 200) => route.fulfill({ status, json: data });
 const activeName = page => page.locator('#view > svg').getAttribute('data-board');
 async function loaded(page, name) {
@@ -129,6 +144,49 @@ test('preserves each board’s layers, zoom, pan, measurements, units, and rende
   await page.locator('#rerender').click(); await loaded(page, 'A.PcbDoc');
   assert.equal(requests.at(-1).name, 'A.PcbDoc');
   assert.equal(requests.at(-1).body.toString(), 'A.PcbDoc');
+});
+
+test('shows the last enabled layer above overlapping layers without reordering bulk actions', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, layeredBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  assert.equal(await frontLayer(page), 'layer-bottom');
+  const top = page.getByRole('checkbox', { name: 'Top copper', exact: true });
+  const bottom = page.getByRole('checkbox', { name: 'Bottom copper', exact: true });
+  await top.uncheck(); await top.check();
+  assert.equal(await frontLayer(page), 'layer-top');
+  assert.deepEqual(await layerOrder(page), ['layer-bottom', 'board-outline', 'layer-top']);
+  assert.equal(await page.locator('#scene').getAttribute('transform'), 'translate(5 5)');
+  await bottom.uncheck();
+  assert.equal(await frontLayer(page), 'layer-top', 'hiding a layer does not change priority');
+  await bottom.check();
+  assert.equal(await frontLayer(page), 'layer-bottom');
+  const order = await layerOrder(page);
+  await page.getByRole('button', { name: 'Hide all', exact: true }).click();
+  assert.deepEqual(await layerOrder(page), order);
+  assert.equal(await page.locator('#layers input:checked').count(), 0);
+  await page.getByRole('button', { name: 'Show all', exact: true }).click();
+  assert.deepEqual(await layerOrder(page), order);
+  assert.equal(await page.locator('#layers input:checked').count(), 3);
+  assert.equal(await frontLayer(page), 'layer-bottom');
+  assert.equal(await page.locator('#view > svg > g').last().getAttribute('id'), 'measure');
+});
+
+test('retains each board’s layer priority and sidebar order when switching tabs', async t => {
+  const { page, requests } = await openPage(t, { render: (route, name) => reply(route, layeredBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  const sidebar = await page.locator('#layers label').allTextContents();
+  const top = page.getByRole('checkbox', { name: 'Top copper', exact: true });
+  await top.uncheck(); await top.check();
+  const order = await layerOrder(page);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await frontLayer(page), 'layer-bottom');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await frontLayer(page), 'layer-top');
+  assert.deepEqual(await layerOrder(page), order);
+  assert.deepEqual(await page.locator('#layers label').allTextContents(), sidebar);
+  await top.uncheck();
+  assert.equal(await frontLayer(page), 'layer-bottom', 'the restored checkbox still controls its layer');
+  assert.equal(requests.length, 2, 'layer selection and tab switching do not render again');
 });
 
 test('background renders stay in their own tabs and closing a pending tab cancels it', async t => {

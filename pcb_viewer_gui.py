@@ -364,13 +364,18 @@ PAGE = r"""<!DOCTYPE html>
   // ------------------------------------------------------------ layers
   function buildLayers() {
     layersEl.innerHTML = '';
-    groups = [...svg.querySelectorAll('#scene > g')];
+    // Keep the sidebar in renderer order even after changing SVG paint order.
+    if (!groups.length) groups = [...svg.querySelectorAll('#scene > g')];
     for (const g of groups) {
       const name = g.dataset.layerDisplayName || g.dataset.layerName || g.id.replace(/^layer-/, '');
       const color = g.dataset.color || (g.id === 'board-outline' ? '#C0A000' : '#888');
       const lab = document.createElement('label');
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = g.style.display !== 'none';
-      cb.onchange = () => { g.style.display = cb.checked ? '' : 'none'; };
+      cb.onchange = () => {
+        g.style.display = cb.checked ? '' : 'none';
+        // SVG paints later siblings on top; retain the scene's transforms and clipping.
+        if (cb.checked) g.parentNode.append(g);
+      };
       const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = color;
       lab.append(cb, sw, document.createTextNode(name));
       if (g.dataset.primitiveCount !== undefined) { const c = document.createElement('span'); c.className = 'count'; c.textContent = g.dataset.primitiveCount; lab.append(c); }
