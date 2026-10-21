@@ -592,3 +592,14 @@ test('component and net highlights coexist with default layers and saved measure
   await page.keyboard.press('Shift+C');
   assert.equal(await page.locator('#measure line').count(), 0);
 });
+
+test('sidebar scrolls to keep layers and measurements accessible in short windows', async t => {
+  const { page } = await openPage(t);
+  await page.setViewportSize({ width: 1200, height: 500 });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  assert.ok(await page.locator('#layers-wrap').evaluate(el => el.clientHeight >= 160));
+  await page.locator('#layers input').first().uncheck();
+  await page.locator('#measure-btn').click();
+  assert.ok(await page.locator('#panel').evaluate(el => el.scrollTop > 0));
+  assert.equal(await page.locator('#measure-btn').getAttribute('class'), 'on');
+});

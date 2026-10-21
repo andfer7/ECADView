@@ -152,6 +152,9 @@ PAGE = r"""<!DOCTYPE html>
   #scene .net-match, #scene .net-match * { fill: #68e0ff !important; stroke: #68e0ff !important; }
   #scene .net-match { filter: drop-shadow(0 0 0.25px #68e0ff); }
   #scene #net-highlight * { fill: #68e0ff !important; stroke: #68e0ff !important; }
+  #panel { overflow-y: auto; }
+  #panel > * { flex-shrink: 0; }
+  #layers-wrap { min-height: 160px; }
   #stats { color: var(--muted); font-size: 12px; white-space: pre-line; }
   #readout { font: 12px/1.5 ui-monospace, Consolas, monospace; color: #bbb; white-space: pre;
              background: #1b1d21; border-radius: 4px; padding: 6px; margin-top: 6px; min-height: 3.6em; }
