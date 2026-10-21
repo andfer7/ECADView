@@ -326,7 +326,112 @@ test('uploads the affected layout through the real Python server', {
   assert.equal(await page.locator('[data-text-fallback]').count(), 0);
   assert.equal(await page.locator('#toast').isVisible(), false);
   assert.ok(await page.locator('#layers input').count() > 0);
+  const netName = await page.locator('#net-options option').first().getAttribute('value');
+  assert.ok(netName, 'real renderer exposes net names');
+  await page.locator('#net-query').fill(netName);
+  assert.ok(await page.locator('#scene .net-match').count() > 0);
+  await page.locator('#net-fit').click();
   if (process.env.PCB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.PCB_TEST_SCREENSHOT });
+});
+
+const netBoardData = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+  <g id="scene"><g id="layer-top" data-layer-name="Top copper">
+    <rect data-net="GND" x="10" y="10" width="10" height="5" fill="red"/>
+    <circle data-net="GND" cx="25" cy="12" r="2" fill="red"/>
+    <rect data-net="GND_A" x="40" y="10" width="10" height="5" fill="red"/>
+    <rect data-net="U[1]&quot;" x="60" y="30" width="10" height="5" fill="red"/>
+  </g><g id="layer-bottom" data-layer-name="Bottom copper"><rect width="100" height="80" fill="blue"/><rect data-net="VCC" x="70" y="50" width="10" height="5"/></g></g></svg>` });
+
+test('finds nets case insensitively, prefers exact net names and safely clears highlighting', async t => {
+  const { page, requests } = await openPage(t, { render: (route, name) => reply(route, netBoardData(name)) });
+  assert.equal(await page.locator('#net-query').isDisabled(), true);
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  assert.deepEqual(await page.locator('#net-options option').evaluateAll(os => os.map(o => o.value)), ['GND', 'GND_A', 'U[1]"', 'VCC']);
+  await page.locator('#net-query').fill('gn');
+  assert.equal(await page.locator('.net-match').count(), 3);
+  assert.match(await page.locator('#net-status').textContent(), /2 nets highlighted/);
+  await page.locator('#net-query').fill('gnd');
+  assert.equal(await page.locator('.net-match').count(), 2);
+  assert.equal(await page.locator('.net-match').first().evaluate(el => getComputedStyle(el).fill), 'rgb(104, 224, 255)');
+  assert.equal(await page.locator('#scene > g').last().getAttribute('id'), 'net-highlight');
+  assert.equal(await page.locator('#net-highlight [id], #net-highlight [data-net]').count(), 0);
+  assert.equal(await page.locator('.net-match').first().evaluate(el => {
+    const r = el.getBoundingClientRect();
+    const overlay = document.querySelector('#net-highlight');
+    overlay.style.pointerEvents = 'auto';
+    const color = getComputedStyle(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)).fill;
+    overlay.style.pointerEvents = 'none';
+    return color;
+  }), 'rgb(104, 224, 255)', 'highlight is visible above the overlapping blue layer');
+  await page.locator('#net-fit').click();
+  assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), '0 0 100 80');
+  await page.locator('#net-query').fill('U[1]"');
+  assert.equal(await page.locator('.net-match').count(), 1);
+  await page.locator('#net-query').fill('missing');
+  assert.equal(await page.locator('.net-match').count(), 0);
+  assert.equal(await page.locator('#net-status').textContent(), 'No matching nets.');
+  await page.locator('#net-clear').click();
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  assert.equal(await page.locator('#net-status').textContent(), '');
+  assert.equal(await page.locator('[data-net="GND"]').first().getAttribute('fill'), 'red');
+  assert.equal(requests.length, 1, 'searching stays in the browser');
+});
+
+test('keeps net searches with their board across tabs and rerenders and can reveal matching layers', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, netBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.getByRole('checkbox', { name: 'Bottom copper', exact: true }).uncheck();
+  await page.locator('#net-query').fill('vcc');
+  assert.match(await page.locator('#net-status').textContent(), /1 hidden layer/);
+  await page.locator('#net-reveal').click();
+  assert.equal(await page.getByRole('checkbox', { name: 'Bottom copper', exact: true }).isChecked(), true);
+  assert.equal(await page.locator('#net-reveal').isVisible(), false);
+  await page.locator('#none').click();
+  assert.equal(await page.locator('#net-reveal').isVisible(), true);
+  await page.locator('#all').click();
+  assert.equal(await page.locator('#net-reveal').isVisible(), false);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  assert.equal(await page.locator('.net-match').count(), 0);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'vcc');
+  assert.equal(await page.locator('.net-match').count(), 1);
+  await page.locator('#rerender').click(); await loaded(page, 'A.PcbDoc');
+  assert.equal(await page.locator('.net-match').count(), 1);
+  await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
+  await page.getByRole('button', { name: 'Close B.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#net-query').isDisabled(), true);
+  assert.equal(await page.locator('#net-options option').count(), 0);
+});
+
+test('highlights net tracks and pads across transformed, clipped layers', async t => {
+  const data = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+    <defs><clipPath id="board-clip"><rect width="100" height="80"/></clipPath></defs>
+    <g id="scene" transform="translate(3 4)"><g id="layer-top" data-layer-name="Top copper" clip-path="url(#board-clip)">
+      <g transform="translate(10 20)"><path data-net="GND" d="M0 0 L20 10" stroke="red" fill="none"/></g>
+    </g><g id="layer-bottom" data-layer-name="Bottom copper"><circle data-net="GND" cx="40" cy="50" r="3" fill="blue"/></g></g></svg>` });
+  const { page } = await openPage(t, { render: (route, name) => reply(route, data(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#net-query').fill('GND');
+  assert.equal(await page.locator('.net-match').count(), 2);
+  const native = await page.locator('[data-net="GND"]').first().boundingBox();
+  const highlighted = await page.locator('#net-highlight path').boundingBox();
+  assert.deepEqual(highlighted, native, 'copied track keeps all ancestor transforms');
+  assert.equal(await page.locator('#net-highlight [clip-path]').getAttribute('clip-path'), 'url(#board-clip)');
+  await page.locator('#net-clear').click();
+  assert.equal(await page.locator('#net-highlight').count(), 0);
+  assert.equal(await page.locator('[data-net="GND"]').first().getAttribute('stroke'), 'red');
+});
+
+test('sidebar scrolls to keep layers and measurements accessible in short windows', async t => {
+  const { page } = await openPage(t);
+  await page.setViewportSize({ width: 1200, height: 500 });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  assert.ok(await page.locator('#layers-wrap').evaluate(el => el.clientHeight >= 160));
+  await page.locator('#layers input').first().uncheck();
+  await page.locator('#measure-btn').click();
+  assert.ok(await page.locator('#panel').evaluate(el => el.scrollTop > 0));
+  assert.equal(await page.locator('#measure-btn').getAttribute('class'), 'on');
 });
 
 test('new boards show only copper, top overlay, outline and drills; rerenders preserve choices', async t => {
