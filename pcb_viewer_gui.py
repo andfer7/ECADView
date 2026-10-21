@@ -163,9 +163,9 @@ PAGE = r"""<!DOCTYPE html>
   #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
            color: var(--muted); font-size: 15px; text-align: center; pointer-events: none; }
   #measure line, #measure circle { vector-effect: non-scaling-stroke; stroke: var(--accent); stroke-width: 1.5; fill: none; }
-  #measure-label { position: absolute; pointer-events: none; background: var(--accent); color: var(--accent-ink);
+  .measure-label { position: absolute; pointer-events: none; background: var(--accent); color: var(--accent-ink);
                    font: 12px ui-monospace, Consolas, monospace; padding: 2px 6px; border-radius: 3px;
-                   transform: translate(-50%, -130%); white-space: nowrap; display: none; }
+                   transform: translate(-50%, -130%); white-space: nowrap; }
   #toast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); background: #b23b3b; color: #fff;
            padding: 8px 14px; border-radius: 6px; display: none; max-width: 70%; }
   #busy { position: absolute; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; }
@@ -195,7 +195,7 @@ PAGE = r"""<!DOCTYPE html>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <div id="readout"></div>
-      <div class="hint">Scroll to zoom, drag to pan, double-click to reset. Measure: click two points, Esc clears.</div>
+      <div class="hint">Scroll to zoom, drag to pan, double-click to reset. Measure: click two points; Esc cancels, Shift+C clears all.</div>
     </div>
     <div id="stats"></div>
   </div>
@@ -226,12 +226,12 @@ PAGE = r"""<!DOCTYPE html>
   }
   function saveBoard() {
     if (!activeBoard) return;
-    Object.assign(activeBoard, { svg, groups, vb, home, unit, measuring, pts, hover, mg, options: readOptions() });
+    Object.assign(activeBoard, { svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg, options: readOptions() });
   }
   function createBoard(file, name = file.name) {
     const board = { id: nextBoardId++, file, name, stats: null, warnings: [], options: defaultOptions(),
                     svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false,
-                    pts: [], hover: null, mg: null, loading: false, request: 0 };
+                    pts: [], measurements: [], hover: null, mg: null, loading: false, request: 0 };
     boards.push(board);
     return board;
   }
@@ -271,8 +271,8 @@ PAGE = r"""<!DOCTYPE html>
   function mountBoard(board) {
     if (svg) svg.remove();
     activeBoard = board; drag = null;
-    ({ svg, groups, vb, home, unit, measuring, pts, hover, mg } = board || {
-      svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], hover: null, mg: null,
+    ({ svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg } = board || {
+      svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], measurements: [], hover: null, mg: null,
     });
     const options = board ? board.options : defaultOptions();
     $('side').value = options.side; $('clip').checked = options.clip;
@@ -284,7 +284,7 @@ PAGE = r"""<!DOCTYPE html>
     $('stats').textContent = s ? `${s.components} components, ${s.pads} pads, ${s.tracks} tracks, ${s.vias} vias\n${s.polygons} polygons, ${s.regions} poured regions` : '';
     $('empty').style.display = board ? 'none' : '';
     $('busy').style.display = board && board.loading ? 'flex' : 'none';
-    label.style.display = 'none'; readout.textContent = '';
+    label.replaceChildren(); readout.textContent = '';
     $('measure-btn').classList.toggle('on', measuring); view.classList.toggle('measuring', measuring);
     document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
     layersEl.replaceChildren();
@@ -351,7 +351,7 @@ PAGE = r"""<!DOCTYPE html>
     }
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, stats: data.stats, warnings: data.warnings || [], groups: [],
-                           home: origin, vb: { ...origin }, pts: [], hover: null, mg: measure });
+                           home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
     if (board === activeBoard) mountBoard(board);
   }
 
@@ -419,24 +419,33 @@ PAGE = r"""<!DOCTYPE html>
 
   // ------------------------------------------------------------ measuring (SVG units are mm)
   const UNITS = { mm: { f: 1, d: 3 }, mil: { f: 1000 / 25.4, d: 1 }, in: { f: 1 / 25.4, d: 4 } };
-  let unit = 'mm', measuring = false, pts = [], hover = null, mg = null;
+  let unit = 'mm', measuring = false, pts = [], measurements = [], hover = null, mg = null;
   const fmt = v => (v * UNITS[unit].f).toFixed(UNITS[unit].d) + ' ' + unit;
   const toSvg = e => { const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(svg.getScreenCTM().inverse()); return { x: p.x, y: p.y }; };
   const toScreen = p => { const q = new DOMPoint(p.x, p.y).matrixTransform(svg.getScreenCTM()); const r = view.getBoundingClientRect(); return { x: q.x - r.left, y: q.y - r.top }; };
   function dot(p) { const c = document.createElementNS(NS, 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 0.3); return c; }
   function draw() {
     if (!mg) return;
-    mg.innerHTML = ''; label.style.display = 'none';
-    const a = pts[0], b = pts[1] || (pts[0] && hover);
-    if (!a) { readout.textContent = measuring && hover ? `cursor  ${fmt(hover.x)}, ${fmt(-hover.y)}` : ''; return; }
-    mg.append(dot(a));
-    if (!b) { readout.textContent = `A  ${fmt(a.x)}, ${fmt(-a.y)}`; return; }
-    const l = document.createElementNS(NS, 'line');
-    l.setAttribute('x1', a.x); l.setAttribute('y1', a.y); l.setAttribute('x2', b.x); l.setAttribute('y2', b.y); mg.append(l, dot(b));
-    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
-    const m = toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-    label.textContent = fmt(d); label.style.left = m.x + 'px'; label.style.top = m.y + 'px'; label.style.display = 'block';
-    readout.textContent = `dist ${fmt(d)}\ndx   ${fmt(Math.abs(dx))}\ndy   ${fmt(Math.abs(dy))}\nang  ${(Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1)}°`;
+    mg.replaceChildren(); label.replaceChildren();
+    const segments = [...measurements];
+    if (pts.length && hover) segments.push([pts[0], hover]);
+    if (pts.length) mg.append(dot(pts[0]));
+    for (const [a, b] of segments) {
+      const l = document.createElementNS(NS, 'line');
+      l.setAttribute('x1', a.x); l.setAttribute('y1', a.y); l.setAttribute('x2', b.x); l.setAttribute('y2', b.y);
+      mg.append(l, dot(a), dot(b));
+      const m = toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+      const caption = document.createElement('div'); caption.className = 'measure-label';
+      caption.textContent = fmt(Math.hypot(b.x - a.x, b.y - a.y));
+      caption.style.left = m.x + 'px'; caption.style.top = m.y + 'px'; label.append(caption);
+    }
+    const latest = segments.at(-1);
+    if (!latest) {
+      const p = pts[0] || (measuring && hover);
+      readout.textContent = p ? `cursor  ${fmt(p.x)}, ${fmt(-p.y)}` : ''; return;
+    }
+    const [a, b] = latest, dx = b.x - a.x, dy = b.y - a.y;
+    readout.textContent = `dist ${fmt(Math.hypot(dx, dy))}\ndx   ${fmt(Math.abs(dx))}\ndy   ${fmt(Math.abs(dy))}\nang  ${(Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1)}°`;
   }
   function setMeasuring(v) {
     measuring = v; $('measure-btn').classList.toggle('on', v); view.classList.toggle('measuring', v);
@@ -444,15 +453,23 @@ PAGE = r"""<!DOCTYPE html>
   }
   $('measure-btn').onclick = () => setMeasuring(!measuring);
   window.addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT') return;
+    if (e.target.closest('input, textarea, select, [contenteditable]')) return;
     if (e.key === 'm' || e.key === 'M') setMeasuring(!measuring);
-    if (e.key === 'Escape') { pts = []; draw(); }
+    if (e.key === 'Escape') { pts = []; hover = null; draw(); }
+    if (e.shiftKey && e.key.toLowerCase() === 'c') { measurements = []; pts = []; hover = null; draw(); }
   });
   document.querySelectorAll('.unit').forEach(b => b.onclick = () => {
     unit = b.dataset.unit; document.querySelectorAll('.unit').forEach(x => x.classList.toggle('on', x === b)); draw();
   });
-  view.addEventListener('click', e => { if (!svg || !measuring) return; if (pts.length === 2) pts = []; pts.push(toSvg(e)); draw(); });
-  view.addEventListener('mousemove', e => { if (svg && measuring) { hover = toSvg(e); if (pts.length !== 2) draw(); } });
+  view.addEventListener('click', e => {
+    if (!svg || !measuring || e.button !== 0) return;
+    pts.push(toSvg(e));
+    if (pts.length === 2) { measurements.push(pts); pts = []; hover = null; }
+    draw();
+  });
+  view.addEventListener('mousemove', e => { if (svg && measuring) { hover = toSvg(e); if (pts.length || !measurements.length) draw(); } });
+
+  window.addEventListener('resize', () => draw());
 
   // ------------------------------------------------------------ board passed on the command line
   fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {

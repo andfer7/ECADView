@@ -355,3 +355,36 @@ test('new boards show only copper, top overlay, outline and drills; rerenders pr
 async function loadedWithoutName(page) {
   await page.waitForFunction(() => document.querySelector('#view > svg') && document.querySelector('#busy').style.display === 'none');
 }
+
+test('retains multiple measurements with labels and units, cancels previews and clears only the active board', async t => {
+  const { page } = await openPage(t);
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#measure-btn').click();
+  for (const [x, y] of [[200, 200], [400, 300], [250, 400], [450, 450]]) {
+    await page.locator('#view').click({ position: { x, y } });
+  }
+  assert.equal(await page.locator('#measure line').count(), 2);
+  assert.equal(await page.locator('.measure-label').count(), 2);
+  assert.ok((await page.locator('.measure-label').allTextContents()).every(s => s.endsWith(' mm')));
+  await page.locator('[data-unit="mil"]').click();
+  assert.ok((await page.locator('.measure-label').allTextContents()).every(s => s.endsWith(' mil')));
+  await page.locator('#view').click({ position: { x: 500, y: 500 } });
+  await page.mouse.move(800, 600);
+  assert.equal(await page.locator('#measure line').count(), 3);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#measure line').count(), 2);
+  await page.locator('#measure-btn').click();
+  assert.equal(await page.locator('#measure line').count(), 2, 'turning off measuring keeps completed distances');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await page.locator('#measure line').count(), 0);
+  await page.keyboard.press('Shift+C');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#measure line').count(), 2);
+  const before = await page.locator('.measure-label').first().getAttribute('style');
+  await page.locator('#view').dispatchEvent('wheel', { deltaY: -200, clientX: 600, clientY: 400 });
+  assert.notEqual(await page.locator('.measure-label').first().getAttribute('style'), before);
+  await page.keyboard.press('Shift+C');
+  assert.equal(await page.locator('#measure line').count(), 0);
+  assert.equal(await page.locator('.measure-label').count(), 0);
+  assert.equal(await page.locator('#readout').textContent(), '');
+});
