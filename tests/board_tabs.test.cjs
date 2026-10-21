@@ -422,3 +422,14 @@ test('highlights net tracks and pads across transformed, clipped layers', async 
   assert.equal(await page.locator('#net-highlight').count(), 0);
   assert.equal(await page.locator('[data-net="GND"]').first().getAttribute('stroke'), 'red');
 });
+
+test('sidebar scrolls to keep layers and measurements accessible in short windows', async t => {
+  const { page } = await openPage(t);
+  await page.setViewportSize({ width: 1200, height: 500 });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  assert.ok(await page.locator('#layers-wrap').evaluate(el => el.clientHeight >= 160));
+  await page.locator('#layers input').first().uncheck();
+  await page.locator('#measure-btn').click();
+  assert.ok(await page.locator('#panel').evaluate(el => el.scrollTop > 0));
+  assert.equal(await page.locator('#measure-btn').getAttribute('class'), 'on');
+});
