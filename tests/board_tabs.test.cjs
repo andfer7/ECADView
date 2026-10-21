@@ -433,3 +433,63 @@ test('sidebar scrolls to keep layers and measurements accessible in short window
   assert.ok(await page.locator('#panel').evaluate(el => el.scrollTop > 0));
   assert.equal(await page.locator('#measure-btn').getAttribute('class'), 'on');
 });
+
+test('new boards show only copper, top overlay, outline and drills; rerenders preserve choices', async t => {
+  const data = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"><g id="scene">
+    <g id="signal" data-layer-family="signal" data-layer-display-name="Custom signal"/>
+    <g id="plane" data-layer-family="internal_plane"/>
+    <g id="top-overlay" data-layer-token="TOPOVERLAY"/>
+    <g id="bottom-overlay" data-layer-token="BOTTOMOVERLAY"/>
+    <g id="mask" data-layer-token="TOPSOLDER"/>
+    <g id="paste" data-layer-token="TOPPASTE"/>
+    <g id="mechanical" data-layer-role="mechanical"/>
+    <g id="board-outline"/><g id="layer-DRILLS" data-layer-role="drill"/>
+    </g></svg>` });
+  const { page } = await openPage(t, { render: (route, name) => reply(route, data(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loadedWithoutName(page);
+  const visible = () => page.locator('#scene > g').evaluateAll(gs => gs.filter(g => g.style.display !== 'none').map(g => g.id));
+  assert.deepEqual(await visible(), ['signal', 'plane', 'top-overlay', 'board-outline', 'layer-DRILLS']);
+  await page.locator('#all').click(); assert.equal((await visible()).length, 9);
+  await page.locator('#rerender').click(); await loadedWithoutName(page);
+  assert.equal((await visible()).length, 9);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loadedWithoutName(page);
+  assert.equal((await visible()).length, 5);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal((await visible()).length, 9);
+});
+async function loadedWithoutName(page) {
+  await page.waitForFunction(() => document.querySelector('#view > svg') && document.querySelector('#busy').style.display === 'none');
+}
+
+test('retains multiple measurements with labels and units, cancels previews and clears only the active board', async t => {
+  const { page } = await openPage(t);
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#measure-btn').click();
+  for (const [x, y] of [[200, 200], [400, 300], [250, 400], [450, 450]]) {
+    await page.locator('#view').click({ position: { x, y } });
+  }
+  assert.equal(await page.locator('#measure line').count(), 2);
+  assert.equal(await page.locator('.measure-label').count(), 2);
+  assert.ok((await page.locator('.measure-label').allTextContents()).every(s => s.endsWith(' mm')));
+  await page.locator('[data-unit="mil"]').click();
+  assert.ok((await page.locator('.measure-label').allTextContents()).every(s => s.endsWith(' mil')));
+  await page.locator('#view').click({ position: { x: 500, y: 500 } });
+  await page.mouse.move(800, 600);
+  assert.equal(await page.locator('#measure line').count(), 3);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#measure line').count(), 2);
+  await page.locator('#measure-btn').click();
+  assert.equal(await page.locator('#measure line').count(), 2, 'turning off measuring keeps completed distances');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await page.locator('#measure line').count(), 0);
+  await page.keyboard.press('Shift+C');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#measure line').count(), 2);
+  const before = await page.locator('.measure-label').first().getAttribute('style');
+  await page.locator('#view').dispatchEvent('wheel', { deltaY: -200, clientX: 600, clientY: 400 });
+  assert.notEqual(await page.locator('.measure-label').first().getAttribute('style'), before);
+  await page.keyboard.press('Shift+C');
+  assert.equal(await page.locator('#measure line').count(), 0);
+  assert.equal(await page.locator('.measure-label').count(), 0);
+  assert.equal(await page.locator('#readout').textContent(), '');
+});
