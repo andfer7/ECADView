@@ -147,6 +147,14 @@ PAGE = r"""<!DOCTYPE html>
   #layers label:hover { background: #2e3238; }
   .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; border: 1px solid #0006; }
   .count { margin-left: auto; color: var(--muted); font-size: 11px; }
+  #net-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
+                     border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
+  #scene .net-match, #scene .net-match * { fill: #68e0ff !important; stroke: #68e0ff !important; }
+  #scene .net-match { filter: drop-shadow(0 0 0.25px #68e0ff); }
+  #scene #net-highlight * { fill: #68e0ff !important; stroke: #68e0ff !important; }
+  #panel { overflow-y: auto; }
+  #panel > * { flex-shrink: 0; }
+  #layers-wrap { min-height: 160px; }
   #stats { color: var(--muted); font-size: 12px; white-space: pre-line; }
   #readout { font: 12px/1.5 ui-monospace, Consolas, monospace; color: #bbb; white-space: pre;
              background: #1b1d21; border-radius: 4px; padding: 6px; margin-top: 6px; min-height: 3.6em; }
@@ -168,9 +176,9 @@ PAGE = r"""<!DOCTYPE html>
   #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
            color: var(--muted); font-size: 15px; text-align: center; pointer-events: none; }
   #measure line, #measure circle { vector-effect: non-scaling-stroke; stroke: var(--accent); stroke-width: 1.5; fill: none; }
-  #measure-label { position: absolute; pointer-events: none; background: var(--accent); color: var(--accent-ink);
+  .measure-label { position: absolute; pointer-events: none; background: var(--accent); color: var(--accent-ink);
                    font: 12px ui-monospace, Consolas, monospace; padding: 2px 6px; border-radius: 3px;
-                   transform: translate(-50%, -130%); white-space: nowrap; display: none; }
+                   transform: translate(-50%, -130%); white-space: nowrap; }
   #toast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); background: #b23b3b; color: #fff;
            padding: 8px 14px; border-radius: 6px; display: none; max-width: 70%; }
   #busy { position: absolute; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; }
@@ -200,6 +208,14 @@ PAGE = r"""<!DOCTYPE html>
       <div class="opt"><span>Pour colour</span><input type="text" id="pour" placeholder="layer colour" size="8"></div>
       <div class="row"><button id="rerender">Re-render</button></div>
     </div>
+    <div>
+      <label for="net-query">Find net</label>
+      <input id="net-query" type="search" list="net-options" placeholder="Net name, e.g. GND" autocomplete="off" disabled>
+      <datalist id="net-options"></datalist>
+      <div class="row"><button id="net-clear">Clear</button><button id="net-fit" disabled>Fit matches</button></div>
+      <button id="net-reveal" hidden>Show matching layers</button>
+      <div id="net-status" class="hint" role="status"></div>
+    </div>
     <div id="layers-wrap">
       <div class="row" style="margin:0 0 6px"><button id="all">Show all</button><button id="none">Hide all</button></div>
       <div id="layers"></div>
@@ -208,7 +224,7 @@ PAGE = r"""<!DOCTYPE html>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <div id="readout"></div>
-      <div class="hint">Scroll to zoom, drag to pan, double-click to reset. Measure: click two points, Esc clears.</div>
+      <div class="hint">Scroll to zoom, drag to pan, double-click to reset. Measure: click two points; Esc cancels, Shift+C clears all.</div>
     </div>
     <div id="stats"></div>
   </div>
@@ -239,12 +255,12 @@ PAGE = r"""<!DOCTYPE html>
   }
   function saveBoard() {
     if (!activeBoard) return;
-    Object.assign(activeBoard, { svg, groups, vb, home, unit, measuring, pts, hover, mg, options: readOptions() });
+    Object.assign(activeBoard, { svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg, options: readOptions() });
   }
   function createBoard(file, name = file.name) {
     const board = { id: nextBoardId++, file, name, stats: null, warnings: [], options: defaultOptions(),
                     svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false,
-                    pts: [], hover: null, mg: null, loading: false, request: 0 };
+                    pts: [], measurements: [], hover: null, mg: null, loading: false, request: 0 };
     boards.push(board);
     return board;
   }
@@ -284,8 +300,8 @@ PAGE = r"""<!DOCTYPE html>
   function mountBoard(board) {
     if (svg) svg.remove();
     activeBoard = board; drag = null;
-    ({ svg, groups, vb, home, unit, measuring, pts, hover, mg } = board || {
-      svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], hover: null, mg: null,
+    ({ svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg } = board || {
+      svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], measurements: [], hover: null, mg: null,
     });
     const options = board ? board.options : defaultOptions();
     $('side').value = options.side; $('clip').checked = options.clip;
@@ -297,11 +313,12 @@ PAGE = r"""<!DOCTYPE html>
     $('stats').textContent = s ? `${s.components} components, ${s.pads} pads, ${s.tracks} tracks, ${s.vias} vias\n${s.polygons} polygons, ${s.regions} poured regions` : '';
     $('empty').style.display = board ? 'none' : '';
     $('busy').style.display = board && board.loading ? 'flex' : 'none';
-    label.style.display = 'none'; readout.textContent = '';
+    label.replaceChildren(); readout.textContent = '';
     $('measure-btn').classList.toggle('on', measuring); view.classList.toggle('measuring', measuring);
     document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
     layersEl.replaceChildren();
     if (svg) { view.prepend(svg); buildLayers(); apply(); }
+    mountNetSearch();
     updateTabs();
     mountComponentSearch();
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
@@ -359,9 +376,13 @@ PAGE = r"""<!DOCTYPE html>
     if (board === activeBoard) saveBoard();
     const b = rendered.viewBox.baseVal;
     const origin = { x: b.x, y: b.y, w: b.width, h: b.height };
+    const previousLayers = new Map(board.groups.map(g => [g.id, g.style.display]));
+    for (const g of rendered.querySelectorAll('#scene > g')) {
+      g.style.display = previousLayers.has(g.id) ? previousLayers.get(g.id) : defaultLayerVisible(g) ? '' : 'none';
+    }
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, stats: data.stats, warnings: data.warnings || [], groups: [],
-                           home: origin, vb: { ...origin }, pts: [], hover: null, mg: measure });
+                           home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
     if (board === activeBoard) mountBoard(board);
   }
 
@@ -448,6 +469,15 @@ PAGE = r"""<!DOCTYPE html>
   };
 
   // ------------------------------------------------------------ layers
+  function defaultLayerVisible(g) {
+    const { layerRole: role, layerFamily: family, layerToken: token } = g.dataset;
+    if (g.id === 'board-outline' || role === 'copper' || role === 'drill' ||
+        family === 'signal' || family === 'internal_plane') return true;
+    // Tokens stay stable even when the board gives layers custom display names.
+    if (token) return /^(TOP|BOTTOM|MID\d+|PLANE\d+|TOPOVERLAY|DRILLS|DRILLDRAWING|DRILLGUIDE|MULTILAYER)$/i.test(token);
+    return /^(layer-)?(top|bottom|mid\d+|plane\d+|topoverlay|drills|drilldrawing|drillguide|multilayer)$/i.test(g.id) ||
+      /^(top copper|bottom copper|top overlay)$/i.test(g.dataset.layerName || '');
+  }
   function buildLayers() {
     layersEl.innerHTML = '';
     // Keep the sidebar in renderer order even after changing SVG paint order.
@@ -473,6 +503,82 @@ PAGE = r"""<!DOCTYPE html>
   $('all').onclick = () => setAll(true);
   $('none').onclick = () => setAll(false);
 
+  // ------------------------------------------------------------ net search
+  let netIndex = new Map(), netHits = [];
+  function mountNetSearch() {
+    netIndex = new Map(); netHits = [];
+    for (const el of svg?.querySelectorAll('#scene [data-net]') || []) {
+      const name = el.dataset.net;
+      if (!name) continue;
+      if (!netIndex.has(name)) netIndex.set(name, []);
+      netIndex.get(name).push(el);
+    }
+    $('net-options').replaceChildren(...[...netIndex.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(name => {
+      const option = document.createElement('option'); option.value = name; return option;
+    }));
+    $('net-query').disabled = !svg;
+    $('net-query').value = activeBoard?.netQuery || '';
+    searchNets();
+  }
+  function searchNets() {
+    for (const el of netHits) el.classList.remove('net-match');
+    netHits = [];
+    const query = $('net-query').value.trim().toLowerCase();
+    if (activeBoard) activeBoard.netQuery = $('net-query').value;
+    const names = [...netIndex.keys()];
+    const exact = names.find(name => name.toLowerCase() === query);
+    const matches = query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : [];
+    netHits = matches.flatMap(name => netIndex.get(name));
+    for (const el of netHits) el.classList.add('net-match');
+    updateNetStatus(matches.length);
+  }
+  function updateNetStatus(count = new Set(netHits.map(el => el.dataset.net)).size) {
+    svg?.querySelector('#net-highlight')?.remove();
+    const overlay = document.createElementNS(NS, 'g'); overlay.id = 'net-highlight';
+    overlay.style.pointerEvents = 'none';
+    const matched = new Set(netHits), branches = new Set();
+    for (const el of netHits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
+    // Copy just the matching branches, retaining ancestor transforms and clips.
+    // The overlay paints above other layers without changing their paint order.
+    function branch(node) {
+      if (matched.has(node)) return node.cloneNode(true);
+      const copy = node.cloneNode(false);
+      for (const child of node.children) if (branches.has(child)) copy.append(branch(child));
+      return copy;
+    }
+    for (const g of groups) if (g.style.display !== 'none' && branches.has(g)) overlay.append(branch(g));
+    for (const el of overlay.querySelectorAll('*')) {
+      el.removeAttribute('id'); el.classList.remove('net-match');
+      for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
+    }
+    if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
+    const hidden = groups.filter(g => g.style.display === 'none' && branches.has(g)).length;
+    $('net-fit').disabled = !overlay.childElementCount;
+    $('net-reveal').hidden = !hidden;
+    $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
+      `${count} net${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
+  }
+  $('net-query').oninput = searchNets;
+  $('net-clear').onclick = () => { $('net-query').value = ''; searchNets(); };
+  $('net-fit').onclick = () => {
+    const rects = netHits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
+    if (!rects.length) return;
+    const bounds = rects.reduce((b, r) => ({ left: Math.min(b.left, r.left), top: Math.min(b.top, r.top),
+      right: Math.max(b.right, r.right), bottom: Math.max(b.bottom, r.bottom) }), rects[0]);
+    const a = toSvg({ clientX: bounds.left, clientY: bounds.top });
+    const b = toSvg({ clientX: bounds.right, clientY: bounds.bottom });
+    const pad = Math.max(b.x - a.x, b.y - a.y, 2) * 0.25;
+    vb = { x: a.x - pad, y: a.y - pad, w: b.x - a.x + 2 * pad, h: b.y - a.y + 2 * pad }; apply();
+  };
+  $('net-reveal').onclick = () => {
+    for (const g of groups) if (g.style.display === 'none' && netHits.some(el => g.contains(el))) g._cb.click();
+    updateNetStatus();
+  };
+
+  layersEl.addEventListener('change', () => updateNetStatus());
+  $('all').addEventListener('click', () => updateNetStatus());
+  $('none').addEventListener('click', () => updateNetStatus());
+
   // ------------------------------------------------------------ pan / zoom
   function apply() { if (svg) { svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`); draw(); } }
   view.addEventListener('wheel', e => {
@@ -493,24 +599,33 @@ PAGE = r"""<!DOCTYPE html>
 
   // ------------------------------------------------------------ measuring (SVG units are mm)
   const UNITS = { mm: { f: 1, d: 3 }, mil: { f: 1000 / 25.4, d: 1 }, in: { f: 1 / 25.4, d: 4 } };
-  let unit = 'mm', measuring = false, pts = [], hover = null, mg = null;
+  let unit = 'mm', measuring = false, pts = [], measurements = [], hover = null, mg = null;
   const fmt = v => (v * UNITS[unit].f).toFixed(UNITS[unit].d) + ' ' + unit;
   const toSvg = e => { const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(svg.getScreenCTM().inverse()); return { x: p.x, y: p.y }; };
   const toScreen = p => { const q = new DOMPoint(p.x, p.y).matrixTransform(svg.getScreenCTM()); const r = view.getBoundingClientRect(); return { x: q.x - r.left, y: q.y - r.top }; };
   function dot(p) { const c = document.createElementNS(NS, 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 0.3); return c; }
   function draw() {
     if (!mg) return;
-    mg.innerHTML = ''; label.style.display = 'none';
-    const a = pts[0], b = pts[1] || (pts[0] && hover);
-    if (!a) { readout.textContent = measuring && hover ? `cursor  ${fmt(hover.x)}, ${fmt(-hover.y)}` : ''; return; }
-    mg.append(dot(a));
-    if (!b) { readout.textContent = `A  ${fmt(a.x)}, ${fmt(-a.y)}`; return; }
-    const l = document.createElementNS(NS, 'line');
-    l.setAttribute('x1', a.x); l.setAttribute('y1', a.y); l.setAttribute('x2', b.x); l.setAttribute('y2', b.y); mg.append(l, dot(b));
-    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
-    const m = toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-    label.textContent = fmt(d); label.style.left = m.x + 'px'; label.style.top = m.y + 'px'; label.style.display = 'block';
-    readout.textContent = `dist ${fmt(d)}\ndx   ${fmt(Math.abs(dx))}\ndy   ${fmt(Math.abs(dy))}\nang  ${(Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1)}°`;
+    mg.replaceChildren(); label.replaceChildren();
+    const segments = [...measurements];
+    if (pts.length && hover) segments.push([pts[0], hover]);
+    if (pts.length) mg.append(dot(pts[0]));
+    for (const [a, b] of segments) {
+      const l = document.createElementNS(NS, 'line');
+      l.setAttribute('x1', a.x); l.setAttribute('y1', a.y); l.setAttribute('x2', b.x); l.setAttribute('y2', b.y);
+      mg.append(l, dot(a), dot(b));
+      const m = toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+      const caption = document.createElement('div'); caption.className = 'measure-label';
+      caption.textContent = fmt(Math.hypot(b.x - a.x, b.y - a.y));
+      caption.style.left = m.x + 'px'; caption.style.top = m.y + 'px'; label.append(caption);
+    }
+    const latest = segments.at(-1);
+    if (!latest) {
+      const p = pts[0] || (measuring && hover);
+      readout.textContent = p ? `cursor  ${fmt(p.x)}, ${fmt(-p.y)}` : ''; return;
+    }
+    const [a, b] = latest, dx = b.x - a.x, dy = b.y - a.y;
+    readout.textContent = `dist ${fmt(Math.hypot(dx, dy))}\ndx   ${fmt(Math.abs(dx))}\ndy   ${fmt(Math.abs(dy))}\nang  ${(Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1)}°`;
   }
   function setMeasuring(v) {
     measuring = v; $('measure-btn').classList.toggle('on', v); view.classList.toggle('measuring', v);
@@ -518,15 +633,23 @@ PAGE = r"""<!DOCTYPE html>
   }
   $('measure-btn').onclick = () => setMeasuring(!measuring);
   window.addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT') return;
+    if (e.target.closest('input, textarea, select, [contenteditable]')) return;
     if (e.key === 'm' || e.key === 'M') setMeasuring(!measuring);
-    if (e.key === 'Escape') { pts = []; draw(); }
+    if (e.key === 'Escape') { pts = []; hover = null; draw(); }
+    if (e.shiftKey && e.key.toLowerCase() === 'c') { measurements = []; pts = []; hover = null; draw(); }
   });
   document.querySelectorAll('.unit').forEach(b => b.onclick = () => {
     unit = b.dataset.unit; document.querySelectorAll('.unit').forEach(x => x.classList.toggle('on', x === b)); draw();
   });
-  view.addEventListener('click', e => { if (!svg || !measuring) return; if (pts.length === 2) pts = []; pts.push(toSvg(e)); draw(); });
-  view.addEventListener('mousemove', e => { if (svg && measuring) { hover = toSvg(e); if (pts.length !== 2) draw(); } });
+  view.addEventListener('click', e => {
+    if (!svg || !measuring || e.button !== 0) return;
+    pts.push(toSvg(e));
+    if (pts.length === 2) { measurements.push(pts); pts = []; hover = null; }
+    draw();
+  });
+  view.addEventListener('mousemove', e => { if (svg && measuring) { hover = toSvg(e); if (pts.length || !measurements.length) draw(); } });
+
+  window.addEventListener('resize', () => draw());
 
   // ------------------------------------------------------------ board passed on the command line
   fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {
