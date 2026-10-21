@@ -147,6 +147,11 @@ PAGE = r"""<!DOCTYPE html>
   #layers label:hover { background: #2e3238; }
   .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; border: 1px solid #0006; }
   .count { margin-left: auto; color: var(--muted); font-size: 11px; }
+  #net-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
+                     border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
+  #scene .net-match, #scene .net-match * { fill: #68e0ff !important; stroke: #68e0ff !important; }
+  #scene .net-match { filter: drop-shadow(0 0 0.25px #68e0ff); }
+  #scene #net-highlight * { fill: #68e0ff !important; stroke: #68e0ff !important; }
   #stats { color: var(--muted); font-size: 12px; white-space: pre-line; }
   #readout { font: 12px/1.5 ui-monospace, Consolas, monospace; color: #bbb; white-space: pre;
              background: #1b1d21; border-radius: 4px; padding: 6px; margin-top: 6px; min-height: 3.6em; }
@@ -199,6 +204,14 @@ PAGE = r"""<!DOCTYPE html>
       <div class="opt"><input type="checkbox" id="clip"><label for="clip">Clip copper to board outline</label></div>
       <div class="opt"><span>Pour colour</span><input type="text" id="pour" placeholder="layer colour" size="8"></div>
       <div class="row"><button id="rerender">Re-render</button></div>
+    </div>
+    <div>
+      <label for="net-query">Find net</label>
+      <input id="net-query" type="search" list="net-options" placeholder="Net name, e.g. GND" autocomplete="off" disabled>
+      <datalist id="net-options"></datalist>
+      <div class="row"><button id="net-clear">Clear</button><button id="net-fit" disabled>Fit matches</button></div>
+      <button id="net-reveal" hidden>Show matching layers</button>
+      <div id="net-status" class="hint" role="status"></div>
     </div>
     <div id="layers-wrap">
       <div class="row" style="margin:0 0 6px"><button id="all">Show all</button><button id="none">Hide all</button></div>
@@ -302,6 +315,7 @@ PAGE = r"""<!DOCTYPE html>
     document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
     layersEl.replaceChildren();
     if (svg) { view.prepend(svg); buildLayers(); apply(); }
+    mountNetSearch();
     updateTabs();
     mountComponentSearch();
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
@@ -485,6 +499,82 @@ PAGE = r"""<!DOCTYPE html>
   const setAll = v => { groups.forEach(g => { g._cb.checked = v; g.style.display = v ? '' : 'none'; }); updateComponentStatus(); };
   $('all').onclick = () => setAll(true);
   $('none').onclick = () => setAll(false);
+
+  // ------------------------------------------------------------ net search
+  let netIndex = new Map(), netHits = [];
+  function mountNetSearch() {
+    netIndex = new Map(); netHits = [];
+    for (const el of svg?.querySelectorAll('#scene [data-net]') || []) {
+      const name = el.dataset.net;
+      if (!name) continue;
+      if (!netIndex.has(name)) netIndex.set(name, []);
+      netIndex.get(name).push(el);
+    }
+    $('net-options').replaceChildren(...[...netIndex.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(name => {
+      const option = document.createElement('option'); option.value = name; return option;
+    }));
+    $('net-query').disabled = !svg;
+    $('net-query').value = activeBoard?.netQuery || '';
+    searchNets();
+  }
+  function searchNets() {
+    for (const el of netHits) el.classList.remove('net-match');
+    netHits = [];
+    const query = $('net-query').value.trim().toLowerCase();
+    if (activeBoard) activeBoard.netQuery = $('net-query').value;
+    const names = [...netIndex.keys()];
+    const exact = names.find(name => name.toLowerCase() === query);
+    const matches = query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : [];
+    netHits = matches.flatMap(name => netIndex.get(name));
+    for (const el of netHits) el.classList.add('net-match');
+    updateNetStatus(matches.length);
+  }
+  function updateNetStatus(count = new Set(netHits.map(el => el.dataset.net)).size) {
+    svg?.querySelector('#net-highlight')?.remove();
+    const overlay = document.createElementNS(NS, 'g'); overlay.id = 'net-highlight';
+    overlay.style.pointerEvents = 'none';
+    const matched = new Set(netHits), branches = new Set();
+    for (const el of netHits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
+    // Copy just the matching branches, retaining ancestor transforms and clips.
+    // The overlay paints above other layers without changing their paint order.
+    function branch(node) {
+      if (matched.has(node)) return node.cloneNode(true);
+      const copy = node.cloneNode(false);
+      for (const child of node.children) if (branches.has(child)) copy.append(branch(child));
+      return copy;
+    }
+    for (const g of groups) if (g.style.display !== 'none' && branches.has(g)) overlay.append(branch(g));
+    for (const el of overlay.querySelectorAll('*')) {
+      el.removeAttribute('id'); el.classList.remove('net-match');
+      for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
+    }
+    if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
+    const hidden = groups.filter(g => g.style.display === 'none' && branches.has(g)).length;
+    $('net-fit').disabled = !overlay.childElementCount;
+    $('net-reveal').hidden = !hidden;
+    $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
+      `${count} net${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
+  }
+  $('net-query').oninput = searchNets;
+  $('net-clear').onclick = () => { $('net-query').value = ''; searchNets(); };
+  $('net-fit').onclick = () => {
+    const rects = netHits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
+    if (!rects.length) return;
+    const bounds = rects.reduce((b, r) => ({ left: Math.min(b.left, r.left), top: Math.min(b.top, r.top),
+      right: Math.max(b.right, r.right), bottom: Math.max(b.bottom, r.bottom) }), rects[0]);
+    const a = toSvg({ clientX: bounds.left, clientY: bounds.top });
+    const b = toSvg({ clientX: bounds.right, clientY: bounds.bottom });
+    const pad = Math.max(b.x - a.x, b.y - a.y, 2) * 0.25;
+    vb = { x: a.x - pad, y: a.y - pad, w: b.x - a.x + 2 * pad, h: b.y - a.y + 2 * pad }; apply();
+  };
+  $('net-reveal').onclick = () => {
+    for (const g of groups) if (g.style.display === 'none' && netHits.some(el => g.contains(el))) g._cb.click();
+    updateNetStatus();
+  };
+
+  layersEl.addEventListener('change', () => updateNetStatus());
+  $('all').addEventListener('click', () => updateNetStatus());
+  $('none').addEventListener('click', () => updateNetStatus());
 
   // ------------------------------------------------------------ pan / zoom
   function apply() { if (svg) { svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`); draw(); } }
