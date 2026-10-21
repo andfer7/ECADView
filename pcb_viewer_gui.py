@@ -129,7 +129,7 @@ PAGE = r"""<!DOCTYPE html>
                      border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
   #scene .component-match, #scene .component-match * { fill: #ffe066 !important; stroke: #ffe066 !important; }
   #scene .component-match { filter: drop-shadow(0 0 0.25px #ffe066); }
-  #component-highlight * { fill: #ffe066 !important; stroke: #ffe066 !important; }
+  #scene #component-highlight * { fill: #ffe066 !important; stroke: #ffe066 !important; }
   button { background: #3a3e45; color: var(--text); border: 1px solid #4a4f58; border-radius: 4px;
            padding: 5px 8px; cursor: pointer; font: inherit; }
   button:hover { background: #474c56; }
@@ -400,7 +400,7 @@ PAGE = r"""<!DOCTYPE html>
     const names = [...componentIndex.keys()];
     const exact = names.find(name => name.toLowerCase() === query);
     const matches = query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : [];
-    for (const name of matches) componentHits.push(...componentIndex.get(name));
+    componentHits = matches.flatMap(name => componentIndex.get(name));
     for (const el of componentHits) el.classList.add('component-match');
     updateComponentStatus(matches.length);
   }
