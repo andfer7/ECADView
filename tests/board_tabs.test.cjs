@@ -329,6 +329,33 @@ test('uploads the affected layout through the real Python server', {
   if (process.env.PCB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.PCB_TEST_SCREENSHOT });
 });
 
+test('new boards show only copper, top overlay, outline and drills; rerenders preserve choices', async t => {
+  const data = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"><g id="scene">
+    <g id="signal" data-layer-family="signal" data-layer-display-name="Custom signal"/>
+    <g id="plane" data-layer-family="internal_plane"/>
+    <g id="top-overlay" data-layer-token="TOPOVERLAY"/>
+    <g id="bottom-overlay" data-layer-token="BOTTOMOVERLAY"/>
+    <g id="mask" data-layer-token="TOPSOLDER"/>
+    <g id="paste" data-layer-token="TOPPASTE"/>
+    <g id="mechanical" data-layer-role="mechanical"/>
+    <g id="board-outline"/><g id="layer-DRILLS" data-layer-role="drill"/>
+    </g></svg>` });
+  const { page } = await openPage(t, { render: (route, name) => reply(route, data(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loadedWithoutName(page);
+  const visible = () => page.locator('#scene > g').evaluateAll(gs => gs.filter(g => g.style.display !== 'none').map(g => g.id));
+  assert.deepEqual(await visible(), ['signal', 'plane', 'top-overlay', 'board-outline', 'layer-DRILLS']);
+  await page.locator('#all').click(); assert.equal((await visible()).length, 9);
+  await page.locator('#rerender').click(); await loadedWithoutName(page);
+  assert.equal((await visible()).length, 9);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loadedWithoutName(page);
+  assert.equal((await visible()).length, 5);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal((await visible()).length, 9);
+});
+async function loadedWithoutName(page) {
+  await page.waitForFunction(() => document.querySelector('#view > svg') && document.querySelector('#busy').style.display === 'none');
+}
+
 test('retains multiple measurements with labels and units, cancels previews and clears only the active board', async t => {
   const { page } = await openPage(t);
   await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');

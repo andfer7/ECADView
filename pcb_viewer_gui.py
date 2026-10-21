@@ -345,6 +345,10 @@ PAGE = r"""<!DOCTYPE html>
     if (board === activeBoard) saveBoard();
     const b = rendered.viewBox.baseVal;
     const origin = { x: b.x, y: b.y, w: b.width, h: b.height };
+    const previousLayers = new Map(board.groups.map(g => [g.id, g.style.display]));
+    for (const g of rendered.querySelectorAll('#scene > g')) {
+      g.style.display = previousLayers.has(g.id) ? previousLayers.get(g.id) : defaultLayerVisible(g) ? '' : 'none';
+    }
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, stats: data.stats, warnings: data.warnings || [], groups: [],
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
@@ -362,6 +366,15 @@ PAGE = r"""<!DOCTYPE html>
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 5000); }
 
   // ------------------------------------------------------------ layers
+  function defaultLayerVisible(g) {
+    const { layerRole: role, layerFamily: family, layerToken: token } = g.dataset;
+    if (g.id === 'board-outline' || role === 'copper' || role === 'drill' ||
+        family === 'signal' || family === 'internal_plane') return true;
+    // Tokens stay stable even when the board gives layers custom display names.
+    if (token) return /^(TOP|BOTTOM|MID\d+|PLANE\d+|TOPOVERLAY|DRILLS|DRILLDRAWING|DRILLGUIDE|MULTILAYER)$/i.test(token);
+    return /^(layer-)?(top|bottom|mid\d+|plane\d+|topoverlay|drills|drilldrawing|drillguide|multilayer)$/i.test(g.id) ||
+      /^(top copper|bottom copper|top overlay)$/i.test(g.dataset.layerName || '');
+  }
   function buildLayers() {
     layersEl.innerHTML = '';
     // Keep the sidebar in renderer order even after changing SVG paint order.
