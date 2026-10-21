@@ -289,10 +289,15 @@ test('uploads the affected layout through the real Python server', {
   await page.locator('#component-query').fill(designator);
   assert.ok(await page.locator('#scene .component-match').count() > 0);
   await page.locator('#component-fit').click();
-  const netName = await page.locator('#net-options option').first().getAttribute('value');
-  assert.ok(netName, 'real renderer exposes net names');
+  const pour = page.locator('#scene [data-primitive="shapebased-region"][data-layer-role="copper"][data-net]').first();
+  assert.ok(await pour.count(), 'real polygon copper exposes its connected net');
+  const netName = await pour.getAttribute('data-net');
   await page.locator('#net-query').fill(netName);
   assert.ok(await page.locator('#scene .net-match').count() > 0);
+  assert.equal(await pour.evaluate(el => el.classList.contains('net-match')), true);
+  assert.ok(await page.locator('#net-highlight path[fill-rule="evenodd"]').count() > 0);
+  assert.equal(await pour.evaluate(el => getComputedStyle(el).stroke), 'none');
+  assert.equal(await page.locator('#net-highlight path[fill-rule="evenodd"]').first().evaluate(el => getComputedStyle(el).stroke), 'none');
   await page.locator('#net-fit').click();
   if (process.env.PCB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.PCB_TEST_SCREENSHOT });
 });
@@ -554,4 +559,32 @@ test('component and net highlights coexist with default layers and saved measure
   await page.locator('#view').click({ position: { x: 300, y: 200 } });
   await page.keyboard.press('Shift+C');
   assert.equal(await page.locator('#measure line').count(), 0);
+});
+
+test('net search highlights filled polygon copper and preserves its holes and layer controls', async t => {
+  const data = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+    <g id="scene"><g id="layer-top" data-layer-name="Top copper"><path data-net="GND" d="M10 10 L50 10" stroke="red"/></g>
+    <g id="layer-bottom" data-layer-name="Bottom copper">
+      <path data-primitive="shapebased-region" data-net="GND" d="M10 10 H90 V70 H10 Z M30 30 H50 V50 H30 Z" fill="blue" fill-rule="evenodd" stroke="none"/>
+      <path data-primitive="region" data-net="VCC" d="M0 0 H5 V5 Z" fill="red" fill-rule="evenodd" stroke="none"/>
+    </g></g></svg>` });
+  const { page } = await openPage(t, { render: (route, name) => reply(route, data(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  const pour = page.locator('[data-primitive="shapebased-region"]');
+  const shape = await pour.getAttribute('d');
+  await page.locator('#net-query').fill('gnd');
+  assert.equal(await page.locator('.net-match').count(), 2);
+  const overlay = page.locator('#net-highlight [fill-rule="evenodd"]');
+  assert.equal(await overlay.getAttribute('d'), shape);
+  assert.equal(await overlay.evaluate(el => getComputedStyle(el).stroke), 'none');
+  assert.equal(await overlay.evaluate(el => getComputedStyle(el).fill), 'rgb(104, 224, 255)');
+  assert.equal(await page.locator('[data-net="VCC"]').evaluate(el => el.classList.contains('net-match')), false);
+  await page.getByRole('checkbox', { name: 'Bottom copper', exact: true }).uncheck();
+  assert.equal(await overlay.count(), 0);
+  await page.locator('#net-reveal').click();
+  assert.equal(await overlay.count(), 1);
+  await page.locator('#net-clear').click();
+  assert.equal(await page.locator('#net-highlight').count(), 0);
+  assert.equal(await pour.evaluate(el => getComputedStyle(el).fill), 'rgb(0, 0, 255)');
+  assert.equal(await pour.evaluate(el => getComputedStyle(el).stroke), 'none');
 });
