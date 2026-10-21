@@ -191,6 +191,7 @@ PAGE = r"""<!DOCTYPE html>
   #view svg { width: 100%; height: 100%; display: block; }
   #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
            color: var(--muted); font-size: 15px; text-align: center; pointer-events: none; }
+  #measure { pointer-events: none; }
   #measure line, #measure circle { vector-effect: non-scaling-stroke; stroke: var(--accent); stroke-width: 1.5; fill: none; }
   .measure-label { position: absolute; pointer-events: none; background: var(--accent); color: var(--accent-ink);
                    font: 12px ui-monospace, Consolas, monospace; padding: 2px 6px; border-radius: 3px;
@@ -232,7 +233,7 @@ PAGE = r"""<!DOCTYPE html>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <div id="readout"></div>
-      <div class="hint">Scroll to zoom, drag to pan, double-click to reset. Measure: click two points; Esc cancels, Shift+C clears all.</div>
+      <div class="hint">Click copper to select a net. Scroll to zoom, drag to pan, double-click to reset. Measure: click two points; Esc cancels, Shift+C clears all.</div>
     </div>
     <div id="stats"></div>
   </div>
@@ -555,6 +556,14 @@ PAGE = r"""<!DOCTYPE html>
   }
   $('net-query').oninput = searchNets;
   $('net-clear').onclick = () => { $('net-query').value = ''; searchNets(); };
+  view.addEventListener('click', e => {
+    if (!svg || measuring || panned || e.button !== 0) return;
+    const primitive = e.target.closest('#scene [data-net]');
+    const name = primitive?.dataset.net;
+    if (!name || !svg.contains(primitive) || !netIndex.has(name)) return;
+    $('net-query').value = name;
+    searchNets();
+  });
   $('net-fit').onclick = () => {
     const rects = netHits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
     if (!rects.length) return;
@@ -583,10 +592,14 @@ PAGE = r"""<!DOCTYPE html>
     const k = Math.exp(e.deltaY * 0.0015);
     vb = { x: px - (px - vb.x) * k, y: py - (py - vb.y) * k, w: vb.w * k, h: vb.h * k }; apply();
   }, { passive: false });
-  let drag = null;
-  view.addEventListener('mousedown', e => { if (svg && (!measuring || e.button === 1)) drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; });
+  let drag = null, panned = false;
+  view.addEventListener('mousedown', e => {
+    panned = false;
+    if (svg && (!measuring || e.button === 1)) drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y };
+  });
   window.addEventListener('mousemove', e => {
     if (!drag) return; const r = view.getBoundingClientRect();
+    if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 3) panned = true;
     vb.x = drag.vx - (e.clientX - drag.x) / r.width * vb.w; vb.y = drag.vy - (e.clientY - drag.y) / r.height * vb.h; apply();
   });
   window.addEventListener('mouseup', () => { drag = null; });

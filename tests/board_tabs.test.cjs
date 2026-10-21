@@ -299,6 +299,9 @@ test('uploads the affected layout through the real Python server', {
   assert.equal(await pour.evaluate(el => getComputedStyle(el).stroke), 'none');
   assert.equal(await page.locator('#net-highlight path[fill-rule="evenodd"]').first().evaluate(el => getComputedStyle(el).stroke), 'none');
   await page.locator('#net-fit').click();
+  await page.locator('#net-clear').click();
+  await pour.click();
+  assert.equal(await page.locator('#net-query').inputValue(), netName, 'clicking real polygon copper selects its net');
   if (process.env.PCB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.PCB_TEST_SCREENSHOT });
 });
 
@@ -587,4 +590,86 @@ test('net search highlights filled polygon copper and preserves its holes and la
   assert.equal(await page.locator('#net-highlight').count(), 0);
   assert.equal(await pour.evaluate(el => getComputedStyle(el).fill), 'rgb(0, 0, 255)');
   assert.equal(await pour.evaluate(el => getComputedStyle(el).stroke), 'none');
+});
+
+const clickableNets = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+  <g id="scene" transform="translate(2 1)"><g id="layer-top" data-layer-name="Top copper">
+    <rect data-primitive="pad" data-net="VCC" data-component="R1" x="10" y="10" width="12" height="8" fill="red"/>
+    <g data-net="Net[1]&quot;" data-primitive="nested"><circle cx="40" cy="15" r="4" fill="red"/></g>
+    <path data-primitive="track" data-net="GND" d="M10 40 H40" stroke="red" stroke-width="3"/>
+    <circle data-primitive="via" data-net="GND" cx="50" cy="40" r="3" fill="red"/>
+    <rect data-primitive="unlinked" x="10" y="60" width="12" height="8" fill="red"/>
+  </g><g id="layer-bottom" data-layer-name="Bottom copper">
+    <path data-primitive="shapebased-region" data-net="GND" d="M60 50 H90 V70 H60 Z" fill="blue" fill-rule="evenodd" stroke="none"/>
+  </g></g></svg>` });
+async function openClickableNets(t) {
+  const result = await openPage(t, { render: (route, name) => reply(route, clickableNets(name)) });
+  await result.page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(result.page, 'A.PcbDoc');
+  return result;
+}
+
+test('clicking pads, tracks, vias, polygon copper and nested geometry selects the exact net', async t => {
+  const { page, requests } = await openClickableNets(t);
+  const viewBox = await page.locator('#view > svg').getAttribute('viewBox');
+  await page.locator('#component-query').fill('R1');
+  await page.locator('[data-primitive="pad"]').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  const track = await page.locator('[data-primitive="track"]').boundingBox();
+  await page.mouse.click(track.x + track.width / 2, track.y + track.height / 2);
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  assert.equal(await page.locator('.net-match').count(), 3, 'selects all copper on the clicked net');
+  await page.locator('[data-primitive="via"]').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND', 'highlight overlay permits clicking the native via');
+  await page.locator('[data-primitive="shapebased-region"]').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  await page.locator('[data-primitive="nested"] circle').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"');
+  await page.locator('[data-primitive="unlinked"]').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"');
+  await page.locator('#view').click({ position: { x: 20, y: 20 } });
+  assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"', 'blank space keeps the selection');
+  assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewBox, 'selecting does not move the view');
+  assert.equal(requests.length, 1, 'selection does not render again');
+});
+
+test('panning and measurements do not change the selected net, and later clicks still work', async t => {
+  const { page } = await openClickableNets(t);
+  await page.locator('[data-primitive="pad"]').click();
+  const track = await page.locator('[data-primitive="track"]').boundingBox();
+  const x = track.x + track.width / 2, y = track.y + track.height / 2;
+  const before = await page.locator('#view > svg').getAttribute('viewBox');
+  await page.mouse.move(x, y); await page.mouse.down();
+  await page.mouse.move(x + 30, y + 20); await page.mouse.up();
+  assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), before);
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'finishing a drag over copper does not select it');
+  const via = await page.locator('[data-primitive="via"]').boundingBox();
+  const vx = via.x + via.width / 2, vy = via.y + via.height / 2;
+  await page.mouse.move(vx, vy); await page.mouse.down();
+  await page.mouse.move(vx + 30, vy); await page.mouse.move(vx, vy); await page.mouse.up();
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'a drag returning to its start remains a pan');
+  await page.locator('[data-primitive="via"]').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  await page.locator('#measure-btn').click();
+  await page.locator('[data-primitive="pad"]').click();
+  await page.locator('[data-primitive="via"]').click();
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  await page.locator('#measure-btn').click();
+  await page.locator('[data-primitive="pad"]').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'saved measurement endpoints do not intercept selection');
+});
+
+test('clicked net selections remain attached to their own board tabs', async t => {
+  const { page } = await openClickableNets(t);
+  await page.locator('[data-primitive="pad"]').click();
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  await page.locator('[data-primitive="via"]').click();
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
+  assert.equal(await page.locator('.net-match').count(), 1);
+  await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  assert.equal(await page.locator('.net-match').count(), 3);
 });
