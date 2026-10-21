@@ -72,10 +72,28 @@ def prepare_embedded_fonts(pcb: AltiumPcbDoc) -> list[str]:
     return warnings
 
 
+def resolve_polygon_nets(pcb: AltiumPcbDoc) -> None:
+    """Give poured copper its parent polygon's net in the parsed rendering copy."""
+    def valid_index(index: int | None, size: int) -> bool:
+        return isinstance(index, int) and 0 <= index < size and index not in (0xFFFF, 0xFFFFFFFF)
+
+    for collection in ("regions", "shapebased_regions", "tracks", "arcs", "fills"):
+        for primitive in getattr(pcb, collection, []):
+            if valid_index(primitive.net_index, len(pcb.nets)):
+                continue
+            polygon_index = getattr(primitive, "polygon_index", None)
+            if not valid_index(polygon_index, len(pcb.polygons)):
+                continue
+            net_index = pcb.polygons[polygon_index].net
+            if valid_index(net_index, len(pcb.nets)):
+                primitive.net_index = net_index
+
+
 def render_file(path: Path, side: str = "all", clip: bool = False,
                 pour_color: str | None = None, polygon_outlines: bool = False) -> dict:
     pcb = AltiumPcbDoc.from_file(path)
     warnings = prepare_embedded_fonts(pcb)
+    resolve_polygon_nets(pcb)
     options = PcbSvgRenderOptions(
         show_board_outline=True,
         clip_copper_to_board_outline=clip,
@@ -149,6 +167,7 @@ PAGE = r"""<!DOCTYPE html>
   #scene .net-match, #scene .net-match * { fill: #68e0ff !important; stroke: #68e0ff !important; }
   #scene .net-match { filter: drop-shadow(0 0 0.25px #68e0ff); }
   #scene #net-highlight * { fill: #68e0ff !important; stroke: #68e0ff !important; }
+  #scene .net-match[data-primitive$="region"], #scene #net-highlight [fill-rule="evenodd"] { stroke: none !important; }
   #panel { overflow-y: auto; }
   #panel > * { flex-shrink: 0; }
   #layers-wrap { min-height: 160px; }

@@ -12,7 +12,9 @@ import zlib
 import freetype
 from altium_monkey.altium_embedded_files import EmbeddedFont
 
-from pcb_viewer_gui import get_font_path_with_style, prepare_embedded_fonts, render_file
+from pcb_viewer_gui import (
+    AltiumPcbDoc, get_font_path_with_style, prepare_embedded_fonts, render_file, resolve_polygon_nets,
+)
 
 
 def embedded_font(data, name="Arial", style="Regular"):
@@ -65,8 +67,65 @@ class EmbeddedFontTests(unittest.TestCase):
                 render_file(Path("invalid.PcbDoc"))
 
 
+class PolygonNetTests(unittest.TestCase):
+    def test_poured_copper_inherits_its_polygon_net_in_both_region_streams_and_hatched_fills(self):
+        pcb = SimpleNamespace(nets=[object(), object()], polygons=[SimpleNamespace(net=1)])
+        for collection in ("regions", "shapebased_regions", "tracks", "arcs", "fills"):
+            setattr(pcb, collection, [SimpleNamespace(net_index=None, polygon_index=0),
+                                      SimpleNamespace(net_index=0xFFFF, polygon_index=0)])
+        resolve_polygon_nets(pcb)
+        for collection in ("regions", "shapebased_regions", "tracks", "arcs", "fills"):
+            with self.subTest(collection=collection):
+                self.assertEqual([p.net_index for p in getattr(pcb, collection)], [1, 1])
+
+    def test_existing_primitive_net_wins_over_the_polygon_net(self):
+        primitive = SimpleNamespace(net_index=0, polygon_index=0)
+        pcb = SimpleNamespace(nets=[object(), object()], polygons=[SimpleNamespace(net=1)], regions=[primitive])
+        resolve_polygon_nets(pcb)
+        self.assertEqual(primitive.net_index, 0)
+
+    def test_first_net_is_a_valid_polygon_connection(self):
+        primitive = SimpleNamespace(net_index=0xFFFF, polygon_index=0)
+        pcb = SimpleNamespace(nets=[object()], polygons=[SimpleNamespace(net=0)], regions=[primitive])
+        resolve_polygon_nets(pcb)
+        self.assertEqual(primitive.net_index, 0)
+
+    def test_unlinked_or_invalid_polygon_connections_stay_unlinked(self):
+        for polygon_index in (None, -1, 1, 0xFFFF, 0xFFFFFFFF):
+            with self.subTest(polygon_index=polygon_index):
+                primitive = SimpleNamespace(net_index=None, polygon_index=polygon_index)
+                pcb = SimpleNamespace(nets=[object()], polygons=[SimpleNamespace(net=0)], regions=[primitive])
+                resolve_polygon_nets(pcb)
+                self.assertIsNone(primitive.net_index)
+        for net_index in (None, -1, 1, 0xFFFF, 0xFFFFFFFF):
+            with self.subTest(net_index=net_index):
+                primitive = SimpleNamespace(net_index=0xFFFF, polygon_index=0)
+                pcb = SimpleNamespace(nets=[object()], polygons=[SimpleNamespace(net=net_index)], regions=[primitive])
+                resolve_polygon_nets(pcb)
+                self.assertEqual(primitive.net_index, 0xFFFF)
+
+
 @unittest.skipUnless(os.environ.get("PCB_TEST_FILE"), "Set PCB_TEST_FILE to exercise a real PCB layout")
 class RealBoardTests(unittest.TestCase):
+    def test_real_polygon_copper_gets_net_metadata_without_changing_its_shape(self):
+        path = Path(os.environ["PCB_TEST_FILE"])
+        for legacy_regions in (False, True):
+            with self.subTest(legacy_regions=legacy_regions):
+                pcb = AltiumPcbDoc.from_file(path)
+                if legacy_regions:
+                    pcb.shapebased_regions = []
+                with patch("pcb_viewer_gui.AltiumPcbDoc.from_file", return_value=pcb):
+                    with patch("pcb_viewer_gui.resolve_polygon_nets"):
+                        before = ET.fromstring(render_file(path)["svg"])
+                    after = ET.fromstring(render_file(path)["svg"])
+                kind = "region" if legacy_regions else "shapebased-region"
+                pours = [e for e in after.iter() if e.get("data-primitive") == kind and e.get("data-net") == "GND"]
+                self.assertTrue(pours, "GND pour must participate in net search")
+                originals = {e.get("id"): e for e in before.iter() if e.get("data-primitive") == kind}
+                for pour in pours:
+                    self.assertEqual(pour.get("d"), originals[pour.get("id")].get("d"))
+                    self.assertEqual(pour.get("fill-rule"), "evenodd")
+
     def test_renders_all_views_without_modifying_source(self):
         path = Path(os.environ["PCB_TEST_FILE"])
         original_digest = hashlib.sha256(path.read_bytes()).digest()
