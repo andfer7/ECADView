@@ -125,6 +125,11 @@ PAGE = r"""<!DOCTYPE html>
   h1 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
   #filename { color: var(--muted); font-size: 12px; word-break: break-all; min-height: 1.4em; }
   #warnings { color: #efc578; font-size: 12px; white-space: pre-line; margin-top: 6px; }
+  #component-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
+                     border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
+  #scene .component-match, #scene .component-match * { fill: #ffe066 !important; stroke: #ffe066 !important; }
+  #scene .component-match { filter: drop-shadow(0 0 0.25px #ffe066); }
+  #component-highlight * { fill: #ffe066 !important; stroke: #ffe066 !important; }
   button { background: #3a3e45; color: var(--text); border: 1px solid #4a4f58; border-radius: 4px;
            padding: 5px 8px; cursor: pointer; font: inherit; }
   button:hover { background: #474c56; }
@@ -178,6 +183,14 @@ PAGE = r"""<!DOCTYPE html>
       <button class="primary" id="open">Open boards…</button>
       <div id="filename">No board loaded</div>
       <div id="warnings" role="status" hidden></div>
+    </div>
+    <div>
+      <label for="component-query">Find component</label>
+      <input id="component-query" type="search" list="component-options" placeholder="Designator, e.g. R12" autocomplete="off" disabled>
+      <datalist id="component-options"></datalist>
+      <div class="row"><button id="component-clear">Clear</button><button id="component-fit" disabled>Fit matches</button></div>
+      <button id="component-reveal" hidden>Show matching layers</button>
+      <div id="component-status" class="hint" role="status"></div>
     </div>
     <div>
       <div class="opt"><span>View</span>
@@ -290,6 +303,7 @@ PAGE = r"""<!DOCTYPE html>
     layersEl.replaceChildren();
     if (svg) { view.prepend(svg); buildLayers(); apply(); }
     updateTabs();
+    mountComponentSearch();
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
     else $('view').removeAttribute('aria-labelledby');
   }
@@ -365,6 +379,78 @@ PAGE = r"""<!DOCTYPE html>
 
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 5000); }
 
+  // ------------------------------------------------------------ component search
+  let componentIndex = new Map(), componentHits = [];
+  function mountComponentSearch() {
+    componentIndex = new Map(); componentHits = [];
+    for (const el of svg?.querySelectorAll('#scene [data-component]') || []) {
+      const name = el.dataset.component;
+      if (!name) continue;
+      if (!componentIndex.has(name)) componentIndex.set(name, []);
+      componentIndex.get(name).push(el);
+    }
+    $('component-options').replaceChildren(...[...componentIndex.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(name => {
+      const option = document.createElement('option'); option.value = name; return option;
+    }));
+    $('component-query').disabled = !svg;
+    $('component-query').value = activeBoard?.componentQuery || '';
+    searchComponents();
+  }
+  function searchComponents() {
+    for (const el of componentHits) el.classList.remove('component-match');
+    componentHits = [];
+    const query = $('component-query').value.trim().toLowerCase();
+    if (activeBoard) activeBoard.componentQuery = $('component-query').value;
+    const names = [...componentIndex.keys()];
+    const exact = names.find(name => name.toLowerCase() === query);
+    const matches = query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : [];
+    for (const name of matches) componentHits.push(...componentIndex.get(name));
+    for (const el of componentHits) el.classList.add('component-match');
+    updateComponentStatus(matches.length);
+  }
+  function updateComponentStatus(count = new Set(componentHits.map(el => el.dataset.component)).size) {
+    svg?.querySelector('#component-highlight')?.remove();
+    const overlay = document.createElementNS(NS, 'g'); overlay.id = 'component-highlight';
+    overlay.style.pointerEvents = 'none';
+    const matched = new Set(componentHits), branches = new Set();
+    for (const el of componentHits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
+    // Copy just the matching branches, retaining ancestor transforms and clips.
+    // The overlay paints above other layers without changing their paint order.
+    function branch(node) {
+      if (matched.has(node)) return node.cloneNode(true);
+      const copy = node.cloneNode(false);
+      for (const child of node.children) if (branches.has(child)) copy.append(branch(child));
+      return copy;
+    }
+    for (const g of groups) if (g.style.display !== 'none' && branches.has(g)) overlay.append(branch(g));
+    for (const el of overlay.querySelectorAll('*')) {
+      el.removeAttribute('id'); el.classList.remove('component-match');
+      for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
+    }
+    if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
+    const hidden = groups.filter(g => g.style.display === 'none' && branches.has(g)).length;
+    $('component-fit').disabled = !overlay.childElementCount;
+    $('component-reveal').hidden = !hidden;
+    $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
+      `${count} component${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
+  }
+  $('component-query').oninput = searchComponents;
+  $('component-clear').onclick = () => { $('component-query').value = ''; searchComponents(); };
+  $('component-fit').onclick = () => {
+    const rects = componentHits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
+    if (!rects.length) return;
+    const bounds = rects.reduce((b, r) => ({ left: Math.min(b.left, r.left), top: Math.min(b.top, r.top),
+      right: Math.max(b.right, r.right), bottom: Math.max(b.bottom, r.bottom) }), rects[0]);
+    const a = toSvg({ clientX: bounds.left, clientY: bounds.top });
+    const b = toSvg({ clientX: bounds.right, clientY: bounds.bottom });
+    const pad = Math.max(b.x - a.x, b.y - a.y, 2) * 0.25;
+    vb = { x: a.x - pad, y: a.y - pad, w: b.x - a.x + 2 * pad, h: b.y - a.y + 2 * pad }; apply();
+  };
+  $('component-reveal').onclick = () => {
+    for (const g of groups) if (g.style.display === 'none' && componentHits.some(el => g.contains(el))) g._cb.click();
+    updateComponentStatus();
+  };
+
   // ------------------------------------------------------------ layers
   function defaultLayerVisible(g) {
     const { layerRole: role, layerFamily: family, layerToken: token } = g.dataset;
@@ -388,6 +474,7 @@ PAGE = r"""<!DOCTYPE html>
         g.style.display = cb.checked ? '' : 'none';
         // SVG paints later siblings on top; retain the scene's transforms and clipping.
         if (cb.checked) g.parentNode.append(g);
+        updateComponentStatus();
       };
       const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = color;
       lab.append(cb, sw, document.createTextNode(name));
@@ -395,7 +482,7 @@ PAGE = r"""<!DOCTYPE html>
       layersEl.append(lab); g._cb = cb;
     }
   }
-  const setAll = v => groups.forEach(g => { g._cb.checked = v; g.style.display = v ? '' : 'none'; });
+  const setAll = v => { groups.forEach(g => { g._cb.checked = v; g.style.display = v ? '' : 'none'; }); updateComponentStatus(); };
   $('all').onclick = () => setAll(true);
   $('none').onclick = () => setAll(false);
 

@@ -326,7 +326,82 @@ test('uploads the affected layout through the real Python server', {
   assert.equal(await page.locator('[data-text-fallback]').count(), 0);
   assert.equal(await page.locator('#toast').isVisible(), false);
   assert.ok(await page.locator('#layers input').count() > 0);
+  const designator = await page.locator('#component-options option').first().getAttribute('value');
+  assert.ok(designator, 'real renderer exposes component designators');
+  await page.locator('#component-query').fill(designator);
+  assert.ok(await page.locator('#scene .component-match').count() > 0);
+  await page.locator('#component-fit').click();
   if (process.env.PCB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.PCB_TEST_SCREENSHOT });
+});
+
+const componentBoardData = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+  <g id="scene"><g id="layer-top" data-layer-name="Top copper">
+    <rect data-component="R1" x="10" y="10" width="10" height="5" fill="red"/>
+    <circle data-component="R1" cx="25" cy="12" r="2" fill="red"/>
+    <rect data-component="R10" x="40" y="10" width="10" height="5" fill="red"/>
+    <rect data-component="U[1]&quot;" x="60" y="30" width="10" height="5" fill="red"/>
+  </g><g id="layer-bottom" data-layer-name="Bottom copper"><rect width="100" height="80" fill="blue"/><rect data-component="C2" x="70" y="50" width="10" height="5"/></g></g></svg>` });
+
+test('finds components case insensitively, prefers exact designators and safely clears highlighting', async t => {
+  const { page, requests } = await openPage(t, { render: (route, name) => reply(route, componentBoardData(name)) });
+  assert.equal(await page.locator('#component-query').isDisabled(), true);
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  assert.deepEqual(await page.locator('#component-options option').evaluateAll(os => os.map(o => o.value)), ['C2', 'R1', 'R10', 'U[1]"']);
+  await page.locator('#component-query').fill('r');
+  assert.equal(await page.locator('.component-match').count(), 3);
+  assert.match(await page.locator('#component-status').textContent(), /2 components highlighted/);
+  await page.locator('#component-query').fill('r1');
+  assert.equal(await page.locator('.component-match').count(), 2);
+  assert.equal(await page.locator('.component-match').first().evaluate(el => getComputedStyle(el).fill), 'rgb(255, 224, 102)');
+  assert.equal(await page.locator('#scene > g').last().getAttribute('id'), 'component-highlight');
+  assert.equal(await page.locator('#component-highlight [id], #component-highlight [data-component]').count(), 0);
+  assert.equal(await page.locator('.component-match').first().evaluate(el => {
+    const r = el.getBoundingClientRect();
+    const overlay = document.querySelector('#component-highlight');
+    overlay.style.pointerEvents = 'auto';
+    const color = getComputedStyle(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)).fill;
+    overlay.style.pointerEvents = 'none';
+    return color;
+  }), 'rgb(255, 224, 102)', 'highlight is visible above the overlapping blue layer');
+  await page.locator('#component-fit').click();
+  assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), '0 0 100 80');
+  await page.locator('#component-query').fill('U[1]"');
+  assert.equal(await page.locator('.component-match').count(), 1);
+  await page.locator('#component-query').fill('missing');
+  assert.equal(await page.locator('.component-match').count(), 0);
+  assert.equal(await page.locator('#component-status').textContent(), 'No matching components.');
+  await page.locator('#component-clear').click();
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  assert.equal(await page.locator('#component-status').textContent(), '');
+  assert.equal(await page.locator('[data-component="R1"]').first().getAttribute('fill'), 'red');
+  assert.equal(requests.length, 1, 'searching stays in the browser');
+});
+
+test('keeps component searches with their board across tabs and rerenders and can reveal matching layers', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, componentBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.getByRole('checkbox', { name: 'Bottom copper', exact: true }).uncheck();
+  await page.locator('#component-query').fill('c2');
+  assert.match(await page.locator('#component-status').textContent(), /1 hidden layer/);
+  await page.locator('#component-reveal').click();
+  assert.equal(await page.getByRole('checkbox', { name: 'Bottom copper', exact: true }).isChecked(), true);
+  assert.equal(await page.locator('#component-reveal').isVisible(), false);
+  await page.locator('#none').click();
+  assert.equal(await page.locator('#component-reveal').isVisible(), true);
+  await page.locator('#all').click();
+  assert.equal(await page.locator('#component-reveal').isVisible(), false);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  assert.equal(await page.locator('.component-match').count(), 0);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'c2');
+  assert.equal(await page.locator('.component-match').count(), 1);
+  await page.locator('#rerender').click(); await loaded(page, 'A.PcbDoc');
+  assert.equal(await page.locator('.component-match').count(), 1);
+  await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
+  await page.getByRole('button', { name: 'Close B.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-query').isDisabled(), true);
+  assert.equal(await page.locator('#component-options option').count(), 0);
 });
 
 test('new boards show only copper, top overlay, outline and drills; rerenders preserve choices', async t => {
@@ -355,6 +430,7 @@ test('new boards show only copper, top overlay, outline and drills; rerenders pr
 async function loadedWithoutName(page) {
   await page.waitForFunction(() => document.querySelector('#view > svg') && document.querySelector('#busy').style.display === 'none');
 }
+
 test('retains multiple measurements with labels and units, cancels previews and clears only the active board', async t => {
   const { page } = await openPage(t);
   await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
