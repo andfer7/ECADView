@@ -139,9 +139,6 @@ PAGE = r"""<!DOCTYPE html>
   button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .row { display: flex; gap: 6px; margin-top: 6px; }
   .row button { flex: 1; }
-  .opt { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
-  .opt select, .opt input[type=text] { flex: 1; background: #1b1d21; color: var(--text); border: 1px solid var(--line);
-                                       border-radius: 4px; padding: 3px 6px; font: inherit; }
   #layers label { display: flex; align-items: center; gap: 6px; padding: 3px 2px; cursor: pointer;
                   border-radius: 3px; user-select: none; }
   #layers label:hover { background: #2e3238; }
@@ -201,14 +198,6 @@ PAGE = r"""<!DOCTYPE html>
       <div id="component-status" class="hint" role="status"></div>
     </div>
     <div>
-      <div class="opt"><span>View</span>
-        <select id="side"><option value="all">All layers</option><option value="top">Top side</option><option value="bottom">Bottom side</option></select></div>
-      <div class="opt"><input type="checkbox" id="outlines"><label for="outlines">Polygon outlines</label></div>
-      <div class="opt"><input type="checkbox" id="clip"><label for="clip">Clip copper to board outline</label></div>
-      <div class="opt"><span>Pour colour</span><input type="text" id="pour" placeholder="layer colour" size="8"></div>
-      <div class="row"><button id="rerender">Re-render</button></div>
-    </div>
-    <div>
       <label for="net-query">Find net</label>
       <input id="net-query" type="search" list="net-options" placeholder="Net name, e.g. GND" autocomplete="off" disabled>
       <datalist id="net-options"></datalist>
@@ -248,17 +237,12 @@ PAGE = r"""<!DOCTYPE html>
   let activeBoard = null, nextBoardId = 1;
 
   // ------------------------------------------------------------ board tabs / loading
-  const defaultOptions = () => ({ side: 'all', clip: false, outlines: false, pour: '' });
-  function readOptions() {
-    return { side: $('side').value, clip: $('clip').checked,
-             outlines: $('outlines').checked, pour: $('pour').value };
-  }
   function saveBoard() {
     if (!activeBoard) return;
-    Object.assign(activeBoard, { svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg, options: readOptions() });
+    Object.assign(activeBoard, { svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg });
   }
   function createBoard(file, name = file.name) {
-    const board = { id: nextBoardId++, file, name, stats: null, warnings: [], options: defaultOptions(),
+    const board = { id: nextBoardId++, file, name, stats: null, warnings: [],
                     svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false,
                     pts: [], measurements: [], hover: null, mg: null, loading: false, request: 0 };
     boards.push(board);
@@ -303,9 +287,6 @@ PAGE = r"""<!DOCTYPE html>
     ({ svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg } = board || {
       svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], measurements: [], hover: null, mg: null,
     });
-    const options = board ? board.options : defaultOptions();
-    $('side').value = options.side; $('clip').checked = options.clip;
-    $('outlines').checked = options.outlines; $('pour').value = options.pour;
     $('filename').textContent = board ? board.name : 'No board loaded';
     $('warnings').textContent = board ? board.warnings.join('\n') : '';
     $('warnings').hidden = !$('warnings').textContent;
@@ -345,14 +326,11 @@ PAGE = r"""<!DOCTYPE html>
     board.controller?.abort();
     const controller = new AbortController(); board.controller = controller;
     const request = ++board.request;
-    const options = board.options;
-    const q = new URLSearchParams({ side: options.side, clip: options.clip ? 1 : 0,
-                                   outlines: options.outlines ? 1 : 0, pour: options.pour.trim() });
     board.loading = true;
     updateTabs();
     if (board === activeBoard) $('busy').style.display = 'flex';
     try {
-      const r = await fetch('/render?' + q, { method: 'POST', headers: { 'X-Filename': encodeURIComponent(board.file.name) }, body: board.file, signal: controller.signal });
+      const r = await fetch('/render', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(board.file.name) }, body: board.file, signal: controller.signal });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || r.statusText);
       if (boards.includes(board) && request === board.request) show(board, data);
@@ -388,8 +366,6 @@ PAGE = r"""<!DOCTYPE html>
 
   $('open').onclick = () => $('file').click();
   $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
-  $('rerender').onclick = () => activeBoard ? renderBoard(activeBoard) : toast('Open a board first.');
-  ['side', 'clip', 'outlines'].forEach(id => $(id).onchange = () => activeBoard && renderBoard(activeBoard));
   view.addEventListener('dragover', e => { e.preventDefault(); view.classList.add('drop'); });
   view.addEventListener('dragleave', () => view.classList.remove('drop'));
   view.addEventListener('drop', e => { e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files); });

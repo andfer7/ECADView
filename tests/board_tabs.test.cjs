@@ -68,7 +68,7 @@ async function openPage(t, { render, initial = {} } = {}) {
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, []); });
   await page.route('**/initial', route => reply(route, initial));
-  await page.route('**/render?*', route => {
+  await page.route('**/render', route => {
     const request = route.request();
     const name = decodeURIComponent(request.headers()['x-filename']);
     requests.push({ name, url: new URL(request.url()), body: request.postDataBuffer() });
@@ -99,20 +99,10 @@ test('opens multiple files, switches tabs, and closes back to the empty view', a
   await loaded(page, 'A.PcbDoc');
 });
 
-test('preserves each board’s layers, zoom, pan, measurements, units, and render settings', async t => {
+test('preserves each board’s layers, zoom, pan, measurements, and units', async t => {
   const { page, requests } = await openPage(t);
   await page.locator('#file').setInputFiles(file('A.PcbDoc'));
   await loaded(page, 'A.PcbDoc');
-  await page.locator('#side').selectOption('top');
-  await loaded(page, 'A.PcbDoc');
-  await page.locator('#clip').check();
-  await loaded(page, 'A.PcbDoc');
-  await page.locator('#outlines').check();
-  await loaded(page, 'A.PcbDoc');
-  await page.locator('#pour').fill('#123456');
-  await page.locator('#rerender').click();
-  await loaded(page, 'A.PcbDoc');
-  assert.equal(requests.at(-1).url.searchParams.get('pour'), '#123456');
   await page.locator('#layers input').first().uncheck();
   await page.locator('#view').dispatchEvent('wheel', { deltaY: -250, clientX: 600, clientY: 400 });
   await page.mouse.move(600, 400); await page.mouse.down();
@@ -126,24 +116,16 @@ test('preserves each board’s layers, zoom, pan, measurements, units, and rende
   assert.match(measurement, /^dist .* mil/);
   await page.locator('#file').setInputFiles(file('B.PcbDoc'));
   await loaded(page, 'B.PcbDoc');
-  assert.equal(await page.locator('#side').inputValue(), 'all');
-  assert.equal(await page.locator('#clip').isChecked(), false);
   assert.equal(await page.locator('#layers input').first().isChecked(), true);
   assert.equal(await page.locator('#measure line').count(), 0);
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
-  assert.equal(await page.locator('#side').inputValue(), 'top');
-  assert.equal(await page.locator('#clip').isChecked(), true);
-  assert.equal(await page.locator('#outlines').isChecked(), true);
-  assert.equal(await page.locator('#pour').inputValue(), '#123456');
   assert.equal(await page.locator('#layers input').first().isChecked(), false);
   assert.equal(await page.locator('#scene > g').first().evaluate(g => g.style.display), 'none');
   assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewBox);
   assert.equal(await page.locator('#readout').textContent(), measurement);
   assert.equal(await page.locator('#measure line').count(), 1);
   assert.equal(await page.locator('#measure-btn').getAttribute('class'), 'on');
-  await page.locator('#rerender').click(); await loaded(page, 'A.PcbDoc');
-  assert.equal(requests.at(-1).name, 'A.PcbDoc');
-  assert.equal(requests.at(-1).body.toString(), 'A.PcbDoc');
+  assert.equal(requests.length, 2, 'switching tabs preserves the view without rendering again');
 });
 
 test('shows the last enabled layer above overlapping layers without reordering bulk actions', async t => {
@@ -214,7 +196,7 @@ test('background renders stay in their own tabs and closing a pending tab cancel
   assert.equal(await page.getByRole('tab').count(), 2);
 });
 
-test('failed uploads and re-renders preserve previously loaded boards', async t => {
+test('failed uploads preserve previously loaded boards', async t => {
   let fail = false;
   const { page } = await openPage(t, {
     render: (route, name) => fail ? reply(route, { error: 'Invalid board' }, 500) : reply(route, boardData(name)),
@@ -225,42 +207,18 @@ test('failed uploads and re-renders preserve previously loaded boards', async t 
   await page.waitForFunction(() => document.querySelectorAll('[role=tab]').length === 1);
   assert.equal(await activeName(page), 'A.PcbDoc');
   assert.match(await page.locator('#toast').textContent(), /Invalid.PcbDoc.*Invalid board/);
-  await page.locator('#rerender').click(); await loaded(page, 'A.PcbDoc');
-  assert.equal(await page.getByRole('tab').count(), 1);
-  assert.match(await page.locator('#toast').textContent(), /A.PcbDoc.*Invalid board/);
-});
-
-test('rapid render setting changes keep the newest result', async t => {
-  const pending = new Map(), arrivals = new Map();
-  const waitForSide = side => new Promise(resolve => arrivals.set(side, resolve));
-  const { page } = await openPage(t, { render: (route, name) => {
-    const side = new URL(route.request().url()).searchParams.get('side');
-    if (side === 'all') return reply(route, boardData(name));
-    pending.set(side, route); arrivals.get(side)?.();
-  } });
-  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
-  const top = waitForSide('top');
-  await page.locator('#side').selectOption('top'); await top;
-  const bottom = waitForSide('bottom');
-  await page.locator('#side').selectOption('bottom'); await bottom;
-  const data = boardData('A.PcbDoc');
-  data.svg = data.svg.replace('<svg ', '<svg data-side="bottom" ');
-  await reply(pending.get('bottom'), data); await loaded(page, 'A.PcbDoc');
-  await reply(pending.get('top'), boardData('A.PcbDoc')).catch(() => {});
-  assert.equal(await page.locator('#side').inputValue(), 'bottom');
-  assert.equal(await page.locator('#view > svg').getAttribute('data-side'), 'bottom');
   assert.equal(await page.getByRole('tab').count(), 1);
 });
 
-test('command-line boards support tabs and retain their source for re-rendering', async t => {
+test('command-line boards support tab switching without uploading again', async t => {
   const data = { ...boardData('Initial.PcbDoc'), source: Buffer.from([0, 128, 255, 42]).toString('base64') };
   const { page, requests } = await openPage(t, { initial: data });
   await loaded(page, 'Initial.PcbDoc');
   await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
   await page.getByRole('tab', { name: 'Initial.PcbDoc', exact: true }).click();
-  await page.locator('#rerender').click(); await loaded(page, 'Initial.PcbDoc');
-  assert.equal(requests.at(-1).name, 'Initial.PcbDoc');
-  assert.deepEqual(requests.at(-1).body, Buffer.from([0, 128, 255, 42]));
+  await loaded(page, 'Initial.PcbDoc');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].name, 'B.PcbDoc');
 });
 
 test('supports dropping multiple boards and keyboard navigation and closing', async t => {
@@ -382,7 +340,7 @@ test('finds nets case insensitively, prefers exact net names and safely clears h
   assert.equal(requests.length, 1, 'searching stays in the browser');
 });
 
-test('keeps net searches with their board across tabs and rerenders and can reveal matching layers', async t => {
+test('keeps net searches with their board across tabs and can reveal matching layers', async t => {
   const { page } = await openPage(t, { render: (route, name) => reply(route, netBoardData(name)) });
   await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
   await page.getByRole('checkbox', { name: 'Bottom copper', exact: true }).uncheck();
@@ -400,8 +358,6 @@ test('keeps net searches with their board across tabs and rerenders and can reve
   assert.equal(await page.locator('.net-match').count(), 0);
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#net-query').inputValue(), 'vcc');
-  assert.equal(await page.locator('.net-match').count(), 1);
-  await page.locator('#rerender').click(); await loaded(page, 'A.PcbDoc');
   assert.equal(await page.locator('.net-match').count(), 1);
   await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
   await page.getByRole('button', { name: 'Close B.PcbDoc', exact: true }).click();
@@ -439,7 +395,7 @@ test('sidebar scrolls to keep layers and measurements accessible in short window
   assert.equal(await page.locator('#measure-btn').getAttribute('class'), 'on');
 });
 
-test('new boards show only copper, top overlay, outline and drills; rerenders preserve choices', async t => {
+test('new boards show only copper, top overlay, outline and drills; tabs preserve choices', async t => {
   const data = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"><g id="scene">
     <g id="signal" data-layer-family="signal" data-layer-display-name="Custom signal"/>
     <g id="plane" data-layer-family="internal_plane"/>
@@ -455,8 +411,6 @@ test('new boards show only copper, top overlay, outline and drills; rerenders pr
   const visible = () => page.locator('#scene > g').evaluateAll(gs => gs.filter(g => g.style.display !== 'none').map(g => g.id));
   assert.deepEqual(await visible(), ['signal', 'plane', 'top-overlay', 'board-outline', 'layer-DRILLS']);
   await page.locator('#all').click(); assert.equal((await visible()).length, 9);
-  await page.locator('#rerender').click(); await loadedWithoutName(page);
-  assert.equal((await visible()).length, 9);
   await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loadedWithoutName(page);
   assert.equal((await visible()).length, 5);
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
@@ -542,7 +496,7 @@ test('finds components case insensitively, prefers exact designators and safely 
   assert.equal(requests.length, 1, 'searching stays in the browser');
 });
 
-test('keeps component searches with their board across tabs and rerenders and can reveal matching layers', async t => {
+test('keeps component searches with their board across tabs and can reveal matching layers', async t => {
   const { page } = await openPage(t, { render: (route, name) => reply(route, componentBoardData(name)) });
   await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
   await page.getByRole('checkbox', { name: 'Bottom copper', exact: true }).uncheck();
@@ -560,8 +514,6 @@ test('keeps component searches with their board across tabs and rerenders and ca
   assert.equal(await page.locator('.component-match').count(), 0);
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#component-query').inputValue(), 'c2');
-  assert.equal(await page.locator('.component-match').count(), 1);
-  await page.locator('#rerender').click(); await loaded(page, 'A.PcbDoc');
   assert.equal(await page.locator('.component-match').count(), 1);
   await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
   await page.getByRole('button', { name: 'Close B.PcbDoc', exact: true }).click();
