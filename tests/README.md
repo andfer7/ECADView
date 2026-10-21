@@ -1,0 +1,23 @@
+The browser regression tests exercise the viewer's actual HTML and JavaScript with
+small SVG fixtures in place of the Altium renderer. They require Node.js and
+Playwright. To install the test tools outside the project:
+
+```sh
+npm install --prefix /tmp/pcb-viewer-tests --no-save playwright
+/tmp/pcb-viewer-tests/node_modules/.bin/playwright install chromium
+NODE_PATH=/tmp/pcb-viewer-tests/node_modules node --test tests/board_tabs.test.cjs
+```
+
+To use an installed Google Chrome instead of downloading Chromium, skip the
+browser installation and add `PLAYWRIGHT_CHANNEL=chrome` to the test command.
+
+Font validation and rendering tests use the project's Python environment:
+
+```sh
+.venv/bin/python -B -m unittest discover -s tests -v
+```
+
+Set `PCB_TEST_FILE` to the path of the affected GasWellShutoff.PcbDoc to also
+exercise all three render modes and an actual browser upload through the Python
+server. This optional fixture stays outside the repository. Set
+`PCB_TEST_PYTHON` if the Python environment is somewhere other than `.venv`.

@@ -4,4 +4,5 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "altium-monkey>=2026.9.22",
+    "freetype-py>=2.5.1",
 ]

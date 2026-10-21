@@ -6,14 +6,17 @@ Standalone Altium PCB viewer.
     python pcb_viewer_gui.py board.PcbDoc    # ...and loads this board straight away
     python pcb_viewer_gui.py --browser default
 
-Pick .PcbDoc files with the "Open board" button (or drag & drop them onto the
-page). Everything runs locally; the file is parsed by altium-monkey on your
+Pick .PcbDoc files with the "Open boards" button (or drag & drop them onto the
+page). Each board opens in its own tab. Everything runs locally; the file is parsed by altium-monkey on your
 machine and only the rendered SVG is sent to the browser tab.
 
 Requires:  pip install altium-monkey   (Python 3.12+)
 """
 
 import argparse
+import base64
+from dataclasses import replace
+from io import BytesIO
 import json
 import secrets
 import subprocess
@@ -22,12 +25,15 @@ import tempfile
 import threading
 import urllib.parse
 import webbrowser
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 try:
+    import freetype
     from altium_monkey import AltiumPcbDoc, PcbSvgRenderOptions
     from altium_monkey.altium_pcb_surface import PCB_SurfaceSide
+    from altium_monkey.altium_ttf_metrics import get_font_path_with_style
 except ImportError:
     sys.exit("altium-monkey is not installed. Run:  pip install altium-monkey")
 
@@ -36,9 +42,40 @@ except ImportError:
 # Rendering
 # ---------------------------------------------------------------------------
 
+def prepare_embedded_fonts(pcb: AltiumPcbDoc) -> list[str]:
+    """Replace fonts FreeType cannot read in the parsed copy of the board."""
+    fonts, warnings = [], []
+    for font in pcb.embedded_fonts:
+        try:
+            freetype.Face(BytesIO(font.decompress()))
+        except freetype.FT_Exception:
+            style = f"{font.name} {font.style}".lower()
+            font_path = get_font_path_with_style(
+                font.name, bold="bold" in style,
+                italic="italic" in style or "oblique" in style,
+            )
+            if not font_path:
+                raise RuntimeError(f'Embedded font "{font.name}" is unreadable and no replacement font is available.')
+            try:
+                replacement = Path(font_path).read_bytes()
+                freetype.Face(BytesIO(replacement))
+            except (OSError, freetype.FT_Exception) as exc:
+                raise RuntimeError(f'Could not load a replacement for unreadable embedded font "{font.name}".') from exc
+            fonts.append(replace(font, compressed_data=zlib.compress(replacement), raw_data=b""))
+            warnings.append(
+                f'Embedded font "{font.name}" could not be read; using "{Path(font_path).stem}". '
+                'Text shape and spacing may differ.'
+            )
+        else:
+            fonts.append(font)
+    pcb.embedded_fonts = fonts
+    return warnings
+
+
 def render_file(path: Path, side: str = "all", clip: bool = False,
                 pour_color: str | None = None, polygon_outlines: bool = False) -> dict:
     pcb = AltiumPcbDoc.from_file(path)
+    warnings = prepare_embedded_fonts(pcb)
     options = PcbSvgRenderOptions(
         show_board_outline=True,
         clip_copper_to_board_outline=clip,
@@ -55,6 +92,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
     return {
         "svg": svg,
         "name": path.name,
+        "warnings": warnings,
         "stats": {
             "components": len(pcb.components),
             "pads": len(pcb.pads),
@@ -86,6 +124,7 @@ PAGE = r"""<!DOCTYPE html>
   #layers-wrap { flex: 1; overflow-y: auto; }
   h1 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
   #filename { color: var(--muted); font-size: 12px; word-break: break-all; min-height: 1.4em; }
+  #warnings { color: #efc578; font-size: 12px; white-space: pre-line; margin-top: 6px; }
   button { background: #3a3e45; color: var(--text); border: 1px solid #4a4f58; border-radius: 4px;
            padding: 5px 8px; cursor: pointer; font: inherit; }
   button:hover { background: #474c56; }
@@ -107,7 +146,16 @@ PAGE = r"""<!DOCTYPE html>
   #readout { font: 12px/1.5 ui-monospace, Consolas, monospace; color: #bbb; white-space: pre;
              background: #1b1d21; border-radius: 4px; padding: 6px; margin-top: 6px; min-height: 3.6em; }
   .hint { color: var(--muted); font-size: 11px; }
-  #view { flex: 1; overflow: hidden; cursor: grab; position: relative; }
+  #workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #tabs { display: flex; flex: none; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); }
+  #tabs:empty { display: none; }
+  .tab { display: flex; align-items: center; flex: none; border-right: 1px solid var(--line); }
+  .tab.active { background: var(--bg); box-shadow: inset 0 2px var(--accent); }
+  .tab button { background: transparent; border: 0; border-radius: 0; }
+  .tab button:hover { background: #474c56; }
+  .tab-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 12px; }
+  .tab-close { margin-right: 4px; }
+  #view { flex: 1; min-height: 0; overflow: hidden; cursor: grab; position: relative; }
   #view:active { cursor: grabbing; }
   #view.measuring, #view.measuring:active { cursor: crosshair; }
   #view.drop { outline: 3px dashed var(--accent); outline-offset: -3px; }
@@ -126,9 +174,10 @@ PAGE = r"""<!DOCTYPE html>
   <div id="panel">
     <div>
       <h1>PCB viewer</h1>
-      <input id="file" type="file" accept=".PcbDoc,.pcbdoc" hidden>
-      <button class="primary" id="open">Open board…</button>
+      <input id="file" type="file" accept=".PcbDoc,.pcbdoc" multiple hidden>
+      <button class="primary" id="open">Open boards…</button>
       <div id="filename">No board loaded</div>
+      <div id="warnings" role="status" hidden></div>
     </div>
     <div>
       <div class="opt"><span>View</span>
@@ -150,11 +199,14 @@ PAGE = r"""<!DOCTYPE html>
     </div>
     <div id="stats"></div>
   </div>
-  <div id="view">
-    <div id="empty">Open a .PcbDoc file<br>or drop one here</div>
-    <div id="measure-label"></div>
-    <div id="toast"></div>
-    <div id="busy">Rendering…</div>
+  <div id="workspace">
+    <div id="tabs" role="tablist" aria-label="Open boards"></div>
+    <div id="view" role="tabpanel" aria-label="Board view">
+      <div id="empty">Open .PcbDoc files<br>or drop them here</div>
+      <div id="measure-label"></div>
+      <div id="toast"></div>
+      <div id="busy">Rendering…</div>
+    </div>
   </div>
 </div>
 <script>
@@ -162,47 +214,150 @@ PAGE = r"""<!DOCTYPE html>
   const $ = id => document.getElementById(id);
   const view = $('view'), layersEl = $('layers'), readout = $('readout'), label = $('measure-label');
   const NS = 'http://www.w3.org/2000/svg';
-  let svg = null, groups = [], vb = null, home = null, lastFile = null;
+  let svg = null, groups = [], vb = null, home = null;
+  const boards = [];
+  let activeBoard = null, nextBoardId = 1;
 
-  // ------------------------------------------------------------ loading
-  async function loadFile(file) {
-    if (!file) return;
-    lastFile = file;
-    const q = new URLSearchParams({
-      side: $('side').value, clip: $('clip').checked ? 1 : 0,
-      outlines: $('outlines').checked ? 1 : 0, pour: $('pour').value.trim(),
+  // ------------------------------------------------------------ board tabs / loading
+  const defaultOptions = () => ({ side: 'all', clip: false, outlines: false, pour: '' });
+  function readOptions() {
+    return { side: $('side').value, clip: $('clip').checked,
+             outlines: $('outlines').checked, pour: $('pour').value };
+  }
+  function saveBoard() {
+    if (!activeBoard) return;
+    Object.assign(activeBoard, { svg, groups, vb, home, unit, measuring, pts, hover, mg, options: readOptions() });
+  }
+  function createBoard(file, name = file.name) {
+    const board = { id: nextBoardId++, file, name, stats: null, warnings: [], options: defaultOptions(),
+                    svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false,
+                    pts: [], hover: null, mg: null, loading: false, request: 0 };
+    boards.push(board);
+    return board;
+  }
+  function updateTabs() {
+    $('tabs').replaceChildren();
+    for (const board of boards) {
+      const tab = document.createElement('div');
+      tab.className = 'tab' + (board === activeBoard ? ' active' : '');
+      const button = document.createElement('button');
+      button.className = 'tab-name'; button.id = 'board-tab-' + board.id;
+      button.textContent = board.name + (board.loading ? ' …' : ''); button.title = board.name;
+      button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', 'view');
+      button.setAttribute('aria-selected', String(board === activeBoard));
+      button.tabIndex = board === activeBoard ? 0 : -1;
+      button.onclick = () => activateBoard(board);
+      button.onkeydown = e => {
+        const index = boards.indexOf(board);
+        let target;
+        if (e.key === 'ArrowRight') target = boards[(index + 1) % boards.length];
+        if (e.key === 'ArrowLeft') target = boards[(index + boards.length - 1) % boards.length];
+        if (e.key === 'Home') target = boards[0];
+        if (e.key === 'End') target = boards[boards.length - 1];
+        if (e.key === 'Delete') { e.preventDefault(); closeBoard(board); }
+        if (target) { e.preventDefault(); activateBoard(target); $('board-tab-' + target.id).focus(); }
+      };
+      const close = document.createElement('button');
+      close.className = 'tab-close'; close.textContent = '×';
+      close.setAttribute('aria-label', 'Close ' + board.name);
+      close.onclick = () => closeBoard(board);
+      tab.append(button, close); $('tabs').append(tab);
+    }
+  }
+  function activateBoard(board) {
+    saveBoard();
+    mountBoard(board);
+  }
+  function mountBoard(board) {
+    if (svg) svg.remove();
+    activeBoard = board; drag = null;
+    ({ svg, groups, vb, home, unit, measuring, pts, hover, mg } = board || {
+      svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], hover: null, mg: null,
     });
-    $('busy').style.display = 'flex';
+    const options = board ? board.options : defaultOptions();
+    $('side').value = options.side; $('clip').checked = options.clip;
+    $('outlines').checked = options.outlines; $('pour').value = options.pour;
+    $('filename').textContent = board ? board.name : 'No board loaded';
+    $('warnings').textContent = board ? board.warnings.join('\n') : '';
+    $('warnings').hidden = !$('warnings').textContent;
+    const s = board && board.stats;
+    $('stats').textContent = s ? `${s.components} components, ${s.pads} pads, ${s.tracks} tracks, ${s.vias} vias\n${s.polygons} polygons, ${s.regions} poured regions` : '';
+    $('empty').style.display = board ? 'none' : '';
+    $('busy').style.display = board && board.loading ? 'flex' : 'none';
+    label.style.display = 'none'; readout.textContent = '';
+    $('measure-btn').classList.toggle('on', measuring); view.classList.toggle('measuring', measuring);
+    document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
+    layersEl.replaceChildren();
+    if (svg) { view.prepend(svg); buildLayers(); apply(); }
+    updateTabs();
+    if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
+    else $('view').removeAttribute('aria-labelledby');
+  }
+  function closeBoard(board) {
+    const index = boards.indexOf(board);
+    if (index < 0) return;
+    board.controller?.abort();
+    boards.splice(index, 1);
+    if (board === activeBoard) mountBoard(boards[Math.min(index, boards.length - 1)] || null);
+    else updateTabs();
+    if (activeBoard) $('board-tab-' + activeBoard.id).focus();
+  }
+  function openFiles(files) {
+    for (const file of files) {
+      const board = createBoard(file);
+      activateBoard(board);
+      renderBoard(board);
+    }
+  }
+  async function renderBoard(board) {
+    if (board === activeBoard) saveBoard();
+    board.controller?.abort();
+    const controller = new AbortController(); board.controller = controller;
+    const request = ++board.request;
+    const options = board.options;
+    const q = new URLSearchParams({ side: options.side, clip: options.clip ? 1 : 0,
+                                   outlines: options.outlines ? 1 : 0, pour: options.pour.trim() });
+    board.loading = true;
+    updateTabs();
+    if (board === activeBoard) $('busy').style.display = 'flex';
     try {
-      const r = await fetch('/render?' + q, { method: 'POST', headers: { 'X-Filename': encodeURIComponent(file.name) }, body: file });
+      const r = await fetch('/render?' + q, { method: 'POST', headers: { 'X-Filename': encodeURIComponent(board.file.name) }, body: board.file, signal: controller.signal });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || r.statusText);
-      show(data);
+      if (boards.includes(board) && request === board.request) show(board, data);
     } catch (e) {
-      toast('Could not render this file: ' + e.message);
+      if (e.name !== 'AbortError' && boards.includes(board) && request === board.request) {
+        toast('Could not render ' + board.name + ': ' + e.message);
+        if (!board.svg) closeBoard(board);
+      }
     } finally {
-      $('busy').style.display = 'none';
+      if (boards.includes(board) && request === board.request) {
+        board.loading = false; updateTabs();
+        if (board === activeBoard) $('busy').style.display = 'none';
+      }
     }
   }
 
-  function show(data) {
-    if (svg) svg.remove();
-    $('empty').style.display = 'none';
+  function show(board, data) {
     const tpl = document.createElement('div'); tpl.innerHTML = data.svg;
-    svg = tpl.querySelector('svg'); view.prepend(svg);
-    $('filename').textContent = data.name;
-    const s = data.stats;
-    $('stats').textContent = `${s.components} components, ${s.pads} pads, ${s.tracks} tracks, ${s.vias} vias\n${s.polygons} polygons, ${s.regions} poured regions`;
-    buildLayers(); setupView(); setupMeasureLayer(); pts = []; draw();
+    const rendered = tpl.querySelector('svg');
+    if (!rendered) throw new Error('The renderer did not return an SVG.');
+    if (board === activeBoard) saveBoard();
+    const b = rendered.viewBox.baseVal;
+    const origin = { x: b.x, y: b.y, w: b.width, h: b.height };
+    const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
+    Object.assign(board, { svg: rendered, name: data.name, stats: data.stats, warnings: data.warnings || [], groups: [],
+                           home: origin, vb: { ...origin }, pts: [], hover: null, mg: measure });
+    if (board === activeBoard) mountBoard(board);
   }
 
   $('open').onclick = () => $('file').click();
-  $('file').onchange = e => loadFile(e.target.files[0]);
-  $('rerender').onclick = () => lastFile ? loadFile(lastFile) : toast('Open a board first.');
-  ['side', 'clip', 'outlines'].forEach(id => $(id).onchange = () => lastFile && loadFile(lastFile));
+  $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
+  $('rerender').onclick = () => activeBoard ? renderBoard(activeBoard) : toast('Open a board first.');
+  ['side', 'clip', 'outlines'].forEach(id => $(id).onchange = () => activeBoard && renderBoard(activeBoard));
   view.addEventListener('dragover', e => { e.preventDefault(); view.classList.add('drop'); });
   view.addEventListener('dragleave', () => view.classList.remove('drop'));
-  view.addEventListener('drop', e => { e.preventDefault(); view.classList.remove('drop'); loadFile(e.dataTransfer.files[0]); });
+  view.addEventListener('drop', e => { e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files); });
 
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 5000); }
 
@@ -214,7 +369,7 @@ PAGE = r"""<!DOCTYPE html>
       const name = g.dataset.layerDisplayName || g.dataset.layerName || g.id.replace(/^layer-/, '');
       const color = g.dataset.color || (g.id === 'board-outline' ? '#C0A000' : '#888');
       const lab = document.createElement('label');
-      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true;
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = g.style.display !== 'none';
       cb.onchange = () => { g.style.display = cb.checked ? '' : 'none'; };
       const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = color;
       lab.append(cb, sw, document.createTextNode(name));
@@ -227,10 +382,6 @@ PAGE = r"""<!DOCTYPE html>
   $('none').onclick = () => setAll(false);
 
   // ------------------------------------------------------------ pan / zoom
-  function setupView() {
-    const b = svg.viewBox.baseVal;
-    home = { x: b.x, y: b.y, w: b.width, h: b.height }; vb = { ...home }; apply();
-  }
   function apply() { if (svg) { svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`); draw(); } }
   view.addEventListener('wheel', e => {
     if (!svg) return; e.preventDefault();
@@ -252,7 +403,6 @@ PAGE = r"""<!DOCTYPE html>
   const UNITS = { mm: { f: 1, d: 3 }, mil: { f: 1000 / 25.4, d: 1 }, in: { f: 1 / 25.4, d: 4 } };
   let unit = 'mm', measuring = false, pts = [], hover = null, mg = null;
   const fmt = v => (v * UNITS[unit].f).toFixed(UNITS[unit].d) + ' ' + unit;
-  function setupMeasureLayer() { mg = document.createElementNS(NS, 'g'); mg.id = 'measure'; svg.append(mg); }
   const toSvg = e => { const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(svg.getScreenCTM().inverse()); return { x: p.x, y: p.y }; };
   const toScreen = p => { const q = new DOMPoint(p.x, p.y).matrixTransform(svg.getScreenCTM()); const r = view.getBoundingClientRect(); return { x: q.x - r.left, y: q.y - r.top }; };
   function dot(p) { const c = document.createElementNS(NS, 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 0.3); return c; }
@@ -287,7 +437,14 @@ PAGE = r"""<!DOCTYPE html>
   view.addEventListener('mousemove', e => { if (svg && measuring) { hover = toSvg(e); if (pts.length !== 2) draw(); } });
 
   // ------------------------------------------------------------ board passed on the command line
-  fetch('/initial').then(r => r.ok ? r.json() : null).then(d => { if (d && d.svg) show(d); }).catch(() => {});
+  fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {
+    if (!d || !d.svg) return;
+    const file = new File([Uint8Array.from(atob(d.source), c => c.charCodeAt(0))], d.name);
+    const board = createBoard(file);
+    show(board, d);
+    if (!activeBoard) activateBoard(board);
+    else updateTabs();
+  }).catch(e => toast('Could not load the initial board: ' + e.message));
 })();
 </script>
 </body></html>
@@ -387,7 +544,8 @@ def main() -> None:
         if not args.pcbdoc.is_file():
             sys.exit(f"File not found: {args.pcbdoc}")
         print(f"Loading {args.pcbdoc.name} ...")
-        Handler.initial = render_file(args.pcbdoc)
+        Handler.initial = {**render_file(args.pcbdoc),
+                           "source": base64.b64encode(args.pcbdoc.read_bytes()).decode("ascii")}
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
