@@ -673,3 +673,31 @@ test('clicked net selections remain attached to their own board tabs', async t =
   assert.equal(await page.locator('#net-query').inputValue(), 'GND');
   assert.equal(await page.locator('.net-match').count(), 3);
 });
+
+test('Escape deselects nets from the canvas and search fields and only affects the active board', async t => {
+  const { page } = await openClickableNets(t);
+  await page.locator('[data-primitive="pad"]').click();
+  await page.locator('#component-query').fill('R1');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  assert.equal(await page.locator('.net-match').count(), 0);
+  assert.equal(await page.locator('#net-highlight').count(), 0);
+  assert.equal(await page.locator('#net-status').textContent(), '');
+  assert.equal(await page.locator('#net-fit').isDisabled(), true);
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('.component-match').count(), 1);
+  await page.locator('#net-query').fill('GND');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  await page.locator('[data-primitive="pad"]').click();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  await page.locator('#net-query').focus();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  assert.equal(await page.locator('.net-match').count(), 0);
+  await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#net-query').inputValue(), '', 'deselection survives switching tabs');
+});

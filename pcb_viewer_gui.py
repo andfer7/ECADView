@@ -233,7 +233,7 @@ PAGE = r"""<!DOCTYPE html>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <div id="readout"></div>
-      <div class="hint">Click copper to select a net. Scroll to zoom, drag to pan, double-click to reset. Measure: click two points; Esc cancels, Shift+C clears all.</div>
+      <div class="hint">Click copper to select a net. Scroll to zoom, drag to pan, double-click to reset. Measure: click two points. Esc cancels measurement and deselects the net; Shift+C clears all measurements.</div>
     </div>
     <div id="stats"></div>
   </div>
@@ -437,7 +437,7 @@ PAGE = r"""<!DOCTYPE html>
     }
     for (const g of groups) if (g.style.display !== 'none' && branches.has(g)) overlay.append(branch(g));
     for (const el of overlay.querySelectorAll('*')) {
-      el.removeAttribute('id'); el.classList.remove('component-match');
+      el.removeAttribute('id'); el.classList.remove('component-match', 'net-match');
       for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
     }
     if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
@@ -544,7 +544,7 @@ PAGE = r"""<!DOCTYPE html>
     }
     for (const g of groups) if (g.style.display !== 'none' && branches.has(g)) overlay.append(branch(g));
     for (const el of overlay.querySelectorAll('*')) {
-      el.removeAttribute('id'); el.classList.remove('net-match');
+      el.removeAttribute('id'); el.classList.remove('component-match', 'net-match');
       for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
     }
     if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
@@ -554,8 +554,9 @@ PAGE = r"""<!DOCTYPE html>
     $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
       `${count} net${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
   }
+  function clearNet() { $('net-query').value = ''; searchNets(); }
   $('net-query').oninput = searchNets;
-  $('net-clear').onclick = () => { $('net-query').value = ''; searchNets(); };
+  $('net-clear').onclick = clearNet;
   view.addEventListener('click', e => {
     if (!svg || measuring || panned || e.button !== 0) return;
     const primitive = e.target.closest('#scene [data-net]');
@@ -641,9 +642,13 @@ PAGE = r"""<!DOCTYPE html>
   }
   $('measure-btn').onclick = () => setMeasuring(!measuring);
   window.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      clearNet(); pts = []; hover = null; draw();
+      return;
+    }
     if (e.target.closest('input, textarea, select, [contenteditable]')) return;
     if (e.key === 'm' || e.key === 'M') setMeasuring(!measuring);
-    if (e.key === 'Escape') { pts = []; hover = null; draw(); }
     if (e.shiftKey && e.key.toLowerCase() === 'c') { measurements = []; pts = []; hover = null; draw(); }
   });
   document.querySelectorAll('.unit').forEach(b => b.onclick = () => {
