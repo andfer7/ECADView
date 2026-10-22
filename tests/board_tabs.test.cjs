@@ -1986,3 +1986,61 @@ test('net labels stay upright on mirrored routes and follow the visible segment 
   await settleView(page);
   assert.equal(await captionNamed(page, 'LONG').count(), 1, 'label follows visible copper when the track midpoint is offscreen');
 });
+
+const viaLabelBoardData = name => ({ ...boardData(name),
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 160" data-board="${name}">
+    <g id="scene">
+      <g id="layer-top" data-layer-name="Top copper" data-layer-role="copper">
+        <circle id="top-label-via" data-primitive="via" data-net="VIA" cx="100" cy="80" r="1.4" fill="red"/>
+        <circle id="small-label-via" data-primitive="via" data-net="SMALL" cx="96" cy="80" r="0.2" fill="red"/>
+        <circle data-primitive="via" cx="104" cy="80" r="1.4" fill="red"/>
+      </g>
+      <g id="layer-bottom" data-layer-name="Bottom copper" data-layer-role="copper" transform="translate(200 0) scale(-1 1)">
+        <circle id="bottom-label-via" data-primitive="via" data-net="VIA" cx="100" cy="80" r="1.4" fill="blue"/>
+      </g>
+      <g id="layer-drills" data-layer-name="Drills" data-layer-role="drill">
+        <circle id="label-via-hole" data-primitive="via-hole" data-hole-owner="via" data-net="VIA" cx="100" cy="80" r="0.95" fill="white"/>
+        <circle data-primitive="via-hole" data-hole-owner="via" data-net="SMALL" cx="96" cy="80" r="0.14" fill="white"/>
+        <circle data-primitive="via-hole" data-hole-owner="via" cx="104" cy="80" r="0.95" fill="white"/>
+      </g>
+    </g></svg>` });
+
+test('zoomed via labels fit on the annular ring, avoid the drill and allow selection and measurement clicks', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, viaLabelBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('Vias.PcbDoc')); await loaded(page, 'Vias.PcbDoc');
+  assert.equal(await netCaptions(page).count(), 0);
+  await zoomForLabels(page);
+  assert.deepEqual(await netCaptions(page).allTextContents(), ['VIA'], 'one label for stacked copper, none on drills or unconnected vias');
+  const label = await captionNamed(page, 'VIA').boundingBox();
+  const hole = await page.locator('#label-via-hole').boundingBox();
+  assert.ok(label.y + label.height < hole.y || label.y > hole.y + hole.height ||
+    label.x + label.width < hole.x || label.x > hole.x + hole.width, 'via label stays off the drill');
+  await page.mouse.click(label.x + label.width / 2, label.y + label.height / 2);
+  assert.equal(await page.locator('#net-query').inputValue(), 'VIA');
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  await page.keyboard.press('Escape');
+  await page.locator('#measure-btn').click();
+  await page.mouse.click(label.x + label.width / 2, label.y + label.height / 2);
+  await page.mouse.click(label.x + label.width / 2 + 20, label.y + label.height / 2);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+});
+
+test('via labels respect copper visibility and tab state and wait for enough zoom on small annular rings', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, viaLabelBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await zoomForLabels(page);
+  const bottom = page.locator('#layers label').filter({ hasText: 'Bottom copper' }).locator('input');
+  const top = page.locator('#layers label').filter({ hasText: 'Top copper' }).locator('input');
+  await bottom.uncheck(); assert.equal(await captionNamed(page, 'VIA').count(), 1);
+  await top.uncheck(); assert.equal(await netCaptions(page).count(), 0, 'drill graphics alone do not create captions');
+  await top.check(); assert.equal(await captionNamed(page, 'VIA').count(), 1);
+  assert.equal(await captionNamed(page, 'SMALL').count(), 0);
+  await zoomForLabels(page, 8, 96, 80);
+  assert.deepEqual(await netCaptions(page).allTextContents(), ['SMALL'], 'small via becomes readable at closer zoom');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await netCaptions(page).count(), 0);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.deepEqual(await netCaptions(page).allTextContents(), ['SMALL']);
+  await page.locator('#view-fit').click(); assert.equal(await netCaptions(page).count(), 0);
+});

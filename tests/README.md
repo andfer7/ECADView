@@ -56,3 +56,6 @@ Net-label tests cover zoom-dependent visibility, literal net names, mirrored
 pads and rotated routes, drill holes, clipping, occlusion and label collisions.
 They also exercise pan/resize alignment, hidden layers and pours, tab changes,
 and click-through selection and measurement.
+Via coverage checks annular-ring placement around large drills, duplicate copper
+across layers, mirrored geometry, small vias at closer zoom, visibility and tab
+state, and selection/measurement through the captions.

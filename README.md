@@ -5,9 +5,9 @@ separate tabs, inspect layers and polygon pours, find components and nets,
 cross-probe between documents, and measure PCB geometry. Files are parsed on
 your machine and the browser displays the rendered SVG.
 
-Zoom into a PCB to see net names directly over visible pads and routes when the
-text fits. Labels remain readable while navigating and respect layer and polygon
-visibility.
+Zoom into a PCB to see net names directly over visible pads, vias, and routes when
+the text fits. Labels remain readable while navigating and respect layer and polygon
+visibility. Via captions fit on the copper ring around the drill hole.
 
 ## Setup and launch
 

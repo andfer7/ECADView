@@ -21,7 +21,7 @@ export class NetLabels {
       if (!bounds.width && !bounds.height || paint.fill === 'none' && paint.stroke === 'none') continue;
       const route = paint.stroke !== 'none' && typeof shape.getTotalLength === 'function' &&
         (paint.fill === 'none' || shape.matches('line, polyline') || ['track', 'arc'].includes(source.dataset.primitive));
-      candidates.push({ shape, name: source.dataset.net, bounds, route,
+      candidates.push({ shape, name: source.dataset.net, bounds, route, via: source.dataset.primitive === 'via',
         length: route ? shape.getTotalLength() : 0, stroke: parseFloat(paint.strokeWidth) || 0,
         fixedStroke: paint.vectorEffect === 'non-scaling-stroke' });
     }
@@ -49,6 +49,7 @@ export class NetLabels {
       const scale = Math.min(Math.hypot(matrix.a, matrix.b), Math.hypot(matrix.c, matrix.d));
       if (!this.widths.has(name)) this.widths.set(name, this.context.measureText(name).width + 4);
       const width = this.widths.get(name), height = 18;
+      if (item.via && (rect.width < width || rect.height < height)) continue;
       if (route && ((item.fixedStroke ? item.stroke : item.stroke * scale) < height + 2 || item.length * scale < width + 8)) continue;
       const anchors = [];
       if (route) {
@@ -69,6 +70,16 @@ export class NetLabels {
           const point = new DOMPoint(bounds.x + bounds.width * x, bounds.y + bounds.height * y).matrixTransform(matrix);
           anchors.push({ x: point.x, y: point.y, angle: 0 });
         }
+        if (item.via) {
+          // Place the caption as far out on the annulus as its corners allow.
+          // Screen coordinates keep these candidates upright on mirrored vias.
+          const rx = rect.width / 2, ry = rect.height / 2;
+          const dx = rx * Math.sqrt(Math.max(0, 1 - (height / 2 / ry) ** 2)) - width / 2 - 0.5;
+          const dy = ry * Math.sqrt(Math.max(0, 1 - (width / 2 / rx) ** 2)) - height / 2 - 0.5;
+          for (const [x, y] of [[0, -dy], [0, dy], [-dx, 0], [dx, 0]]) {
+            if (dx > 0 && dy > 0) anchors.push({ x: rect.left + rx + x, y: rect.top + ry + y, angle: 0 });
+          }
+        }
       }
       for (const anchor of anchors) {
         let { angle } = anchor;
@@ -81,7 +92,8 @@ export class NetLabels {
         if (box.left < view.left + 2 || box.right > view.right - 2 || box.top < view.top + 2 || box.bottom > view.bottom - 2 ||
             occupied.some(other => box.left < other.right + 6 && box.right > other.left - 6 && box.top < other.bottom + 6 && box.bottom > other.top - 6)) continue;
         // Hit testing also respects clipping, hidden ancestors, holes and paint order.
-        if (![[0, 0], [-width / 2, -height / 2], [width / 2, -height / 2], [-width / 2, height / 2], [width / 2, height / 2]].every(([x, y]) => {
+        const probes = [-1, 0, 1].flatMap(x => [-1, 0, 1].map(y => [x * width / 2, y * height / 2]));
+        if (!probes.every(([x, y]) => {
           const hit = document.elementFromPoint(anchor.x + x * cos - y * sin, anchor.y + x * sin + y * cos);
           return hit === shape || shape.contains(hit);
         })) continue;
