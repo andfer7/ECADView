@@ -185,6 +185,8 @@ class SchematicTests(unittest.TestCase):
         ground = next(net for net in data["selection"]["nets"] if net["name"] == "GND")
         self.assertGreater(len(ground["elements"]), 2)
         self.assertTrue(set(ground["elements"]) <= svg_ids)
+        self.assertTrue(ground["terminals"], "Cross-probing needs component/pin identities")
+        self.assertTrue(all(terminal["component"] and terminal["pin"] for terminal in ground["terminals"]))
         self.assertEqual(hashlib.sha256(path.read_bytes()).digest(), original)
 
 
@@ -217,6 +219,10 @@ class RealBoardTests(unittest.TestCase):
                 data = render_file(path, side=side)
                 self.assertEqual(ET.fromstring(data["svg"]).tag, "{http://www.w3.org/2000/svg}svg")
                 self.assertGreater(data["stats"]["components"], 0)
+                self.assertEqual(len(data["layout_components"]), data["stats"]["components"])
+                resistor = next(component for component in data["layout_components"] if component["name"] == "R1")
+                self.assertEqual(resistor["source_name"], "R1")
+                self.assertTrue(resistor["source_id"], "PCB source IDs link renamed components back to their schematic")
                 self.assertNotIn("data-text-fallback", data["svg"])
                 self.assertEqual(len(data["warnings"]), 1)
                 self.assertIn("Cambria", data["warnings"][0])
