@@ -1,0 +1,173 @@
+"""Integration coverage for HTTP routes and both supported Python launch commands."""
+
+import base64
+from http.client import HTTPConnection
+from http.server import ThreadingHTTPServer
+from importlib.resources import files
+import json
+from pathlib import Path
+import queue
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+from urllib.parse import quote, urlsplit
+
+from altium_monkey import AltiumSchDoc, SchPointMils, make_sch_wire
+
+from pcbvisualizer.server import Handler
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def schematic_bytes():
+    schematic = AltiumSchDoc()
+    schematic.add_object(make_sch_wire(points_mils=[SchPointMils(100, 100), SchPointMils(400, 100)]))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "sheet.SchDoc"
+        schematic.save(path)
+        return path.read_bytes()
+
+
+class ServerTests(unittest.TestCase):
+    def setUp(self):
+        Handler.initial = None
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.stop_server)
+
+    def stop_server(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        Handler.initial = None
+
+    def request(self, method, path, body=None, headers=None):
+        connection = HTTPConnection(*self.server.server_address, timeout=10)
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
+
+    def test_frontend_resources_have_correct_content_and_types(self):
+        for route, filename, content_type in (
+            ("/", "index.html", "text/html"),
+            ("/static/viewer.css", "viewer.css", "text/css"),
+            ("/static/viewer.js", "viewer.js", "text/javascript"),
+        ):
+            with self.subTest(route=route):
+                status, headers, body = self.request("GET", route + "?version=test")
+                self.assertEqual(status, 200)
+                self.assertEqual(body, files("pcbvisualizer").joinpath("static", filename).read_bytes())
+                self.assertEqual(headers["Content-Type"], content_type + "; charset=utf-8")
+                self.assertEqual(int(headers["Content-Length"]), len(body))
+        html = self.request("GET", "/")[2].decode()
+        self.assertIn('href="/static/viewer.css"', html)
+        self.assertIn('src="/static/viewer.js"', html)
+
+    def test_unknown_and_unlisted_resource_paths_return_404(self):
+        for path in ("/missing", "/static/../rendering.py", "/static/%2e%2e/server.py", "/static/index.html"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request("GET", path)[0], 404)
+        self.assertEqual(self.request("POST", "/missing", body=b"")[0], 404)
+
+    def test_initial_document_is_served_once(self):
+        initial = {"name": "board.PcbDoc", "svg": "<svg/>"}
+        Handler.initial = initial
+        self.assertEqual(json.loads(self.request("GET", "/initial")[2]), initial)
+        self.assertEqual(json.loads(self.request("GET", "/initial")[2]), {})
+
+    def test_upload_renders_a_schematic(self):
+        name = "sheet with spaces.SchDoc"
+        status, _, body = self.request("POST", "/render", schematic_bytes(), {"X-Filename": quote(name)})
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual(data["kind"], "schematic")
+        self.assertEqual(data["name"], name)
+        self.assertEqual(data["stats"], {"components": 0, "wires": 1, "net_labels": 0})
+        self.assertIn("<svg", data["svg"])
+
+    def test_upload_passes_render_options_and_removes_temporary_file(self):
+        with patch("pcbvisualizer.server.render_file", return_value={"svg": "<svg/>"}) as render:
+            status, _, body = self.request("POST", "/render?side=bottom&clip=1&pour=%23ff0000&outlines=1",
+                                           b"board data", {"X-Filename": "board.PcbDoc"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"svg": "<svg/>"})
+        self.assertEqual(render.call_args.args[0].name, "board.PcbDoc")
+        self.assertEqual(render.call_args.kwargs, {
+            "side": "bottom", "clip": True, "pour_color": "#ff0000", "polygon_outlines": True,
+        })
+        self.assertFalse(render.call_args.args[0].exists())
+
+    def test_unsupported_upload_returns_json_error(self):
+        status, headers, body = self.request("POST", "/render", b"text", {"X-Filename": "notes.txt"})
+        self.assertEqual(status, 500)
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertRegex(json.loads(body)["error"], r"ValueError: .*PcbDoc.*SchDoc")
+
+
+class LaunchTests(unittest.TestCase):
+    def test_launch_commands_load_initial_document_and_packaged_assets(self):
+        data = schematic_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "initial.SchDoc"
+            path.write_bytes(data)
+            commands = (
+                ([sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py")], tmp),
+                ([sys.executable, "-B", "-u", "-m", "pcbvisualizer"], ROOT),
+            )
+            for command, cwd in commands:
+                with self.subTest(command=command):
+                    process = subprocess.Popen(command + [str(path), "--no-open"], cwd=cwd,
+                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    try:
+                        output = queue.Queue()
+                        def read_output():
+                            for line in process.stdout:
+                                output.put(line)
+                            output.put(None)
+                        reader = threading.Thread(target=read_output, daemon=True)
+                        reader.start()
+                        lines = []
+                        while True:
+                            line = output.get(timeout=20)
+                            self.assertIsNotNone(line, "Viewer exited before startup: " + "".join(lines))
+                            lines.append(line)
+                            match = re.search(r"http://127\.0\.0\.1:\d+/", line)
+                            if match:
+                                break
+                        url = urlsplit(match[0])
+                        connection = HTTPConnection(url.hostname, url.port, timeout=10)
+                        try:
+                            for route in ("/", "/static/viewer.css", "/static/viewer.js"):
+                                connection.request("GET", route)
+                                response = connection.getresponse()
+                                self.assertEqual(response.status, 200)
+                                self.assertTrue(response.read())
+                            connection.request("GET", "/initial")
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 200)
+                            initial = json.loads(response.read())
+                            self.assertEqual(initial["name"], path.name)
+                            self.assertEqual(initial["kind"], "schematic")
+                            self.assertEqual(base64.b64decode(initial["source"]), data)
+                            connection.request("GET", "/initial")
+                            self.assertEqual(json.loads(connection.getresponse().read()), {})
+                        finally:
+                            connection.close()
+                    finally:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=5)
+                        reader.join(timeout=5)
+                        process.stdout.close()

@@ -17,7 +17,7 @@ from altium_monkey import (
     make_sch_net_label, make_sch_rectangle, make_sch_wire,
 )
 
-from pcb_viewer_gui import (
+from pcbvisualizer.rendering import (
     AltiumPcbDoc, get_font_path_with_style, polygon_element_ids, prepare_embedded_fonts, render_file, resolve_polygon_nets,
 )
 
@@ -50,24 +50,24 @@ class EmbeddedFontTests(unittest.TestCase):
     def test_font_style_is_used_for_replacement(self):
         replacement = get_font_path_with_style("Arial", bold=True, italic=True)
         pcb = SimpleNamespace(embedded_fonts=[embedded_font(b"broken", "Arial", "Bold Italic")])
-        with patch("pcb_viewer_gui.get_font_path_with_style", return_value=replacement) as resolve:
+        with patch("pcbvisualizer.rendering.get_font_path_with_style", return_value=replacement) as resolve:
             prepare_embedded_fonts(pcb)
         resolve.assert_called_once_with("Arial", bold=True, italic=True)
 
     def test_missing_replacement_reports_the_font(self):
         pcb = SimpleNamespace(embedded_fonts=[embedded_font(b"broken", "Cambria")])
-        with patch("pcb_viewer_gui.get_font_path_with_style", return_value=None):
+        with patch("pcbvisualizer.rendering.get_font_path_with_style", return_value=None):
             with self.assertRaisesRegex(RuntimeError, 'Cambria.*no replacement font'):
                 prepare_embedded_fonts(pcb)
 
     def test_unreadable_replacement_reports_the_font(self):
         pcb = SimpleNamespace(embedded_fonts=[embedded_font(b"broken", "Cambria")])
-        with patch("pcb_viewer_gui.get_font_path_with_style", return_value="/missing/font.ttf"):
+        with patch("pcbvisualizer.rendering.get_font_path_with_style", return_value="/missing/font.ttf"):
             with self.assertRaisesRegex(RuntimeError, 'replacement.*Cambria'):
                 prepare_embedded_fonts(pcb)
 
     def test_unrelated_parse_errors_are_not_hidden(self):
-        with patch("pcb_viewer_gui.AltiumPcbDoc.from_file", side_effect=ValueError("Invalid PCB")):
+        with patch("pcbvisualizer.rendering.AltiumPcbDoc.from_file", side_effect=ValueError("Invalid PCB")):
             with self.assertRaisesRegex(ValueError, "Invalid PCB"):
                 render_file(Path("invalid.PcbDoc"))
 
@@ -215,8 +215,8 @@ class RealBoardTests(unittest.TestCase):
                 pcb = AltiumPcbDoc.from_file(path)
                 if legacy_regions:
                     pcb.shapebased_regions = []
-                with patch("pcb_viewer_gui.AltiumPcbDoc.from_file", return_value=pcb):
-                    with patch("pcb_viewer_gui.resolve_polygon_nets"):
+                with patch("pcbvisualizer.rendering.AltiumPcbDoc.from_file", return_value=pcb):
+                    with patch("pcbvisualizer.rendering.resolve_polygon_nets"):
                         before = ET.fromstring(render_file(path)["svg"])
                     after = ET.fromstring(render_file(path)["svg"])
                 kind = "region" if legacy_regions else "shapebased-region"

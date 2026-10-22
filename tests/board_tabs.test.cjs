@@ -1,24 +1,30 @@
-// Requires Node.js and Playwright: node --test tests/board_tabs.test.cjs
+// Install with npm ci, then run npm test.
 // Set PLAYWRIGHT_CHANNEL=chrome to use an installed Google Chrome browser.
 const assert = require('node:assert/strict');
 const { before, after, test } = require('node:test');
-const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const { spawn } = require('node:child_process');
-const http = require('node:http');
+const { once } = require('node:events');
 const { chromium } = require('playwright');
 
-const source = readFileSync(resolve(__dirname, '../pcb_viewer_gui.py'), 'utf8');
-const html = source.match(/PAGE = r"""([\s\S]*?)"""/)[1];
 let browser, server, origin;
 
 before(async () => {
-  server = http.createServer((request, response) => {
-    response.setHeader('Content-Type', 'text/html; charset=utf-8');
-    response.end(html);
+  server = spawn(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'),
+    ['-B', '-u', resolve(__dirname, '../pcb_viewer_gui.py'), '--no-open']);
+  origin = await new Promise((resolve, reject) => {
+    let output = '', errors = '';
+    const timer = setTimeout(() => reject(new Error(`Viewer startup timed out: ${errors}`)), 20000);
+    const fail = error => { clearTimeout(timer); reject(error); };
+    server.stderr.on('data', chunk => { errors += chunk.toString(); });
+    server.stdout.on('data', chunk => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:\d+\//);
+      if (match) { clearTimeout(timer); resolve(match[0]); }
+    });
+    server.on('error', fail);
+    server.on('exit', code => fail(new Error(`Viewer exited with code ${code}: ${errors}`)));
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  origin = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
@@ -26,7 +32,11 @@ before(async () => {
 });
 after(async () => {
   await browser?.close();
-  if (server) await new Promise(resolve => server.close(resolve));
+  if (server && server.exitCode === null && server.signalCode === null) {
+    const exited = once(server, 'exit');
+    server.kill();
+    await exited;
+  }
 });
 
 const file = name => ({ name, mimeType: 'application/octet-stream', buffer: Buffer.from(name) });

@@ -1,0 +1,75 @@
+
+  :root { color-scheme: dark;
+          --bg: #1b1d21; --panel: #24272c; --line: #3a3e45; --text: #d8dbe0; --muted: #8b909a;
+          --accent: #35c2d8; --accent-ink: #06262b; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+               font: 13px/1.45 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  #app { display: flex; height: 100%; }
+  #panel { width: 270px; flex: none; background: var(--panel); border-right: 1px solid var(--line);
+           display: flex; flex-direction: column; box-sizing: border-box; }
+  #panel > * { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  #panel > :last-child { border-bottom: 0; }
+  #layers-wrap { flex: 1; overflow-y: auto; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  #filename { color: var(--muted); font-size: 12px; word-break: break-all; min-height: 1.4em; }
+  #warnings { color: #efc578; font-size: 12px; white-space: pre-line; margin-top: 6px; }
+  #component-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
+                     border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
+  #view svg.layout-selection #scene > :not(#component-highlight):not(#net-highlight) { filter: opacity(0.15); }
+  #view svg.hide-polygons .polygon-copper { display: none !important; }
+  button { background: #3a3e45; color: var(--text); border: 1px solid #4a4f58; border-radius: 4px;
+           padding: 5px 8px; cursor: pointer; font: inherit; }
+  button:hover { background: #474c56; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; width: 100%; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .row { display: flex; gap: 6px; margin-top: 6px; }
+  .row button { flex: 1; }
+  #layers label { display: flex; align-items: center; gap: 6px; padding: 3px 2px; cursor: pointer;
+                  border-radius: 3px; user-select: none; }
+  #layers label:hover { background: #2e3238; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; border: 1px solid #0006; }
+  .count { margin-left: auto; color: var(--muted); font-size: 11px; }
+  #net-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
+                     border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
+  #scene .sch-component-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #bd6100 !important; stroke-width: 2px !important; }
+  #scene .sch-component-match text { fill: #bd6100 !important; }
+  #scene .sch-net-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #007f9d !important; stroke-width: 3px !important; }
+  #scene .sch-net-match [fill]:not([fill="none"]):not(.sch-hit) { fill: #007f9d !important; }
+  #scene .sch-hit { stroke: transparent; fill: none; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
+  #scene .sch-component-hit { fill: transparent; stroke: none; pointer-events: all; }
+  #schematic-selection-status { white-space: pre-line; overflow-wrap: anywhere; margin-bottom: 6px; }
+  #probe-layout, #probe-schematic { box-sizing: border-box; width: 100%; margin: 4px 0 6px; background: var(--bg); color: var(--text); padding: 4px; }
+  #probe-status, #probe-schematic-status, #probe-result-status { white-space: pre-line; overflow-wrap: anywhere; margin-top: 6px; }
+  #panel { overflow-y: auto; }
+  #panel > * { flex-shrink: 0; }
+  #layers-wrap { min-height: 160px; }
+  #stats { color: var(--muted); font-size: 12px; white-space: pre-line; }
+  #readout { font: 12px/1.5 ui-monospace, Consolas, monospace; color: #bbb; white-space: pre;
+             background: #1b1d21; border-radius: 4px; padding: 6px; margin-top: 6px; min-height: 3.6em; }
+  .hint { color: var(--muted); font-size: 11px; }
+  #workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #tabs { display: flex; flex: none; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); }
+  #tabs:empty { display: none; }
+  .tab { display: flex; align-items: center; flex: none; border-right: 1px solid var(--line); }
+  .tab.active { background: var(--bg); box-shadow: inset 0 2px var(--accent); }
+  .tab button { background: transparent; border: 0; border-radius: 0; }
+  .tab button:hover { background: #474c56; }
+  .tab-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 12px; }
+  .tab-close { margin-right: 4px; }
+  #view { flex: 1; min-height: 0; overflow: hidden; cursor: grab; position: relative; }
+  #view:active { cursor: grabbing; }
+  #view.measuring, #view.measuring:active { cursor: crosshair; }
+  #view.drop { outline: 3px dashed var(--accent); outline-offset: -3px; }
+  #view svg { width: 100%; height: 100%; display: block; user-select: none; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+           color: var(--muted); font-size: 15px; text-align: center; pointer-events: none; }
+  #measure { pointer-events: none; }
+  #measure line, #measure circle { vector-effect: non-scaling-stroke; stroke: var(--accent); stroke-width: 1.5; fill: none; }
+  .measure-label { position: absolute; pointer-events: none; background: var(--accent); color: var(--accent-ink);
+                   font: 12px ui-monospace, Consolas, monospace; padding: 2px 6px; border-radius: 3px;
+                   transform: translate(-50%, -130%); white-space: nowrap; }
+  #toast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); background: #b23b3b; color: #fff;
+           padding: 8px 14px; border-radius: 6px; display: none; max-width: 70%; }
+  #busy { position: absolute; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; }
