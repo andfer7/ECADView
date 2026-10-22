@@ -160,7 +160,7 @@ import { NetLabels } from './net-labels.js';
     }
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
-                           layoutComponents: data.layout_components || [], scene3d: data.scene3d, camera3d: null,
+                           layoutComponents: data.layout_components || [], scene3d: data.scene3d, camera3d: null, bodyEdits: null,
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
     if (kind === 'schematic') prepareSchematicSelection(board, data.selection);
     if (board === activeBoard) mountBoard(board);
@@ -201,6 +201,7 @@ import { NetLabels } from './net-labels.js';
     $('net-labels').hidden = showing; label.hidden = showing;
     view.classList.toggle('measuring', !showing && measuring);
     if (svg) svg.style.display = showing ? 'none' : '';
+    updateBodyControls();
     if (showing) show3D();
   }
   async function show3D() {
@@ -213,10 +214,10 @@ import { NetLabels } from './net-labels.js';
       if (request !== threeMount || board !== activeBoard || !is3D()) return;
       threeViewer ||= new Board3D($('three-view'), message => {
         $('three-status').hidden = false; $('three-status').textContent = message;
-      });
-      threeViewer.show(board.scene3d, board.camera3d);
+      }, pickBody);
+      threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board));
       threeBoard = board;
-      $('three-summary').textContent = `${board.scene3d.thickness.toFixed(2)} mm board · ${board.scene3d.bodies.length} bodies`;
+      updateBodyControls();
     } catch (error) {
       if (request !== threeMount || board !== activeBoard) return;
       threeViewer?.clear();
@@ -236,6 +237,76 @@ import { NetLabels } from './net-labels.js';
   $('mode-2d').onclick = () => setViewMode('2d');
   $('mode-3d').onclick = () => setViewMode('3d');
   for (const preset of ['top', 'bottom', 'iso']) $('three-' + preset).onclick = () => threeViewer?.fit(preset);
+
+  function bodyEdits(board) {
+    return board.bodyEdits ||= { selected: new Set(), deleted: new Set(), undo: [] };
+  }
+  function bodyNames(board) {
+    return new Map(board.scene3d.bodies.map((body, index) => [body.id ?? `body-${index}`, body.name || `Body ${index + 1}`]));
+  }
+  function updateBodyControls() {
+    const ready = is3D() && threeBoard === activeBoard;
+    const state = ready ? bodyEdits(activeBoard) : null;
+    const list = $('three-body-list'), scroll = list.scrollTop;
+    list.replaceChildren(); list.disabled = !ready;
+    if (ready) {
+      const names = bodyNames(activeBoard);
+      for (const [id, name] of names) {
+        if (state.deleted.has(id)) continue;
+        const option = document.createElement('option'); option.value = id; option.textContent = name;
+        option.selected = state.selected.has(id); list.append(option);
+      }
+      list.scrollTop = scroll;
+      const count = list.options.length;
+      $('three-summary').textContent = `${activeBoard.scene3d.thickness.toFixed(2)} mm board · ${count} ${count === 1 ? 'body' : 'bodies'}`;
+      $('three-selection').textContent = state.selected.size ?
+        `${state.selected.size} selected: ${[...state.selected].map(id => names.get(id)).join(', ')}` : 'No body selected.';
+    } else $('three-selection').textContent = 'No body selected.';
+    $('three-clear').disabled = $('three-delete').disabled = !state?.selected.size;
+    $('three-undo').disabled = !state?.undo.length;
+  }
+  function updateBodies() {
+    if (!is3D() || threeBoard !== activeBoard) return;
+    threeViewer.updateBodies(bodyEdits(activeBoard));
+    updateBodyControls();
+  }
+  function pickBody(id, additive) {
+    if (!is3D() || threeBoard !== activeBoard) return;
+    const state = bodyEdits(activeBoard), already = state.selected.has(id);
+    if (!additive) state.selected.clear();
+    if (id !== null) {
+      if (already) state.selected.delete(id);
+      else state.selected.add(id);
+    }
+    updateBodies();
+  }
+  function clearBodies() {
+    if (!is3D() || threeBoard !== activeBoard) return;
+    bodyEdits(activeBoard).selected.clear(); updateBodies();
+  }
+  function deleteBodies() {
+    if (!is3D() || threeBoard !== activeBoard) return;
+    const state = bodyEdits(activeBoard);
+    if (!state.selected.size) return;
+    const ids = [...state.selected];
+    ids.forEach(id => state.deleted.add(id)); state.undo.push(ids); state.selected.clear();
+    updateBodies();
+  }
+  function undoBodies() {
+    if (!is3D() || threeBoard !== activeBoard) return;
+    const state = bodyEdits(activeBoard), ids = state.undo.pop();
+    if (!ids) return;
+    ids.forEach(id => state.deleted.delete(id)); state.selected = new Set(ids);
+    updateBodies();
+  }
+  $('three-body-list').onchange = () => {
+    if (!is3D() || threeBoard !== activeBoard) return;
+    bodyEdits(activeBoard).selected = new Set([...$('three-body-list').selectedOptions].map(option => option.value));
+    updateBodies();
+  };
+  $('three-clear').onclick = clearBodies;
+  $('three-delete').onclick = deleteBodies;
+  $('three-undo').onclick = undoBodies;
 
   // ------------------------------------------------------------ schematic selection
   function prepareSchematicSelection(board, selection = {}) {
@@ -843,6 +914,16 @@ import { NetLabels } from './net-labels.js';
   }
   $('measure-btn').onclick = () => setMeasuring(!measuring);
   window.addEventListener('keydown', e => {
+    if (is3D()) {
+      if (e.target.closest('input, textarea, [contenteditable]') || e.target.closest('select') && e.target !== $('three-body-list')) return;
+      if (e.key === 'Escape') { e.preventDefault(); clearBodies(); }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // A tab's Delete key belongs to the existing tab-close shortcut.
+        if (!e.target.closest('[role="tab"]')) { e.preventDefault(); deleteBodies(); }
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undoBodies(); }
+      return;
+    }
     if (e.key === 'Escape') {
       clearSchematicSelection();
       clearComponent();

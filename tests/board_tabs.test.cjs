@@ -2146,7 +2146,7 @@ test('pin captions remain upright on mirrored pads, avoid holes and respect laye
 });
 
 const wait3D = page => page.waitForFunction(() =>
-  !document.getElementById('three-view').hidden && document.getElementById('three-summary').textContent.includes(' bodies'));
+  !document.getElementById('three-view').hidden && /\d+ bod(y|ies)/.test(document.getElementById('three-summary').textContent));
 const image3D = async page => {
   await settleView(page);
   return page.locator('#three-view canvas').screenshot();
@@ -2294,4 +2294,108 @@ with tempfile.TemporaryDirectory() as tmp:
   assert.notDeepEqual(await image3D(page), iso);
   await page.locator('#mode-2d').click();
   assert.equal(await page.locator('#view > svg').isVisible(), true);
+});
+
+const selected3DBodies = page => page.locator('#three-body-list').evaluate(list =>
+  [...list.selectedOptions].map(option => option.value));
+async function click3D(page, x, y, modifiers = []) {
+  const rect = await page.locator('#three-view canvas').boundingBox();
+  await page.locator('#three-view canvas').click({ position: { x: rect.width * x, y: rect.height * y }, modifiers });
+}
+
+test('3D body picking highlights visible bodies, toggles selection, and ignores camera drags and occluded bodies', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, threeBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc'));
+  await loaded(page, 'A.PcbDoc');
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  await page.locator('#three-top').click();
+  const original = await image3D(page);
+  await click3D(page, 0.35, 0.56);
+  assert.deepEqual(await selected3DBodies(page), ['body-0']);
+  assert.match(await page.locator('#three-selection').textContent(), /1 selected: U1/);
+  assert.ok(!(await image3D(page)).equals(original), 'selection changes the rendered body');
+  if (process.env.PCB_3D_SELECTION_SCREENSHOT) await page.screenshot({ path: process.env.PCB_3D_SELECTION_SCREENSHOT });
+  await click3D(page, 0.35, 0.56);
+  assert.deepEqual(await selected3DBodies(page), []);
+  assert.ok((await image3D(page)).equals(original), 'deselect restores original materials');
+  await click3D(page, 0.64, 0.4);
+  assert.deepEqual(await selected3DBodies(page), [], 'the board occludes the bottom body');
+  await click3D(page, 0.35, 0.56);
+  await click3D(page, 0.05, 0.05);
+  assert.deepEqual(await selected3DBodies(page), [], 'blank space clears selection');
+  await page.locator('#three-bottom').click();
+  await click3D(page, 0.64, 0.6);
+  assert.deepEqual(await selected3DBodies(page), ['body-1'], 'bottom body becomes selectable from below');
+  const rect = await page.locator('#three-view canvas').boundingBox();
+  await page.mouse.move(rect.x + rect.width * 0.64, rect.y + rect.height * 0.6);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + rect.width * 0.64 + 50, rect.y + rect.height * 0.6 + 40, { steps: 4 });
+  await page.mouse.move(rect.x + rect.width * 0.64, rect.y + rect.height * 0.6, { steps: 4 });
+  await page.mouse.up();
+  assert.deepEqual(await selected3DBodies(page), ['body-1'], 'moving out and back is still a drag');
+  await page.keyboard.press('Escape');
+  assert.deepEqual(await selected3DBodies(page), []);
+});
+
+test('3D supports multiple bodies, Delete and Backspace, per-tab deletions, and undo without changing the source', async t => {
+  const fixture = name => {
+    const data = threeBoardData(name);
+    // Same display name as the first body, but a separate selectable identity.
+    data.scene3d.bodies.push({ outline: [[4, -12], [10, -12], [10, -6], [4, -6]],
+      holes: [], z: 0.8, height: 3, color: 0x888888, opacity: 1, name: 'U1' });
+    return data;
+  };
+  const { page, requests } = await openPage(t, { render: (route, name) => reply(route, fixture(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc'));
+  await loaded(page, 'A.PcbDoc');
+  const originalSVG = await page.locator('#scene').evaluate(scene => scene.outerHTML);
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  await page.locator('#three-top').click();
+  await click3D(page, 0.35, 0.56);
+  await click3D(page, 0.59, 0.63, ['Shift']);
+  assert.deepEqual(await selected3DBodies(page), ['body-0', 'body-2']);
+  await click3D(page, 0.59, 0.63, ['Shift']);
+  assert.deepEqual(await selected3DBodies(page), ['body-0'], 'Shift-click toggles one body');
+  await click3D(page, 0.59, 0.63, ['Shift']);
+  await page.locator('#three-iso').click();
+  const selected = await image3D(page);
+  await page.keyboard.press('Delete');
+  assert.equal(await page.locator('#three-body-list option').count(), 1);
+  assert.match(await page.locator('#three-summary').textContent(), /1 body/);
+  assert.equal(await page.locator('#three-delete').isDisabled(), true);
+  assert.ok(!(await image3D(page)).equals(selected), 'deletion removes solids from the image');
+  await page.locator('#mode-2d').click();
+  assert.equal(await page.locator('#scene').evaluate(scene => scene.outerHTML), originalSVG);
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  assert.equal(await page.locator('#three-body-list option').count(), 1);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc'));
+  await loaded(page, 'B.PcbDoc');
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  assert.equal(await page.locator('#three-body-list option').count(), 3, 'another tab keeps its own bodies');
+  assert.equal(await page.locator('#three-undo').isDisabled(), true);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click(); await wait3D(page);
+  assert.equal(await page.locator('#three-body-list option').count(), 1);
+  await page.locator('#three-undo').click();
+  assert.deepEqual(await selected3DBodies(page), ['body-0', 'body-2']);
+  assert.ok((await image3D(page)).equals(selected), 'undo restores solids, highlighting, and camera');
+  await page.locator('#three-clear').click();
+  await page.locator('#three-body-list').selectOption(['body-0']);
+  await page.keyboard.press('Backspace');
+  assert.equal(await page.locator('#three-body-list option').count(), 2);
+  await page.locator('#three-body-list').selectOption(['body-2']);
+  await page.locator('#three-delete').click();
+  assert.equal(await page.locator('#three-body-list option').count(), 1);
+  await page.keyboard.press('ControlOrMeta+z');
+  assert.deepEqual(await selected3DBodies(page), ['body-2']);
+  await page.keyboard.press('ControlOrMeta+z');
+  assert.equal(await page.locator('#three-body-list option').count(), 3);
+  assert.deepEqual(await selected3DBodies(page), ['body-0']);
+  assert.equal(await page.locator('#three-undo').isDisabled(), true);
+  await page.locator('#three-body-list').selectOption(['body-0', 'body-1', 'body-2']);
+  await page.keyboard.press('Delete');
+  assert.equal(await page.locator('#three-body-list option').count(), 0, 'all bodies can be removed while keeping the board');
+  await page.locator('#view-fit').click();
+  await page.locator('#three-undo').click();
+  assert.equal(await page.locator('#three-body-list option').count(), 3);
+  assert.equal(requests.length, 2, 'deletion and undo do not write or re-upload source files');
 });

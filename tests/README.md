@@ -69,3 +69,8 @@ body dimensions, bottom-side standoffs, curved outlines, merged drills, slots,
 edge notches, and fallback notices. Browser coverage checks actual WebGL output,
 camera controls and tab persistence, preservation of 2D state, lazy local assets,
 unsupported browsers, and an uploaded generated PcbDoc through the real server.
+Body editing coverage checks ray picking from both sides, board occlusion,
+highlight restoration, drag suppression, Shift selections, duplicate names,
+Delete/Backspace, grouped undo, tab isolation, and unchanged 2D/source geometry.
+Python coverage verifies that split solids share one body identity while distinct
+bodies retain separate identities even when their names match.

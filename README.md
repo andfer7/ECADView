@@ -19,6 +19,15 @@ right-drag or Shift-drag to pan, and scroll or pinch to zoom. Use Top, Bottom,
 Isometric, or Fit to reset the camera. Each tab remembers its view mode and
 camera; switching back to 2D preserves layers, selections, zoom, and measurements.
 
+Click a 3D body to select and highlight it; click it again or press Escape to
+clear the selection. Shift-click adds or removes bodies from the selection.
+The body list also supports keyboard selection, including bodies hidden behind
+the board. Use **Delete selected**, Delete, or Backspace to remove selected
+bodies from the preview, and **Undo delete** or Ctrl/Cmd+Z to restore the last
+deletion. Selection, deletions, and undo history stay with each tab across mode
+switches. These changes last for the current viewer session; the source PcbDoc
+and its 2D geometry remain unchanged.
+
 The preview uses the first physical layer stack's thickness, or an explicitly
 reported 1.6 mm fallback when thickness is unavailable. It requires a board
 outline and browser WebGL support. Components without usable body geometry are
