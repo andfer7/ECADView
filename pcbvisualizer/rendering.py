@@ -11,6 +11,8 @@ from altium_monkey import AltiumDesign, AltiumPcbDoc, AltiumSchDoc, PcbSvgRender
 from altium_monkey.altium_pcb_surface import PCB_SurfaceSide
 from altium_monkey.altium_ttf_metrics import get_font_path_with_style
 
+from .scene3d import build_scene
+
 
 def prepare_embedded_fonts(pcb: AltiumPcbDoc) -> list[str]:
     """Replace fonts FreeType cannot read in the parsed copy of the board."""
@@ -133,8 +135,14 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         svg = pcb.to_surface_svg(PCB_SurfaceSide.BOTTOM, options=options)
     else:
         svg = pcb.to_svg(options=options)
+    # An unsupported 3D record must not prevent opening the existing 2D view.
+    try:
+        scene = build_scene(pcb)
+    except Exception as exc:
+        scene = {"board": [], "notes": [f"3D is unavailable for this document: {type(exc).__name__}: {exc}"]}
     return {
         "svg": svg,
+        "scene3d": scene,
         "name": path.name,
         "kind": "pcb",
         "polygon_elements": polygon_element_ids(pcb, svg),

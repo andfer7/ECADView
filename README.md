@@ -12,6 +12,21 @@ Component pads also show their pin numbers, including alphanumeric and
 unconnected pins. Pin numbers appear above net names when both fit; on cramped
 pads the pin number takes priority.
 
+PCB tabs also offer a **2D / 3D** toggle. The 3D preview shows the board profile,
+curved edges, cutouts, through holes, slots, and simple extruded component bodies
+where the document supplies body outlines and heights. Drag to rotate,
+right-drag or Shift-drag to pan, and scroll or pinch to zoom. Use Top, Bottom,
+Isometric, or Fit to reset the camera. Each tab remembers its view mode and
+camera; switching back to 2D preserves layers, selections, zoom, and measurements.
+
+The preview uses the first physical layer stack's thickness, or an explicitly
+reported 1.6 mm fallback when thickness is unavailable. It requires a board
+outline and browser WebGL support. Components without usable body geometry are
+omitted, and detailed STEP models use simplified outlines. Copper, silkscreen,
+blind/buried via bores, and rigid-flex folding are not represented in this first
+3D version. The sidebar reports applicable approximations. Parsing, geometry,
+and all graphics assets stay local; no CDN or Node.js runtime is needed.
+
 ## Setup and launch
 
 Requires Python 3.12 or newer. Install the locked Python environment with uv:
@@ -45,12 +60,14 @@ pcbvisualizer/
   __main__.py             python -m pcbvisualizer entry point
   cli.py                  Arguments, startup, and browser launching
   rendering.py            Altium rendering and selection metadata
+  scene3d.py              Board and simple-body solid geometry in millimetres
   server.py               Local HTTP endpoints and uploads
   static/
     index.html            Browser interface
     viewer.css            Interface styling
     viewer.js             Tabs, navigation, selection, probing, and measurement
     net-labels.js         Net and component pin captions for zoomed PCB views
+    viewer-3d.js          Local WebGL scene, controls, and camera management
 tests/
   test_rendering.py       Rendering regression tests
   test_server.py          HTTP and launch-command integration tests
@@ -60,6 +77,9 @@ tests/
 The server serves frontend resources explicitly. They are included in
 the installed Python package, so launching does not depend on the current working
 directory. The frontend uses plain JavaScript and requires no build step.
+Three.js 0.180.0 and its OrbitControls module are bundled under the MIT license
+in `pcbvisualizer/static/THREE-LICENSE.txt`. The upstream minified module and
+core are unchanged; OrbitControls only changes its import to the local module.
 
 ## Tests
 

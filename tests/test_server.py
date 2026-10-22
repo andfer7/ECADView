@@ -62,6 +62,11 @@ class ServerTests(unittest.TestCase):
             ("/static/viewer.css", "viewer.css", "text/css"),
             ("/static/viewer.js", "viewer.js", "text/javascript"),
             ("/static/net-labels.js", "net-labels.js", "text/javascript"),
+            ("/static/viewer-3d.js", "viewer-3d.js", "text/javascript"),
+            ("/static/three.module.min.js", "three.module.min.js", "text/javascript"),
+            ("/static/three.core.min.js", "three.core.min.js", "text/javascript"),
+            ("/static/OrbitControls.js", "OrbitControls.js", "text/javascript"),
+            ("/static/THREE-LICENSE.txt", "THREE-LICENSE.txt", "text/plain"),
         ):
             with self.subTest(route=route):
                 status, headers, body = self.request("GET", route + "?version=test")
