@@ -11,6 +11,9 @@ Pick .PcbDoc or .SchDoc files with the "Open files" button (or drag & drop them 
 page). Each document opens in its own tab. Everything runs locally; the file is parsed by altium-monkey on your
 machine and only the rendered SVG is sent to the browser tab.
 
+To cross-probe, open a schematic and its PCB, select schematic components or
+nets, then choose the target layout and press "Show in layout".
+
 Requires:  pip install altium-monkey   (Python 3.12+)
 """
 
@@ -105,7 +108,9 @@ def schematic_selection(schematic: AltiumSchDoc) -> dict:
         if net.scope != "logical_local":
             continue
         elements = {item.element_id for item in net.items if not item.removed}
-        nets.append({"id": f"net-{len(nets)}", "name": net.name, "elements": sorted(elements - {""})})
+        nets.append({"id": f"net-{len(nets)}", "name": net.name, "elements": sorted(elements - {""}),
+                     "aliases": list(net.aliases),
+                     "terminals": [{"component": terminal.designator, "pin": terminal.pin} for terminal in net.terminals]})
     return {"components": components, "nets": nets}
 
 
@@ -147,6 +152,11 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         "svg": svg,
         "name": path.name,
         "kind": "pcb",
+        "layout_components": [
+            {"name": component.designator, "source_name": component.source_designator,
+             "source_id": component.source_unique_id_segments[-1] if component.source_unique_id_segments else ""}
+            for component in pcb.components
+        ],
         "warnings": warnings,
         "stats": {
             "components": len(pcb.components),
@@ -212,6 +222,8 @@ PAGE = r"""<!DOCTYPE html>
   #scene .sch-hit { stroke: transparent; fill: none; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
   #scene .sch-component-hit { fill: transparent; stroke: none; pointer-events: all; }
   #schematic-selection-status { white-space: pre-line; overflow-wrap: anywhere; margin-bottom: 6px; }
+  #probe-layout { box-sizing: border-box; width: 100%; margin: 4px 0 6px; background: var(--bg); color: var(--text); padding: 4px; }
+  #probe-status, #probe-result-status { white-space: pre-line; overflow-wrap: anywhere; margin-top: 6px; }
   #panel { overflow-y: auto; }
   #panel > * { flex-shrink: 0; }
   #layers-wrap { min-height: 160px; }
@@ -283,6 +295,14 @@ PAGE = r"""<!DOCTYPE html>
       <label>Selection</label>
       <div id="schematic-selection-status" role="status"></div>
       <button id="schematic-clear" disabled>Clear selection (Esc)</button>
+      <label for="probe-layout" style="display:block;margin-top:10px">Layout</label>
+      <select id="probe-layout" disabled></select>
+      <button id="probe-layout-btn" disabled>Show in layout</button>
+      <div id="probe-status" class="hint" role="status"></div>
+    </div>
+    <div id="probe-result" hidden>
+      <div id="probe-result-status" role="status"></div>
+      <button id="probe-back">Back to schematic</button>
     </div>
     <div id="schematic-hint" class="hint" hidden>Click a component or net to select it. Shift-click to add to the selection. Esc clears the selection. Scroll to zoom, drag to pan, double-click to reset.</div>
     <div id="stats"></div>
@@ -346,6 +366,8 @@ PAGE = r"""<!DOCTYPE html>
       close.onclick = () => closeBoard(board);
       tab.append(button, close); $('tabs').append(tab);
     }
+    updateProbeTargets();
+    updateProbeResult();
   }
   function activateBoard(board) {
     saveBoard();
@@ -444,6 +466,7 @@ PAGE = r"""<!DOCTYPE html>
     }
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
+                           layoutComponents: data.layout_components || [],
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
     if (kind === 'schematic') prepareSchematicSelection(board, data.selection);
     if (board === activeBoard) mountBoard(board);
@@ -467,6 +490,7 @@ PAGE = r"""<!DOCTYPE html>
         const targets = row.elements.map(id => elements.get(id)).filter(Boolean);
         if (!targets.length) continue;
         result.set(row.id, { name: row.name, elements: targets,
+          aliases: row.aliases || [], terminals: row.terminals || [],
           bodyElements: (row.body_elements || []).map(id => elements.get(id)).filter(Boolean) });
         for (const el of targets) {
           const ids = JSON.parse(el.getAttribute(attribute) || '[]');
@@ -528,16 +552,19 @@ PAGE = r"""<!DOCTYPE html>
     if (board.selectedNets.size) selected.push('Nets: ' + names(board.selectedNets, board.schematicNets));
     $('schematic-selection-status').textContent = selected.join('\n') || 'Nothing selected.';
     $('schematic-clear').disabled = !selected.length;
+    updateProbeTargets();
   }
   function clearSchematicSelection() {
     if (activeBoard?.kind !== 'schematic') return;
     activeBoard.selectedComponents.clear(); activeBoard.selectedNets.clear();
+    activeBoard.probeMessage = '';
     updateSchematicSelection();
   }
   function selectSchematic(e) {
     const net = e.target.closest('#scene [data-sch-nets]');
     const component = e.target.closest('#scene [data-sch-components]');
     if (!e.shiftKey) clearSchematicSelection();
+    activeBoard.probeMessage = '';
     // A pin selects its net; clicking the symbol body selects the component.
     const target = net || component;
     if (target && svg.contains(target)) {
@@ -547,6 +574,100 @@ PAGE = r"""<!DOCTYPE html>
     updateSchematicSelection();
   }
   $('schematic-clear').onclick = clearSchematicSelection;
+
+  // ------------------------------------------------------------ schematic to layout cross-probing
+  const identity = value => String(value || '').trim().toLowerCase();
+  function updateProbeTargets() {
+    if (activeBoard?.kind !== 'schematic') return;
+    const source = activeBoard;
+    const layouts = boards.filter(board => board.kind === 'pcb' && board.svg && !board.loading);
+    if (!layouts.some(board => board.id === source.probeTargetId))
+      source.probeTargetId = layouts.length === 1 ? layouts[0].id : null;
+    const empty = document.createElement('option'); empty.value = ''; empty.textContent = layouts.length ? 'Choose a layout…' : 'No layout open';
+    $('probe-layout').replaceChildren(empty, ...layouts.map(board => {
+      const option = document.createElement('option'); option.value = board.id; option.textContent = board.name; return option;
+    }));
+    $('probe-layout').value = source.probeTargetId || '';
+    $('probe-layout').disabled = !layouts.length;
+    const selected = source.selectedComponents.size + source.selectedNets.size;
+    $('probe-layout-btn').disabled = !selected || !source.probeTargetId;
+    $('probe-status').textContent = source.probeMessage || (!layouts.length ? 'Open a .PcbDoc layout to cross-probe.' :
+      !selected ? 'Select schematic components or nets.' : !source.probeTargetId ? 'Choose the layout to probe.' : '');
+  }
+  function updateProbeResult() {
+    const result = activeBoard?.kind === 'pcb' && activeBoard.probeResult;
+    $('probe-result').hidden = !result;
+    $('probe-result-status').textContent = result?.message || '';
+    $('probe-back').disabled = !result || !boards.some(board => board.id === result.sourceId);
+  }
+  $('probe-layout').onchange = () => {
+    activeBoard.probeTargetId = Number($('probe-layout').value) || null;
+    activeBoard.probeMessage = ''; updateProbeTargets();
+  };
+  $('probe-back').onclick = () => {
+    const source = boards.find(board => board.id === activeBoard?.probeResult?.sourceId);
+    if (source) activateBoard(source);
+  };
+  function matchingComponents(sourceId, row, layout, names) {
+    const linked = layout.layoutComponents.filter(component => component.source_id && identity(component.source_id) === identity(sourceId));
+    const matches = linked.length ? linked.map(component => component.name) :
+      layout.layoutComponents.filter(component => identity(component.source_name) === identity(row.name)).map(component => component.name);
+    if (!matches.length) matches.push(row.name);
+    return [...names].filter(name => matches.some(match => identity(match) === identity(name)));
+  }
+  $('probe-layout-btn').onclick = () => {
+    const source = activeBoard;
+    const layout = boards.find(board => board.id === source?.probeTargetId && board.kind === 'pcb' && board.svg && !board.loading);
+    if (source?.kind !== 'schematic' || !layout) return;
+    const primitives = [...layout.svg.querySelectorAll('#scene [data-component], #scene [data-net]')];
+    const names = new Set(primitives.map(el => el.dataset.component).filter(Boolean));
+    const netNames = new Set(primitives.map(el => el.dataset.net).filter(Boolean));
+    const padNets = new Map(), padKey = (component, pin) => JSON.stringify([identity(component), identity(pin)]);
+    for (const el of primitives) {
+      const { component, padNumber, padDesignator, net } = el.dataset;
+      if (!component || !(padNumber || padDesignator) || !net) continue;
+      const key = padKey(component, padNumber || padDesignator);
+      if (!padNets.has(key)) padNets.set(key, new Set());
+      padNets.get(key).add(net);
+    }
+    const components = new Set(), nets = new Set(), missing = [];
+    const resolveComponent = (id, row) => matchingComponents(id, row, layout, names);
+    for (const id of source.selectedComponents) {
+      const row = source.schematicComponents.get(id), matches = resolveComponent(id, row);
+      if (matches.length) matches.forEach(name => components.add(name));
+      else missing.push('component ' + row.name);
+    }
+    for (const id of source.selectedNets) {
+      const row = source.schematicNets.get(id), byPins = new Set();
+      for (const terminal of row.terminals) {
+        if (!terminal.component || !terminal.pin) continue;
+        const component = [...source.schematicComponents].find(([, item]) => identity(item.name) === identity(terminal.component));
+        const matches = resolveComponent(component?.[0] || '', component?.[1] || { name: terminal.component });
+        for (const name of matches) for (const net of padNets.get(padKey(name, terminal.pin)) || []) byPins.add(net);
+      }
+      const matches = byPins.size ? [...byPins] : [...netNames].filter(name =>
+        [row.name, ...row.aliases].some(alias => identity(alias) === identity(name)));
+      if (matches.length === 1) nets.add(matches[0]);
+      else missing.push('net ' + row.name + (matches.length > 1 ? ' (ambiguous)' : ''));
+    }
+    const unmatched = missing.length ? '\nNot found: ' + missing.join(', ') : '';
+    if (!components.size && !nets.size) {
+      source.probeMessage = 'No matches in ' + layout.name + '.' + unmatched; updateProbeTargets(); return;
+    }
+    layout.probeComponents = [...components]; layout.probeNets = [...nets];
+    layout.componentQuery = [...components].join(', '); layout.netQuery = [...nets].join(', ');
+    layout.probeResult = { sourceId: source.id,
+      message: 'From ' + source.name + ': ' + components.size + ' component' + (components.size === 1 ? '' : 's') +
+        ', ' + nets.size + ' net' + (nets.size === 1 ? '' : 's') + ' highlighted.' + unmatched };
+    activateBoard(layout); setMeasuring(false);
+    const hits = [...componentHits, ...netHits];
+    for (const group of groups) if (group.style.display === 'none' && hits.some(el => group.contains(el))) group._cb.click();
+    fitMatches(hits);
+  };
+  function resetProbeSelection(kind) {
+    if (!activeBoard) return;
+    activeBoard[kind] = null; activeBoard.probeResult = null; updateProbeResult();
+  }
 
   // ------------------------------------------------------------ component search
   let componentIndex = new Map(), componentHits = [];
@@ -572,7 +693,7 @@ PAGE = r"""<!DOCTYPE html>
     if (activeBoard) activeBoard.componentQuery = $('component-query').value;
     const names = [...componentIndex.keys()];
     const exact = names.find(name => name.toLowerCase() === query);
-    const matches = query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : [];
+    const matches = activeBoard?.probeComponents || (query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : []);
     componentHits = matches.flatMap(name => componentIndex.get(name));
     for (const el of componentHits) el.classList.add('component-match');
     updateComponentStatus(matches.length);
@@ -603,11 +724,12 @@ PAGE = r"""<!DOCTYPE html>
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
       `${count} component${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
   }
-  function clearComponent() { $('component-query').value = ''; searchComponents(); }
-  $('component-query').oninput = searchComponents;
+  function clearComponent() { resetProbeSelection('probeComponents'); $('component-query').value = ''; searchComponents(); }
+  $('component-query').oninput = () => { resetProbeSelection('probeComponents'); searchComponents(); };
   $('component-clear').onclick = clearComponent;
-  $('component-fit').onclick = () => {
-    const rects = componentHits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
+  $('component-fit').onclick = () => fitMatches(componentHits);
+  function fitMatches(hits) {
+    const rects = hits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
     if (!rects.length) return;
     const bounds = rects.reduce((b, r) => ({ left: Math.min(b.left, r.left), top: Math.min(b.top, r.top),
       right: Math.max(b.right, r.right), bottom: Math.max(b.bottom, r.bottom) }), rects[0]);
@@ -615,7 +737,7 @@ PAGE = r"""<!DOCTYPE html>
     const b = toSvg({ clientX: bounds.right, clientY: bounds.bottom });
     const pad = Math.max(b.x - a.x, b.y - a.y, 2) * 0.25;
     vb = { x: a.x - pad, y: a.y - pad, w: b.x - a.x + 2 * pad, h: b.y - a.y + 2 * pad }; apply();
-  };
+  }
   $('component-reveal').onclick = () => {
     for (const g of groups) if (g.style.display === 'none' && componentHits.some(el => g.contains(el))) g._cb.click();
     updateComponentStatus();
@@ -680,7 +802,7 @@ PAGE = r"""<!DOCTYPE html>
     if (activeBoard) activeBoard.netQuery = $('net-query').value;
     const names = [...netIndex.keys()];
     const exact = names.find(name => name.toLowerCase() === query);
-    const matches = query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : [];
+    const matches = activeBoard?.probeNets || (query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : []);
     netHits = matches.flatMap(name => netIndex.get(name));
     for (const el of netHits) el.classList.add('net-match');
     updateNetStatus(matches.length);
@@ -711,8 +833,8 @@ PAGE = r"""<!DOCTYPE html>
     $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
       `${count} net${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
   }
-  function clearNet() { $('net-query').value = ''; searchNets(); }
-  $('net-query').oninput = searchNets;
+  function clearNet() { resetProbeSelection('probeNets'); $('net-query').value = ''; searchNets(); }
+  $('net-query').oninput = () => { resetProbeSelection('probeNets'); searchNets(); };
   $('net-clear').onclick = clearNet;
   view.addEventListener('click', e => {
     if (!svg || measuring || panned || e.button !== 0) return;
@@ -720,26 +842,19 @@ PAGE = r"""<!DOCTYPE html>
     const primitive = e.target.closest('#scene [data-net]');
     const name = primitive?.dataset.net;
     if (name && svg.contains(primitive) && netIndex.has(name)) {
+      resetProbeSelection('probeNets');
       $('net-query').value = name;
       searchNets();
     }
     const component = e.target.closest('#scene [data-component]');
     const designator = component?.dataset.component;
     if (designator && svg.contains(component) && componentIndex.has(designator)) {
+      resetProbeSelection('probeComponents');
       $('component-query').value = designator;
       searchComponents();
     }
   });
-  $('net-fit').onclick = () => {
-    const rects = netHits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
-    if (!rects.length) return;
-    const bounds = rects.reduce((b, r) => ({ left: Math.min(b.left, r.left), top: Math.min(b.top, r.top),
-      right: Math.max(b.right, r.right), bottom: Math.max(b.bottom, r.bottom) }), rects[0]);
-    const a = toSvg({ clientX: bounds.left, clientY: bounds.top });
-    const b = toSvg({ clientX: bounds.right, clientY: bounds.bottom });
-    const pad = Math.max(b.x - a.x, b.y - a.y, 2) * 0.25;
-    vb = { x: a.x - pad, y: a.y - pad, w: b.x - a.x + 2 * pad, h: b.y - a.y + 2 * pad }; apply();
-  };
+  $('net-fit').onclick = () => fitMatches(netHits);
   $('net-reveal').onclick = () => {
     for (const g of groups) if (g.style.display === 'none' && netHits.some(el => g.contains(el))) g._cb.click();
     updateNetStatus();

@@ -75,6 +75,27 @@ const selectableSchematicData = name => ({
       <g id="shared"><line x1="65" y1="65" x2="75" y2="65" stroke="blue" stroke-width="1"/></g>
     </g></g></g></svg>`,
 });
+const probingSchematicData = name => {
+  const data = selectableSchematicData(name);
+  data.selection.nets[0].terminals = [{ component: 'R1', pin: '1' }];
+  return data;
+};
+const probingLayoutData = name => ({ ...boardData(name), kind: 'pcb',
+  layout_components: [
+    { name: 'R99', source_name: 'R1', source_id: 'component-1' },
+    { name: 'U7', source_name: 'U[2]"<test>', source_id: 'component-2' },
+  ],
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+    <g id="scene" transform="translate(2 1)">
+      <g id="layer-top" data-layer-name="Top copper">
+        <rect id="pcb-r" data-component="R99" data-pad-number="1" data-net="PCB_SIGNAL" x="10" y="10" width="8" height="6" fill="red"/>
+        <rect id="pcb-other" data-component="R10" data-net="GND" x="70" y="55" width="8" height="6" fill="red"/>
+      </g>
+      <g id="layer-mechanical1" data-layer-token="MECHANICAL1" data-layer-name="Mechanical 1">
+        <rect id="pcb-u" data-component="U7" data-pad-number="1" data-net="VCC" x="50" y="30" width="8" height="6" fill="red"/>
+        <rect id="pcb-track" data-net="PCB_SIGNAL" x="20" y="30" width="8" height="6" fill="red"/>
+      </g>
+    </g></svg>` });
 const layeredBoardData = name => ({
   ...boardData(name),
   svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
@@ -327,6 +348,124 @@ test('hollow rotated and mirrored symbol bodies select components without captur
   assert.equal(await schematicStatus(page), 'Components: R1');
 });
 
+test('cross-probes multiple schematic selections using source IDs and pin connectivity, reveals and fits layout matches', async t => {
+  const { page, requests } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? probingSchematicData(name) : probingLayoutData(name)) });
+  await page.locator('#file').setInputFiles(file('Layout.PcbDoc')); await loaded(page, 'Layout.PcbDoc');
+  await page.locator('#measure-btn').click();
+  await page.locator('#view').click({ position: { x: 200, y: 200 } });
+  await page.locator('#view').click({ position: { x: 400, y: 300 } });
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  await clickSchematicGraphic(page, symbolBodies(page).first());
+  await clickSchematicGraphic(page, symbolBodies(page).nth(1), true);
+  await page.locator('#label-1 text').click({ modifiers: ['Shift'] });
+  const selection = await schematicStatus(page), schematicView = await page.locator('#view > svg').getAttribute('viewBox');
+  assert.equal(await page.locator('#probe-layout option:checked').textContent(), 'Layout.PcbDoc');
+  await page.locator('#probe-layout-btn').click();
+  assert.equal(await activeName(page), 'Layout.PcbDoc');
+  assert.equal(await page.locator('.component-match').count(), 2);
+  assert.equal(await page.locator('.net-match').count(), 2);
+  assert.equal(await page.locator('#component-query').inputValue(), 'R99, U7');
+  assert.equal(await page.locator('#net-query').inputValue(), 'PCB_SIGNAL', 'pad connectivity wins over a coincident net name');
+  assert.equal(await page.locator('#pcb-other').evaluate(el => el.classList.contains('net-match') || el.classList.contains('component-match')), false);
+  assert.equal(await page.getByRole('checkbox', { name: 'Mechanical 1', exact: true }).isChecked(), true);
+  assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), '0 0 100 80');
+  assert.equal(await page.locator('#measure line').count(), 1, 'completed PCB measurements survive cross-probing');
+  assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
+  await page.locator('#probe-back').click();
+  assert.equal(await activeName(page), 'Sheet.SchDoc');
+  assert.equal(await schematicStatus(page), selection);
+  assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), schematicView);
+  await page.getByRole('tab', { name: 'Layout.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('.component-match').count(), 2, 'exact multi-selection survives remounting');
+  await page.locator('#component-query').fill('R10');
+  assert.equal(await page.locator('.component-match').count(), 1, 'typing replaces the probed component selection');
+  assert.equal(await page.locator('#probe-result').isVisible(), false);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.component-match, .net-match').count(), 0);
+  assert.equal(requests.length, 2, 'cross-probing uses the already-rendered documents');
+});
+
+test('cross-probing requires an open layout and a selection, and lets users choose among layouts', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? probingSchematicData(name) : probingLayoutData(name)) });
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  assert.equal(await page.locator('#probe-layout-btn').isDisabled(), true);
+  assert.match(await page.locator('#probe-status').textContent(), /Open a .PcbDoc/);
+  await page.locator('#file').setInputFiles([file('First.PcbDoc'), file('Second.PcbDoc')]); await loaded(page, 'Second.PcbDoc');
+  await page.getByRole('tab', { name: 'Sheet.SchDoc', exact: true }).click();
+  assert.equal(await page.locator('#probe-layout-btn').isDisabled(), true);
+  await clickSchematicGraphic(page, symbolBodies(page).first());
+  assert.equal(await page.locator('#probe-layout-btn').isDisabled(), true, 'no arbitrary target when several layouts are open');
+  const value = await page.locator('#probe-layout option').filter({ hasText: 'Second.PcbDoc' }).getAttribute('value');
+  await page.locator('#probe-layout').selectOption(value);
+  await page.locator('#probe-layout-btn').click();
+  assert.equal(await activeName(page), 'Second.PcbDoc');
+  await page.getByRole('tab', { name: 'First.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('.component-match').count(), 0, 'other layouts are untouched');
+  await page.getByRole('tab', { name: 'Sheet.SchDoc', exact: true }).click();
+  await page.getByRole('button', { name: 'Close Second.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#probe-layout option:checked').textContent(), 'First.PcbDoc');
+  await page.getByRole('button', { name: 'Close First.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#probe-layout-btn').isDisabled(), true);
+});
+
+test('cross-probing falls back to exact designators, net names, and aliases when source/pin links are absent', async t => {
+  const { page } = await openPage(t, { render: (route, name) => {
+    if (name.endsWith('.SchDoc')) {
+      const data = probingSchematicData(name);
+      data.selection.nets[0].terminals = []; data.selection.nets[0].aliases = ['earth'];
+      return reply(route, data);
+    }
+    const data = probingLayoutData(name); data.layout_components = [];
+    data.svg = data.svg.replaceAll('R99', 'r1').replaceAll('PCB_SIGNAL', 'EARTH').replace('data-net="GND"', 'data-net="GND_EXTRA"');
+    return reply(route, data);
+  } });
+  await page.locator('#file').setInputFiles(file('Layout.PcbDoc')); await loaded(page, 'Layout.PcbDoc');
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  await clickSchematicGraphic(page, symbolBodies(page).first());
+  await page.locator('#label-1 text').click({ modifiers: ['Shift'] });
+  await clickSchematicGraphic(page, page.locator('#wire-3 .sch-hit'), true);
+  await page.locator('#probe-layout-btn').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'r1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'EARTH, VCC');
+  assert.equal(await page.locator('.net-match').count(), 3);
+  assert.equal(await page.locator('#pcb-other').evaluate(el => el.classList.contains('net-match')), false);
+  await page.getByRole('button', { name: 'Close Sheet.SchDoc', exact: true }).click();
+  assert.equal(await page.locator('#probe-back').isDisabled(), true);
+});
+
+test('unmatched and conflicting schematic probes are reported without selecting similar names or unrelated nets', async t => {
+  let conflicting = false;
+  const { page } = await openPage(t, { render: (route, name) => {
+    if (name.endsWith('.SchDoc')) return reply(route, probingSchematicData(name));
+    const data = probingLayoutData(name);
+    if (!conflicting) data.svg = data.svg.replaceAll('R99', 'R10').replaceAll('PCB_SIGNAL', 'OTHER');
+    else data.svg = data.svg.replace('id="pcb-track"', 'id="pcb-track" data-component="R99" data-pad-number="1"').replace('data-net="PCB_SIGNAL" x="20"', 'data-net="CONFLICT" x="20"');
+    return reply(route, data);
+  } });
+  await page.locator('#file').setInputFiles(file('Missing.PcbDoc')); await loaded(page, 'Missing.PcbDoc');
+  await page.locator('#component-query').fill('R10');
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  await clickSchematicGraphic(page, symbolBodies(page).first());
+  await page.locator('#probe-layout-btn').click();
+  assert.equal(await activeName(page), 'Sheet.SchDoc');
+  assert.match(await page.locator('#probe-status').textContent(), /No matches.*\nNot found: component R1/);
+  await page.getByRole('tab', { name: 'Missing.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R10', 'an unsuccessful probe leaves prior selection intact');
+  conflicting = true;
+  await page.locator('#file').setInputFiles(file('Conflict.PcbDoc')); await loaded(page, 'Conflict.PcbDoc');
+  await page.getByRole('tab', { name: 'Sheet.SchDoc', exact: true }).click();
+  await page.locator('#label-1 text').click({ modifiers: ['Shift'] });
+  const target = await page.locator('#probe-layout option').filter({ hasText: 'Conflict.PcbDoc' }).getAttribute('value');
+  await page.locator('#probe-layout').selectOption(target);
+  await page.locator('#probe-layout-btn').click();
+  assert.equal(await activeName(page), 'Conflict.PcbDoc');
+  assert.equal(await page.locator('.component-match').count(), 2);
+  assert.equal(await page.locator('.net-match').count(), 0);
+  assert.match(await page.locator('#probe-result-status').textContent(), /net GND \(ambiguous\)/);
+});
+
 test('preserves each board’s layers, zoom, pan, measurements, and units', async t => {
   const { page, requests } = await openPage(t);
   await page.locator('#file').setInputFiles(file('A.PcbDoc'));
@@ -533,6 +672,23 @@ test('loads and uploads a real schematic through the Python server', {
   assert.equal(await page.locator('.sch-net-match').count(), expected);
   assert.ok(expected > 1, 'clicking actual pin or wire highlights connected graphics');
   if (process.env.SCH_TEST_SCREENSHOT) await page.screenshot({ path: process.env.SCH_TEST_SCREENSHOT });
+  if (process.env.PCB_TEST_FILE) {
+    const sourceTab = await page.locator('[role="tab"][aria-selected="true"]').getAttribute('id');
+    const selection = await schematicStatus(page), viewBox = await page.locator('#view > svg').getAttribute('viewBox');
+    await page.locator('#file').setInputFiles(process.env.PCB_TEST_FILE);
+    await page.waitForFunction(() => document.querySelectorAll('[role="tab"]').length === 3 &&
+      document.getElementById('busy').style.display === 'none');
+    await page.locator('#' + sourceTab).click();
+    await page.locator('#probe-layout-btn').click();
+    assert.match(await page.locator('#filename').textContent(), /\.PcbDoc$/i);
+    assert.ok(await page.locator('.component-match').count() > 0);
+    assert.ok(await page.locator('.net-match').count() > 0);
+    assert.doesNotMatch(await page.locator('#probe-result-status').textContent(), /Not found/);
+    if (process.env.PROBE_TEST_SCREENSHOT) await page.screenshot({ path: process.env.PROBE_TEST_SCREENSHOT });
+    await page.locator('#probe-back').click();
+    assert.equal(await schematicStatus(page), selection);
+    assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewBox);
+  }
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('.sch-component-match, .sch-net-match').count(), 0);
 });
