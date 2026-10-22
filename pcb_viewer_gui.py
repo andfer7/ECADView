@@ -233,7 +233,7 @@ PAGE = r"""<!DOCTYPE html>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <div id="readout"></div>
-      <div class="hint">Click copper to select a net. Scroll to zoom, drag to pan, double-click to reset. Measure: click two points. Esc cancels measurement and deselects the net; Shift+C clears all measurements.</div>
+      <div class="hint">Click copper to select a net. Scroll to zoom, drag to pan, double-click to reset. Measure: click two points. Esc exits measurement mode and deselects the net; Shift+C clears all measurements.</div>
     </div>
     <div id="stats"></div>
   </div>
@@ -644,7 +644,7 @@ PAGE = r"""<!DOCTYPE html>
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       e.preventDefault();
-      clearNet(); pts = []; hover = null; draw();
+      clearNet(); setMeasuring(false);
       return;
     }
     if (e.target.closest('input, textarea, select, [contenteditable]')) return;
