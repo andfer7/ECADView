@@ -192,9 +192,7 @@ PAGE = r"""<!DOCTYPE html>
   #warnings { color: #efc578; font-size: 12px; white-space: pre-line; margin-top: 6px; }
   #component-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
                      border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
-  #scene .component-match, #scene .component-match * { fill: #ffe066 !important; stroke: #ffe066 !important; }
-  #scene .component-match { filter: drop-shadow(0 0 0.25px #ffe066); }
-  #scene #component-highlight * { fill: #ffe066 !important; stroke: #ffe066 !important; }
+  #view svg.layout-selection #scene > :not(#component-highlight):not(#net-highlight) { filter: opacity(0.15); }
   button { background: #3a3e45; color: var(--text); border: 1px solid #4a4f58; border-radius: 4px;
            padding: 5px 8px; cursor: pointer; font: inherit; }
   button:hover { background: #474c56; }
@@ -211,10 +209,6 @@ PAGE = r"""<!DOCTYPE html>
   .count { margin-left: auto; color: var(--muted); font-size: 11px; }
   #net-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
                      border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
-  #scene .net-match, #scene .net-match * { fill: #68e0ff !important; stroke: #68e0ff !important; }
-  #scene .net-match { filter: drop-shadow(0 0 0.25px #68e0ff); }
-  #scene #net-highlight * { fill: #68e0ff !important; stroke: #68e0ff !important; }
-  #scene .net-match[data-primitive$="region"], #scene #net-highlight [fill-rule="evenodd"] { stroke: none !important; }
   #scene .sch-component-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #bd6100 !important; stroke-width: 2px !important; }
   #scene .sch-component-match text { fill: #bd6100 !important; }
   #scene .sch-net-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #007f9d !important; stroke-width: 3px !important; }
@@ -669,6 +663,48 @@ PAGE = r"""<!DOCTYPE html>
     activeBoard[kind] = null; activeBoard.probeResult = null; updateProbeResult();
   }
 
+  // ------------------------------------------------------------ layout highlight drawing
+  function buildLayoutHighlight(id, hits, color) {
+    svg?.querySelector('#' + id)?.remove();
+    const overlay = document.createElementNS(NS, 'g'); overlay.id = id;
+    overlay.style.pointerEvents = 'none';
+    const matched = new Set(hits), branches = new Set();
+    for (const el of hits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
+    function tintedCopy(node) {
+      const copy = node.cloneNode(true);
+      const originals = [node, ...node.querySelectorAll('*')], copies = [copy, ...copy.querySelectorAll('*')];
+      for (let i = 0; i < originals.length; i++) {
+        const original = originals[i], clone = copies[i];
+        // Drill cutouts keep their paint. Tinting them would fill pad/via holes.
+        if (!original.matches('path, rect, circle, ellipse, line, polyline, polygon, text, tspan, use') ||
+            original.closest('[data-hole-owner], [data-primitive$="-hole"]')) continue;
+        const paint = getComputedStyle(original);
+        for (const property of ['fill', 'stroke']) {
+          const value = paint[property];
+          clone.style.setProperty(property, ['none', 'transparent', 'rgba(0, 0, 0, 0)'].includes(value) ? value : color, 'important');
+        }
+        clone.style.setProperty('stroke-width', paint.strokeWidth, 'important');
+      }
+      return copy;
+    }
+    function branch(node) {
+      if (matched.has(node)) return tintedCopy(node);
+      const copy = node.cloneNode(false);
+      for (const child of node.children) if (branches.has(child)) copy.append(branch(child));
+      return copy;
+    }
+    // Keep the renderer's transforms, clipping, widths, and shape geometry.
+    // Only the original layer groups are faded; these copies stay at full opacity.
+    for (const group of groups) if (group.style.display !== 'none' && branches.has(group)) overlay.append(branch(group));
+    for (const el of overlay.querySelectorAll('*')) {
+      el.removeAttribute('id'); el.classList.remove('component-match', 'net-match');
+      for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
+    }
+    if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
+    svg?.classList.toggle('layout-selection', Boolean(svg.querySelector('#component-highlight, #net-highlight')));
+    return { overlay, hidden: groups.filter(group => group.style.display === 'none' && branches.has(group)).length };
+  }
+
   // ------------------------------------------------------------ component search
   let componentIndex = new Map(), componentHits = [];
   function mountComponentSearch() {
@@ -699,26 +735,7 @@ PAGE = r"""<!DOCTYPE html>
     updateComponentStatus(matches.length);
   }
   function updateComponentStatus(count = new Set(componentHits.map(el => el.dataset.component)).size) {
-    svg?.querySelector('#component-highlight')?.remove();
-    const overlay = document.createElementNS(NS, 'g'); overlay.id = 'component-highlight';
-    overlay.style.pointerEvents = 'none';
-    const matched = new Set(componentHits), branches = new Set();
-    for (const el of componentHits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
-    // Copy just the matching branches, retaining ancestor transforms and clips.
-    // The overlay paints above other layers without changing their paint order.
-    function branch(node) {
-      if (matched.has(node)) return node.cloneNode(true);
-      const copy = node.cloneNode(false);
-      for (const child of node.children) if (branches.has(child)) copy.append(branch(child));
-      return copy;
-    }
-    for (const g of groups) if (g.style.display !== 'none' && branches.has(g)) overlay.append(branch(g));
-    for (const el of overlay.querySelectorAll('*')) {
-      el.removeAttribute('id'); el.classList.remove('component-match', 'net-match');
-      for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
-    }
-    if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
-    const hidden = groups.filter(g => g.style.display === 'none' && branches.has(g)).length;
+    const { overlay, hidden } = buildLayoutHighlight('component-highlight', componentHits, '#ffe066');
     $('component-fit').disabled = !overlay.childElementCount;
     $('component-reveal').hidden = !hidden;
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
@@ -808,26 +825,7 @@ PAGE = r"""<!DOCTYPE html>
     updateNetStatus(matches.length);
   }
   function updateNetStatus(count = new Set(netHits.map(el => el.dataset.net)).size) {
-    svg?.querySelector('#net-highlight')?.remove();
-    const overlay = document.createElementNS(NS, 'g'); overlay.id = 'net-highlight';
-    overlay.style.pointerEvents = 'none';
-    const matched = new Set(netHits), branches = new Set();
-    for (const el of netHits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
-    // Copy just the matching branches, retaining ancestor transforms and clips.
-    // The overlay paints above other layers without changing their paint order.
-    function branch(node) {
-      if (matched.has(node)) return node.cloneNode(true);
-      const copy = node.cloneNode(false);
-      for (const child of node.children) if (branches.has(child)) copy.append(branch(child));
-      return copy;
-    }
-    for (const g of groups) if (g.style.display !== 'none' && branches.has(g)) overlay.append(branch(g));
-    for (const el of overlay.querySelectorAll('*')) {
-      el.removeAttribute('id'); el.classList.remove('component-match', 'net-match');
-      for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
-    }
-    if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
-    const hidden = groups.filter(g => g.style.display === 'none' && branches.has(g)).length;
+    const { overlay, hidden } = buildLayoutHighlight('net-highlight', netHits, '#68e0ff');
     $('net-fit').disabled = !overlay.childElementCount;
     $('net-reveal').hidden = !hidden;
     $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :

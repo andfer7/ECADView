@@ -761,7 +761,7 @@ test('finds nets case insensitively, prefers exact net names and safely clears h
   assert.match(await page.locator('#net-status').textContent(), /2 nets highlighted/);
   await page.locator('#net-query').fill('gnd');
   assert.equal(await page.locator('.net-match').count(), 2);
-  assert.equal(await page.locator('.net-match').first().evaluate(el => getComputedStyle(el).fill), 'rgb(104, 224, 255)');
+  assert.equal(await page.locator('.net-match').first().evaluate(el => getComputedStyle(el).fill), 'rgb(255, 0, 0)', 'original renderer paint is unchanged');
   assert.equal(await page.locator('#scene > g').last().getAttribute('id'), 'net-highlight');
   assert.equal(await page.locator('#net-highlight [id], #net-highlight [data-net]').count(), 0);
   assert.equal(await page.locator('.net-match').first().evaluate(el => {
@@ -941,7 +941,7 @@ test('finds components case insensitively, prefers exact designators and safely 
   assert.match(await page.locator('#component-status').textContent(), /2 components highlighted/);
   await page.locator('#component-query').fill('r1');
   assert.equal(await page.locator('.component-match').count(), 2);
-  assert.equal(await page.locator('.component-match').first().evaluate(el => getComputedStyle(el).fill), 'rgb(255, 224, 102)');
+  assert.equal(await page.locator('.component-match').first().evaluate(el => getComputedStyle(el).fill), 'rgb(255, 0, 0)', 'original renderer paint is unchanged');
   assert.equal(await page.locator('#scene > g').last().getAttribute('id'), 'component-highlight');
   assert.equal(await page.locator('#component-highlight [id], #component-highlight [data-component]').count(), 0);
   assert.equal(await page.locator('.component-match').first().evaluate(el => {
@@ -1024,6 +1024,91 @@ test('component and net highlights coexist with default layers and saved measure
   await page.locator('#view').click({ position: { x: 300, y: 200 } });
   await page.keyboard.press('Shift+C');
   assert.equal(await page.locator('#measure line').count(), 0);
+});
+
+const preciseLayoutData = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+  <defs><clipPath id="precise-clip"><rect width="96" height="76"/></clipPath></defs>
+  <g id="scene" transform="translate(2 1)">
+    <g id="layer-top" data-layer-name="Top copper" clip-path="url(#precise-clip)">
+      <circle id="precise-pad" data-primitive="pad" data-component="R1" data-net="GND" cx="15" cy="15" r="3" fill="red"/>
+      <circle id="precise-via" data-primitive="via" data-net="GND" cx="35" cy="15" r="1.2" fill="red"/>
+      <path id="precise-track" data-net="GND" d="M15 15 H35" stroke="red" stroke-width="0.6" fill="none" stroke-linecap="round"/>
+      <g data-net="GND" stroke="red" fill="none" stroke-width="0.4"><path id="precise-outline" d="M55 10 H65 V20 H55 Z"/></g>
+      <path id="precise-pour" data-net="GND" d="M10 35 H50 V65 H10 Z M20 45 H30 V55 H20 Z" fill="blue" stroke="none" fill-rule="evenodd"/>
+      <rect id="precise-other" data-net="VCC" x="70" y="50" width="10" height="10" fill="green"/>
+    </g>
+    <g id="layer-topoverlay" data-layer-name="Top overlay"><path data-component="R1" d="M10 10 H20 V20 H10 Z" stroke="yellow" stroke-width="0.2" fill="none"/></g>
+    <g id="layer-drills" data-layer-role="drill" data-layer-name="Drills">
+      <circle id="precise-pad-hole" data-primitive="pad-hole" data-hole-owner="pad" data-component="R1" data-net="GND" cx="15" cy="15" r="1" fill="white"/>
+      <circle id="precise-via-hole" data-primitive="via-hole" data-hole-owner="via" data-net="GND" cx="35" cy="15" r="0.4" fill="white"/>
+    </g>
+  </g></svg>` });
+const layoutPaint = (page, selector) => page.locator(selector).evaluate(el => {
+  const style = getComputedStyle(el), b = el.getBBox();
+  return { fill: style.fill, stroke: style.stroke, width: style.strokeWidth, filter: style.filter,
+    bbox: [b.x, b.y, b.width, b.height], rule: style.fillRule };
+});
+
+test('layout highlights preserve pad/via sizes, drill holes, unfilled geometry and stroke widths while fading the board', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, preciseLayoutData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  const pad = await layoutPaint(page, '#precise-pad'), via = await layoutPaint(page, '#precise-via');
+  const track = await layoutPaint(page, '#precise-track'), outline = await layoutPaint(page, '#precise-outline');
+  const original = await page.locator('#scene').evaluate(el => [...el.querySelectorAll('[id]')].map(node =>
+    [...node.attributes].filter(attr => attr.name !== 'class').map(attr => [attr.name, attr.value])));
+  await page.locator('#net-query').fill('GND');
+  for (const [selector, paint] of [['#net-highlight circle[r="3"]', pad], ['#net-highlight circle[r="1.2"]', via]]) {
+    const selected = await layoutPaint(page, selector);
+    assert.deepEqual(selected.bbox, paint.bbox);
+    assert.equal(selected.stroke, 'none', 'highlighting a filled pad/via must not add an outline');
+    assert.equal(selected.filter, 'none', 'highlights must not add glow beyond the original geometry');
+  }
+  for (const [selector, paint] of [['#net-highlight path[d="M15 15 H35"]', track], ['#net-highlight path[d="M55 10 H65 V20 H55 Z"]', outline]]) {
+    const selected = await layoutPaint(page, selector);
+    assert.equal(selected.width, paint.width);
+    assert.equal(selected.fill, 'none', 'unfilled shapes must stay unfilled');
+    assert.deepEqual(selected.bbox, paint.bbox);
+  }
+  for (const radius of ['1', '0.4']) {
+    const hole = await layoutPaint(page, `#net-highlight circle[r="${radius}"]`);
+    assert.equal(hole.fill, 'rgb(255, 255, 255)');
+    assert.equal(hole.stroke, 'none');
+  }
+  assert.equal(await page.locator('#net-highlight [fill-rule="evenodd"]').getAttribute('d'), await page.locator('#precise-pour').getAttribute('d'));
+  assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'opacity(0.15)');
+  assert.equal(await page.locator('#net-highlight').evaluate(el => getComputedStyle(el).filter), 'none');
+  assert.equal(await page.locator('#measure').evaluate(el => getComputedStyle(el).filter), 'none');
+  await page.locator('#component-query').fill('R1');
+  assert.equal((await layoutPaint(page, '#component-highlight circle[r="3"]')).stroke, 'none');
+  assert.equal((await layoutPaint(page, '#component-highlight circle[r="1"]')).fill, 'rgb(255, 255, 255)');
+  assert.equal((await layoutPaint(page, '#component-highlight path')).fill, 'none');
+  await page.locator('#net-clear').click();
+  assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'opacity(0.15)', 'component selection keeps dimming active');
+  await page.locator('#component-clear').click();
+  assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'none');
+  assert.deepEqual(await page.locator('#scene').evaluate(el => [...el.querySelectorAll('[id]')].map(node =>
+    [...node.attributes].filter(attr => attr.name !== 'class').map(attr => [attr.name, attr.value]))), original);
+});
+
+test('layout dimming follows visible matches, clears with Escape, and stays with its own PCB tab', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, preciseLayoutData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#net-query').fill('missing');
+  assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'none');
+  await page.locator('#net-query').fill('GND');
+  await page.getByRole('button', { name: 'Hide all', exact: true }).click();
+  assert.equal(await page.locator('#view > svg').evaluate(el => el.classList.contains('layout-selection')), false);
+  await page.getByRole('button', { name: 'Show all', exact: true }).click();
+  assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'opacity(0.15)');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'none');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'opacity(0.15)');
+  await page.locator('#precise-other').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'dimmed items remain clickable');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#component-highlight, #net-highlight').count(), 0);
+  assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'none');
 });
 
 test('net search highlights filled polygon copper and preserves its holes and layer controls', async t => {
