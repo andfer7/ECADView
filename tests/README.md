@@ -63,3 +63,9 @@ Component pin tests cover numeric/alphanumeric identifiers, unconnected pads,
 two-row pin/net captions, cramped-pad fallback, mirrored pads, holes, visibility,
 navigation, and click-through interactions. A generated PCB verifies source pad
 numbers and component links in full, top, and bottom render modes.
+
+3D tests round-trip a generated PCB through the real parser, verify board and
+body dimensions, bottom-side standoffs, curved outlines, merged drills, slots,
+edge notches, and fallback notices. Browser coverage checks actual WebGL output,
+camera controls and tab persistence, preservation of 2D state, lazy local assets,
+unsupported browsers, and an uploaded generated PcbDoc through the real server.

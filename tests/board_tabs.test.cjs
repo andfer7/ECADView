@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { before, after, test } = require('node:test');
 const { resolve } = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const { once } = require('node:events');
 const { chromium } = require('playwright');
 
@@ -49,6 +49,16 @@ const boardData = (name, components = 1) => ({
   </svg>`,
   stats: { components, pads: 2, tracks: 3, vias: 4, polygons: 5, regions: 6 },
 });
+const threeBoardData = name => ({ ...boardData(name), kind: 'pcb', scene3d: {
+  board: [{ outline: [[-25, -15], [25, -15], [25, 15], [-25, 15]],
+    holes: [[[-2, -2], [-2, 2], [2, 2], [2, -2]]] }],
+  thickness: 1.6, bodies: [
+    { outline: [[-18, -9], [-8, -9], [-8, 1], [-18, 1]], holes: [], z: 0.8, height: 4,
+      color: 0xbbbbbb, opacity: 1, name: 'U1' },
+    { outline: [[8, 3], [16, 3], [16, 10], [8, 10]], holes: [], z: -3.8, height: 3,
+      color: 0xdd9944, opacity: 1, name: 'U2' },
+  ], notes: ['Simplified component bodies.'], units: 'mm',
+} });
 const schematicData = name => ({
   name, kind: 'schematic', stats: { components: 3, wires: 7, net_labels: 2 },
   svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 1100" data-board="${name}">
@@ -2133,4 +2143,155 @@ test('pin captions remain upright on mirrored pads, avoid holes and respect laye
   const after = await pinNamed(page, '1').boundingBox();
   near(after.x - before.x, -25, 'pin follows pan X', 0.1); near(after.y - before.y, -10, 'pin follows pan Y', 0.1);
   await page.locator('#view-fit').click(); assert.equal(await pinCaptions(page).count(), 0);
+});
+
+const wait3D = page => page.waitForFunction(() =>
+  !document.getElementById('three-view').hidden && document.getElementById('three-summary').textContent.includes(' bodies'));
+const image3D = async page => {
+  await settleView(page);
+  return page.locator('#three-view canvas').screenshot();
+};
+
+test('3D renders local solids, preserves 2D measurements and layers, and remembers cameras across tabs', async t => {
+  const { page, requests } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? schematicData(name) : threeBoardData(name)) });
+  const assets = [];
+  page.on('request', request => assets.push(request.url()));
+  await page.locator('#file').setInputFiles(file('A.PcbDoc'));
+  await loaded(page, 'A.PcbDoc');
+  assert.ok(!assets.some(url => url.includes('three.module')), '3D assets load only on demand');
+  await page.locator('#zoom-in').click();
+  await settleView(page);
+  const before = await currentViewBox(page);
+  await page.locator('#measure-btn').click();
+  await page.locator('#view > svg').click({ position: { x: 300, y: 300 } });
+  await page.locator('#view > svg').click({ position: { x: 350, y: 330 } });
+  assert.equal(await page.locator('#measure line').count(), 1);
+  await page.locator('#none').click();
+  await page.locator('#mode-3d').click();
+  await wait3D(page);
+  assert.equal(await page.locator('#mode-3d').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#view > svg').isVisible(), false);
+  assert.equal(await page.locator('#layers-wrap').isVisible(), false);
+  assert.match(await page.locator('#three-status').textContent(), /Simplified/);
+  const iso = await image3D(page);
+  await page.locator('#three-top').click();
+  const top = await image3D(page);
+  assert.notDeepEqual(iso, top, 'preset changes actual rendered pixels');
+  await page.locator('#three-bottom').click();
+  const bottom = await image3D(page);
+  assert.notDeepEqual(top, bottom, 'both sides render differently');
+  await page.locator('#three-iso').click();
+  const canvas = page.locator('#three-view canvas');
+  const rect = await canvas.boundingBox();
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + rect.width / 2 + 100, rect.y + rect.height / 2 + 40, { steps: 5 });
+  await page.mouse.up();
+  const rotated = await image3D(page);
+  assert.notDeepEqual(iso, rotated, 'drag rotates the solids');
+  await page.locator('#zoom-in').click();
+  const zoomed = await image3D(page);
+  assert.notDeepEqual(rotated, zoomed, 'zoom button affects 3D');
+  assert.deepEqual(await currentViewBox(page), before, '3D interaction leaves the SVG camera unchanged');
+  await page.locator('#file').setInputFiles([file('B.PcbDoc'), file('sheet.SchDoc')]);
+  await loaded(page, 'sheet.SchDoc');
+  assert.equal(await page.locator('#view-mode').isVisible(), false);
+  assert.equal(await page.locator('#three-view').isVisible(), false);
+  await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#mode-2d').getAttribute('aria-pressed'), 'true');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  await wait3D(page);
+  assert.deepEqual(await image3D(page), zoomed, 'restores the saved 3D camera');
+  await page.locator('#mode-2d').click();
+  assert.deepEqual(await currentViewBox(page), before);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('#scene #layer-top').evaluate(el => el.style.display), 'none');
+  await page.locator('#mode-3d').click();
+  await wait3D(page);
+  assert.deepEqual(await image3D(page), zoomed, 'mode toggling also restores the camera');
+  await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#three-view').isVisible(), false);
+  assert.equal(requests.length, 3, 'camera and tab changes never re-upload files');
+  assert.ok(assets.every(url => new URL(url).origin === new URL(origin).origin), 'all assets stay local');
+});
+
+test('3D requires an outline and an unavailable WebGL context returns safely to 2D', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    name === 'missing.PcbDoc' ? { ...boardData(name), scene3d: { board: [], notes: ['No board outline.'] } } : threeBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('missing.PcbDoc'));
+  await loaded(page, 'missing.PcbDoc');
+  assert.equal(await page.locator('#mode-3d').isDisabled(), true);
+  assert.match(await page.locator('#three-status').textContent(), /No board outline/);
+  await page.locator('#file').setInputFiles(file('A.PcbDoc'));
+  await loaded(page, 'A.PcbDoc');
+  await page.evaluate(() => {
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+      return type.startsWith('webgl') ? null : getContext.call(this, type, ...args);
+    };
+  });
+  await page.locator('#mode-3d').click();
+  await page.waitForFunction(() => document.getElementById('three-status').textContent.includes('WebGL'));
+  assert.equal(await page.locator('#mode-2d').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#view > svg').isVisible(), true);
+  assert.equal(await page.locator('#three-view').isVisible(), false);
+});
+
+test('a delayed 3D import cannot mount onto another tab', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, threeBoardData(name)) });
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  await page.route('**/viewer-3d.js', async route => { await blocked; await route.continue(); });
+  await page.locator('#file').setInputFiles([file('A.PcbDoc'), file('B.PcbDoc')]);
+  await loaded(page, 'B.PcbDoc');
+  const requested = page.waitForRequest('**/viewer-3d.js');
+  await page.locator('#mode-3d').click();
+  await requested;
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  release();
+  await page.waitForResponse('**/viewer-3d.js');
+  await settleView(page);
+  assert.equal(await page.locator('#three-view').isVisible(), false);
+  assert.equal(await activeName(page), 'A.PcbDoc');
+  await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
+  await wait3D(page);
+  assert.equal(await activeName(page), 'B.PcbDoc');
+});
+
+test('uploads a generated PcbDoc and displays its parsed board and bodies in WebGL', async t => {
+  const data = execFileSync(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'), ['-c', `
+import sys, tempfile
+from pathlib import Path
+from altium_monkey import AltiumPcbDoc
+from altium_monkey.altium_board import AltiumBoardOutline
+from altium_monkey.altium_pcb_enums import PcbBodyProjection
+p = AltiumPcbDoc()
+p.set_board_outline(AltiumBoardOutline.from_points_mils([(0,0),(2000,0),(2000,1200),(1600,1200),(1600,1600),(0,1600)]))
+p.add_region(outline_points_mils=[(800,600),(1100,600),(1100,900),(800,900)], is_board_cutout=True)
+for x, y in [(100,100),(1900,100),(100,1500)]:
+ p.add_pad(designator='1', position_mils=(x,y), width_mils=130, height_mils=130, hole_size_mils=90)
+p.add_pad(designator='2', position_mils=(1200,1300), width_mils=150, height_mils=150, hole_size_mils=80, slot_length_mils=280, slot_rotation_degrees=35)
+p.add_extruded_3d_body(outline_points_mils=[(200,300),(600,300),(600,700),(200,700)], overall_height_mils=200, body_color_3d=0x444444)
+p.add_extruded_3d_body(outline_points_mils=[(1200,200),(1700,200),(1700,400),(1200,400)], overall_height_mils=250, body_color_3d=0xBBBBBB)
+p.add_extruded_3d_body(outline_points_mils=[(200,1000),(500,1000),(500,1300),(200,1300)], overall_height_mils=100, side=PcbBodyProjection.BOTTOM, body_color_3d=0x4477DD)
+with tempfile.TemporaryDirectory() as tmp:
+ path = Path(tmp) / 'generated.PcbDoc'
+ p.save(path)
+ sys.stdout.buffer.write(path.read_bytes())
+`]);
+  const { page } = await openPage(t);
+  await page.unroute('**/render');
+  await page.locator('#file').setInputFiles({ name: 'generated.PcbDoc', mimeType: 'application/octet-stream', buffer: data });
+  await page.waitForFunction(() => document.getElementById('filename').textContent === 'generated.PcbDoc' && document.getElementById('busy').style.display === 'none');
+  assert.equal(await page.locator('#mode-3d').isEnabled(), true);
+  await page.locator('#mode-3d').click();
+  await wait3D(page);
+  assert.match(await page.locator('#three-summary').textContent(), /3 bodies/);
+  const iso = await image3D(page);
+  if (process.env.PCB_3D_SCREENSHOT) await page.screenshot({ path: process.env.PCB_3D_SCREENSHOT });
+  await page.locator('#three-top').click();
+  assert.notDeepEqual(await image3D(page), iso);
+  await page.locator('#mode-2d').click();
+  assert.equal(await page.locator('#view > svg').isVisible(), true);
 });

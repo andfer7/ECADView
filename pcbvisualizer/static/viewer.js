@@ -58,6 +58,7 @@ import { NetLabels } from './net-labels.js';
   }
   function mountBoard(board) {
     cancelViewUpdate();
+    unmount3D();
     if (svg) svg.remove();
     activeBoard = board; drag = null; gestureScale = null;
     ({ svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg } = board || {
@@ -82,6 +83,7 @@ import { NetLabels } from './net-labels.js';
     document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
     layersEl.replaceChildren();
     if (svg) {
+      svg.style.display = '';
       view.prepend(svg);
       if (schematic) buildSchematicComponentTargets(board);
       else buildLayers();
@@ -93,6 +95,7 @@ import { NetLabels } from './net-labels.js';
     mountComponentSearch();
     updateSchematicSelection();
     netLabels.update(activeBoard);
+    mountViewMode();
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
     else $('view').removeAttribute('aria-labelledby');
   }
@@ -157,7 +160,7 @@ import { NetLabels } from './net-labels.js';
     }
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
-                           layoutComponents: data.layout_components || [],
+                           layoutComponents: data.layout_components || [], scene3d: data.scene3d, camera3d: null,
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
     if (kind === 'schematic') prepareSchematicSelection(board, data.selection);
     if (board === activeBoard) mountBoard(board);
@@ -170,6 +173,69 @@ import { NetLabels } from './net-labels.js';
   view.addEventListener('drop', e => { e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files); });
 
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 5000); }
+
+  // ------------------------------------------------------------ 3D mode
+  let threeViewer = null, threeModule = null, threeMount = 0, threeBoard = null;
+  function is3D() { return activeBoard?.mode === '3d'; }
+  function unmount3D() {
+    threeMount++;
+    if (threeBoard) threeBoard.camera3d = threeViewer?.state();
+    threeBoard = null;
+    threeViewer?.clear();
+    $('three-view').hidden = true;
+  }
+  function mountViewMode() {
+    const available = activeBoard?.kind !== 'schematic' && Boolean(activeBoard?.scene3d?.board?.length);
+    if (!available && activeBoard) activeBoard.mode = '2d';
+    const showing = is3D();
+    $('mode-2d').disabled = !svg;
+    $('mode-3d').disabled = !available;
+    for (const mode of ['2d', '3d']) {
+      $('mode-' + mode).classList.toggle('on', (mode === '3d') === showing);
+      $('mode-' + mode).setAttribute('aria-pressed', String((mode === '3d') === showing));
+    }
+    document.querySelectorAll('[data-2d-only]').forEach(el => { el.hidden = showing || activeBoard?.kind === 'schematic'; });
+    $('three-controls').hidden = !showing;
+    $('three-status').textContent = (activeBoard?.scene3d?.notes || []).join('\n');
+    $('three-status').hidden = !showing && available;
+    $('net-labels').hidden = showing; label.hidden = showing;
+    view.classList.toggle('measuring', !showing && measuring);
+    if (svg) svg.style.display = showing ? 'none' : '';
+    if (showing) show3D();
+  }
+  async function show3D() {
+    const board = activeBoard, request = ++threeMount;
+    $('three-view').hidden = false;
+    $('three-summary').textContent = 'Loading 3D view…';
+    try {
+      threeModule ||= import('./viewer-3d.js');
+      const { Board3D } = await threeModule;
+      if (request !== threeMount || board !== activeBoard || !is3D()) return;
+      threeViewer ||= new Board3D($('three-view'), message => {
+        $('three-status').hidden = false; $('three-status').textContent = message;
+      });
+      threeViewer.show(board.scene3d, board.camera3d);
+      threeBoard = board;
+      $('three-summary').textContent = `${board.scene3d.thickness.toFixed(2)} mm board · ${board.scene3d.bodies.length} bodies`;
+    } catch (error) {
+      if (request !== threeMount || board !== activeBoard) return;
+      threeViewer?.clear();
+      threeBoard = null;
+      board.mode = '2d'; mountViewMode();
+      $('three-view').hidden = true;
+      $('three-status').hidden = false;
+      $('three-status').textContent = 'Could not open 3D. Check WebGL support in your browser. ' + error.message;
+    }
+  }
+  function setViewMode(mode) {
+    if (!activeBoard || activeBoard.kind === 'schematic') return;
+    unmount3D(); activeBoard.mode = mode; drag = null; gestureScale = null;
+    mountViewMode();
+    if (mode === '2d') apply();
+  }
+  $('mode-2d').onclick = () => setViewMode('2d');
+  $('mode-3d').onclick = () => setViewMode('3d');
+  for (const preset of ['top', 'bottom', 'iso']) $('three-' + preset).onclick = () => threeViewer?.fit(preset);
 
   // ------------------------------------------------------------ schematic selection
   function prepareSchematicSelection(board, selection = {}) {
@@ -379,7 +445,7 @@ import { NetLabels } from './net-labels.js';
     layout.probeComponents = [...components]; layout.probeNets = [...nets];
     layout.componentQuery = [...components].join(', '); layout.netQuery = [...nets].join(', ');
     layout.probeResult = probeResult(source, components, nets, unmatched);
-    activateBoard(layout); setMeasuring(false);
+    activateBoard(layout); setViewMode('2d'); setMeasuring(false);
     const hits = [...componentHits, ...netHits];
     for (const group of groups) if (group.style.display === 'none' && hits.some(el => group.contains(el))) group._cb.click();
     fitMatches(hits);
@@ -622,6 +688,7 @@ import { NetLabels } from './net-labels.js';
     search();
   }
   view.addEventListener('click', e => {
+    if (is3D()) return;
     if (!svg || measuring || panned || e.button !== 0) return;
     if (activeBoard.kind === 'schematic') { selectSchematic(e); return; }
     const primitive = e.target.closest('#scene [data-net]');
@@ -682,12 +749,12 @@ import { NetLabels } from './net-labels.js';
            w: vb.w * k, h: vb.h * k };
     queueViewUpdate();
   }
-  function resetView() { if (svg) { drag = null; vb = { ...home }; apply(); } }
-  $('zoom-in').onclick = () => zoomAt(centerPoint(), 1 / 1.25);
-  $('zoom-out').onclick = () => zoomAt(centerPoint(), 1.25);
+  function resetView() { if (is3D()) { threeViewer?.fit(); return; } if (svg) { drag = null; vb = { ...home }; apply(); } }
+  $('zoom-in').onclick = () => is3D() ? threeViewer?.zoom(1 / 1.25) : zoomAt(centerPoint(), 1 / 1.25);
+  $('zoom-out').onclick = () => is3D() ? threeViewer?.zoom(1.25) : zoomAt(centerPoint(), 1.25);
   $('view-fit').onclick = resetView;
   view.addEventListener('wheel', e => {
-    if (!svg) return;
+    if (!svg || is3D()) return;
     e.preventDefault();
     if (gestureScale !== null || !Number.isFinite(e.deltaX) || !Number.isFinite(e.deltaY)) return;
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? view.clientHeight : 1;
@@ -701,10 +768,10 @@ import { NetLabels } from './net-labels.js';
   }, { passive: false });
   // Safari exposes native pinch gestures separately from wheel events.
   view.addEventListener('gesturestart', e => {
-    if (!svg) return; e.preventDefault(); gestureScale = e.scale > 0 ? e.scale : 1;
+    if (!svg || is3D()) return; e.preventDefault(); gestureScale = e.scale > 0 ? e.scale : 1;
   }, { passive: false });
   view.addEventListener('gesturechange', e => {
-    if (!svg || gestureScale === null || !Number.isFinite(e.scale) || e.scale <= 0) return;
+    if (!svg || is3D() || gestureScale === null || !Number.isFinite(e.scale) || e.scale <= 0) return;
     e.preventDefault();
     const point = Number.isFinite(e.clientX) && Number.isFinite(e.clientY) ? e : centerPoint();
     zoomAt(point, gestureScale / e.scale); gestureScale = e.scale;
@@ -712,7 +779,7 @@ import { NetLabels } from './net-labels.js';
   view.addEventListener('gestureend', e => { if (gestureScale !== null) e.preventDefault(); gestureScale = null; }, { passive: false });
   view.addEventListener('mousedown', e => {
     panned = false;
-    if (svg && (e.button === 1 || e.button === 0 && !measuring)) {
+    if (!is3D() && svg && (e.button === 1 || e.button === 0 && !measuring)) {
       if (e.button === 1) e.preventDefault();
       drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y, scale: screenUnits() };
     }
@@ -736,7 +803,7 @@ import { NetLabels } from './net-labels.js';
   const toScreen = p => { const q = new DOMPoint(p.x, p.y).matrixTransform(svg.getScreenCTM()); const r = view.getBoundingClientRect(); return { x: q.x - r.left, y: q.y - r.top }; };
   function dot(p) { const c = document.createElementNS(NS, 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 0.3); return c; }
   function positionMeasurementLabels() {
-    if (!svg || !label.childElementCount) return;
+    if (!svg || is3D() || !label.childElementCount) return;
     const segments = [...measurements];
     if (pts.length && hover) segments.push([pts[0], hover]);
     for (let i = 0; i < segments.length; i++) {
@@ -747,7 +814,7 @@ import { NetLabels } from './net-labels.js';
     }
   }
   function draw() {
-    if (!mg) return;
+    if (!mg || is3D()) return;
     mg.replaceChildren(); label.replaceChildren();
     const segments = [...measurements];
     if (pts.length && hover) segments.push([pts[0], hover]);
@@ -770,7 +837,7 @@ import { NetLabels } from './net-labels.js';
     readout.textContent = `dist ${fmt(Math.hypot(dx, dy))}\ndx   ${fmt(Math.abs(dx))}\ndy   ${fmt(Math.abs(dy))}\nang  ${(Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1)}°`;
   }
   function setMeasuring(v) {
-    v = Boolean(v && svg && activeBoard?.kind !== 'schematic');
+    v = Boolean(v && svg && !is3D() && activeBoard?.kind !== 'schematic');
     measuring = v; $('measure-btn').classList.toggle('on', v); view.classList.toggle('measuring', v);
     if (!v) { pts = []; hover = null; draw(); }
   }
@@ -791,12 +858,13 @@ import { NetLabels } from './net-labels.js';
     unit = b.dataset.unit; document.querySelectorAll('.unit').forEach(x => x.classList.toggle('on', x === b)); draw();
   });
   view.addEventListener('click', e => {
+    if (is3D()) return;
     if (!svg || !measuring || e.button !== 0) return;
     pts.push(toSvg(e));
     if (pts.length === 2) { measurements.push(pts); pts = []; hover = null; }
     draw();
   });
-  view.addEventListener('mousemove', e => { if (svg && measuring) { hover = toSvg(e); if (pts.length || !measurements.length) draw(); } });
+  view.addEventListener('mousemove', e => { if (svg && !is3D() && measuring) { hover = toSvg(e); if (pts.length || !measurements.length) draw(); } });
 
   new ResizeObserver(() => {
     positionMeasurementLabels();
