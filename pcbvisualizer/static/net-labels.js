@@ -1,0 +1,97 @@
+// Screen-space captions stay readable on mirrored layouts without changing SVG hits.
+export class NetLabels {
+  constructor(container) {
+    this.container = container;
+    this.candidates = new WeakMap();
+    this.widths = new Map();
+    this.context = document.createElement('canvas').getContext('2d');
+    const font = getComputedStyle(container);
+    this.context.font = `${font.fontWeight} ${font.fontSize} ${font.fontFamily}`;
+  }
+
+  index(svg) {
+    if (this.candidates.has(svg)) return this.candidates.get(svg);
+    const candidates = [];
+    for (const shape of svg.querySelectorAll('#scene path, #scene rect, #scene circle, #scene ellipse, #scene line, #scene polyline, #scene polygon, #scene use')) {
+      const source = shape.closest('[data-net]');
+      if (!source?.dataset.net || shape.closest('defs, clipPath, mask, [data-hole-owner], [data-primitive$="-hole"], [data-overlay-kind], #component-highlight, #net-highlight')) continue;
+      const layer = source.closest('[data-layer-role]');
+      if (layer && layer.dataset.layerRole !== 'copper') continue;
+      const paint = getComputedStyle(shape), bounds = shape.getBBox();
+      if (!bounds.width && !bounds.height || paint.fill === 'none' && paint.stroke === 'none') continue;
+      const route = paint.stroke !== 'none' && typeof shape.getTotalLength === 'function' &&
+        (paint.fill === 'none' || shape.matches('line, polyline') || ['track', 'arc'].includes(source.dataset.primitive));
+      candidates.push({ shape, name: source.dataset.net, bounds, route,
+        length: route ? shape.getTotalLength() : 0, stroke: parseFloat(paint.strokeWidth) || 0,
+        fixedStroke: paint.vectorEffect === 'non-scaling-stroke' });
+    }
+    this.candidates.set(svg, candidates);
+    return candidates;
+  }
+
+  update(board) {
+    this.container.replaceChildren();
+    const svg = board?.svg;
+    // At fit-to-board scale the labels would obscure the layout overview.
+    if (board?.kind !== 'pcb' || !svg?.isConnected || board.home.w / svg.viewBox.baseVal.width < 2) return;
+    const view = this.container.getBoundingClientRect(), occupied = [], fragment = document.createDocumentFragment();
+    for (const item of this.index(svg)) {
+      if (occupied.length >= 150) break;
+      const { shape, name, bounds, route } = item;
+      if (board.polygonsHidden && shape.closest('.polygon-copper') ||
+          svg.classList.contains('layout-selection') && !shape.closest('.net-match, .component-match')) continue;
+      const rect = shape.getBoundingClientRect();
+      if (rect.right < view.left || rect.left > view.right || rect.bottom < view.top || rect.top > view.bottom) continue;
+      const paint = getComputedStyle(shape);
+      if (paint.display === 'none' || paint.visibility !== 'visible' || !shape.getClientRects().length) continue;
+      const matrix = shape.getScreenCTM();
+      if (!matrix) continue;
+      const scale = Math.min(Math.hypot(matrix.a, matrix.b), Math.hypot(matrix.c, matrix.d));
+      if (!this.widths.has(name)) this.widths.set(name, this.context.measureText(name).width + 4);
+      const width = this.widths.get(name), height = 18;
+      if (route && ((item.fixedStroke ? item.stroke : item.stroke * scale) < height + 2 || item.length * scale < width + 8)) continue;
+      const anchors = [];
+      if (route) {
+        const start = shape.getPointAtLength(0).matrixTransform(matrix);
+        const end = shape.getPointAtLength(item.length).matrixTransform(matrix);
+        const dx = end.x - start.x, dy = end.y - start.y;
+        const fraction = ((view.left + view.width / 2 - start.x) * dx + (view.top + view.height / 2 - start.y) * dy) / (dx * dx + dy * dy);
+        for (const f of [Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0.5, 0.5, 0.25, 0.75]) {
+          const distance = item.length * f;
+          const point = shape.getPointAtLength(distance).matrixTransform(matrix);
+          const a = shape.getPointAtLength(Math.max(0, distance - item.length * 0.01)).matrixTransform(matrix);
+          const b = shape.getPointAtLength(Math.min(item.length, distance + item.length * 0.01)).matrixTransform(matrix);
+          anchors.push({ x: point.x, y: point.y, angle: Math.atan2(b.y - a.y, b.x - a.x) });
+        }
+      } else {
+        // Additional anchors let labels avoid through-hole cutouts and concave fills.
+        for (const [x, y] of [[0.5, 0.5], [0.5, 0.25], [0.5, 0.75], [0.25, 0.5], [0.75, 0.5]]) {
+          const point = new DOMPoint(bounds.x + bounds.width * x, bounds.y + bounds.height * y).matrixTransform(matrix);
+          anchors.push({ x: point.x, y: point.y, angle: 0 });
+        }
+      }
+      for (const anchor of anchors) {
+        let { angle } = anchor;
+        if (angle > Math.PI / 2) angle -= Math.PI;
+        if (angle < -Math.PI / 2) angle += Math.PI;
+        const cos = Math.cos(angle), sin = Math.sin(angle);
+        const w = Math.abs(cos) * width + Math.abs(sin) * height;
+        const h = Math.abs(sin) * width + Math.abs(cos) * height;
+        const box = { left: anchor.x - w / 2, right: anchor.x + w / 2, top: anchor.y - h / 2, bottom: anchor.y + h / 2 };
+        if (box.left < view.left + 2 || box.right > view.right - 2 || box.top < view.top + 2 || box.bottom > view.bottom - 2 ||
+            occupied.some(other => box.left < other.right + 6 && box.right > other.left - 6 && box.top < other.bottom + 6 && box.bottom > other.top - 6)) continue;
+        // Hit testing also respects clipping, hidden ancestors, holes and paint order.
+        if (![[0, 0], [-width / 2, -height / 2], [width / 2, -height / 2], [-width / 2, height / 2], [width / 2, height / 2]].every(([x, y]) => {
+          const hit = document.elementFromPoint(anchor.x + x * cos - y * sin, anchor.y + x * sin + y * cos);
+          return hit === shape || shape.contains(hit);
+        })) continue;
+        const caption = document.createElement('span'); caption.className = 'net-label'; caption.textContent = name;
+        caption.style.left = anchor.x - view.left + 'px'; caption.style.top = anchor.y - view.top + 'px';
+        caption.style.transform = `translate(-50%, -50%) rotate(${angle}rad)`;
+        fragment.append(caption); occupied.push(box);
+        break;
+      }
+    }
+    this.container.append(fragment);
+  }
+}

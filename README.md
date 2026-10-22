@@ -5,6 +5,10 @@ separate tabs, inspect layers and polygon pours, find components and nets,
 cross-probe between documents, and measure PCB geometry. Files are parsed on
 your machine and the browser displays the rendered SVG.
 
+Zoom into a PCB to see net names directly over visible pads and routes when the
+text fits. Labels remain readable while navigating and respect layer and polygon
+visibility.
+
 ## Setup and launch
 
 Requires Python 3.12 or newer. Install the locked Python environment with uv:
@@ -43,13 +47,14 @@ pcbvisualizer/
     index.html            Browser interface
     viewer.css            Interface styling
     viewer.js             Tabs, navigation, selection, probing, and measurement
+    net-labels.js         Automatic net captions for zoomed PCB views
 tests/
   test_rendering.py       Rendering regression tests
   test_server.py          HTTP and launch-command integration tests
   board_tabs.test.cjs     Browser regression tests
 ```
 
-The server serves the three frontend resources explicitly. They are included in
+The server serves frontend resources explicitly. They are included in
 the installed Python package, so launching does not depend on the current working
 directory. The frontend uses plain JavaScript and requires no build step.
 

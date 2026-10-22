@@ -1,8 +1,10 @@
+import { NetLabels } from './net-labels.js';
 
 (function () {
   const $ = id => document.getElementById(id);
   const view = $('view'), layersEl = $('layers'), readout = $('readout'), label = $('measure-label');
   const NS = 'http://www.w3.org/2000/svg';
+  const netLabels = new NetLabels($('net-labels'));
   let svg = null, groups = [], vb = null, home = null;
   const boards = [];
   let activeBoard = null, nextBoardId = 1;
@@ -90,6 +92,7 @@
     updateTabs();
     mountComponentSearch();
     updateSchematicSelection();
+    netLabels.update(activeBoard);
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
     else $('view').removeAttribute('aria-labelledby');
   }
@@ -498,6 +501,7 @@
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
       `${count} component${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
       (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
+    netLabels.update(activeBoard);
   }
   function clearComponent() { resetProbeSelection('probeComponents'); $('component-query').value = ''; searchComponents(); }
   $('component-query').oninput = () => { resetProbeSelection('probeComponents'); searchComponents(); };
@@ -602,6 +606,7 @@
     $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
       `${count} net${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
       (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
+    netLabels.update(activeBoard);
   }
   function clearNet() { resetProbeSelection('probeNets'); $('net-query').value = ''; searchNets(); }
   $('net-query').oninput = () => { resetProbeSelection('probeNets'); searchNets(); };
@@ -648,6 +653,7 @@
     if (!svg) return;
     svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
     if (redrawMeasurements) draw(); else positionMeasurementLabels();
+    netLabels.update(activeBoard);
   }
   function queueViewUpdate() {
     if (!viewFrame) viewFrame = requestAnimationFrame(() => { viewFrame = 0; apply(false); });
@@ -792,7 +798,10 @@
   });
   view.addEventListener('mousemove', e => { if (svg && measuring) { hover = toSvg(e); if (pts.length || !measurements.length) draw(); } });
 
-  window.addEventListener('resize', positionMeasurementLabels);
+  new ResizeObserver(() => {
+    positionMeasurementLabels();
+    netLabels.update(activeBoard);
+  }).observe(view);
 
   // ------------------------------------------------------------ board passed on the command line
   fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {

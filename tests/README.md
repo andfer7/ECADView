@@ -51,3 +51,8 @@ Polygon visibility tests cover solid and hatched pours, preservation of custom
 pad shapes and ordinary copper, selection overlays, click-through to routes,
 layer controls, and per-tab visibility. Python rendering checks verify the
 source polygon links against SVG IDs in full, top, and bottom views.
+
+Net-label tests cover zoom-dependent visibility, literal net names, mirrored
+pads and rotated routes, drill holes, clipping, occlusion and label collisions.
+They also exercise pan/resize alignment, hidden layers and pours, tab changes,
+and click-through selection and measurement.

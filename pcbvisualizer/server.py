@@ -15,6 +15,7 @@ STATIC_ROUTES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/static/viewer.css": ("viewer.css", "text/css; charset=utf-8"),
     "/static/viewer.js": ("viewer.js", "text/javascript; charset=utf-8"),
+    "/static/net-labels.js": ("net-labels.js", "text/javascript; charset=utf-8"),
 }
 
 
