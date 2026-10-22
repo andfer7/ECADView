@@ -698,7 +698,7 @@ test('clicked net selections remain attached to their own board tabs', async t =
   assert.equal(await page.locator('.net-match').count(), 3);
 });
 
-test('Escape deselects nets from the canvas and search fields and only affects the active board', async t => {
+test('Escape deselects components and nets from search fields and only affects the active board', async t => {
   const { page } = await openClickableNets(t);
   await page.locator('[data-primitive="pad"]').click();
   await page.locator('#component-query').fill('R1');
@@ -708,8 +708,11 @@ test('Escape deselects nets from the canvas and search fields and only affects t
   assert.equal(await page.locator('#net-highlight').count(), 0);
   assert.equal(await page.locator('#net-status').textContent(), '');
   assert.equal(await page.locator('#net-fit').isDisabled(), true);
-  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
-  assert.equal(await page.locator('.component-match').count(), 1);
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  assert.equal(await page.locator('.component-match').count(), 0);
+  assert.equal(await page.locator('#component-highlight').count(), 0);
+  assert.equal(await page.locator('#component-status').textContent(), '');
+  assert.equal(await page.locator('#component-fit').isDisabled(), true);
   await page.locator('#net-query').fill('GND');
   await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
   await page.locator('[data-primitive="pad"]').click();
@@ -724,4 +727,74 @@ test('Escape deselects nets from the canvas and search fields and only affects t
   await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#net-query').inputValue(), '', 'deselection survives switching tabs');
+});
+
+const clickableComponents = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+  <g id="scene" transform="translate(2 1)"><g id="layer-top" data-layer-name="Top copper">
+    <rect data-primitive="component-pad" data-component="R1" data-net="VCC" x="10" y="10" width="10" height="8" fill="red"/>
+    <rect data-primitive="component-pad-2" data-component="R1" data-net="GND" x="25" y="10" width="10" height="8" fill="red"/>
+    <g data-component="U[1]&quot;"><circle data-primitive="nested-body" data-net="Net[1]&quot;" cx="50" cy="15" r="4" fill="red"/></g>
+    <rect data-primitive="component-body" data-component="C2" x="10" y="60" width="12" height="8" fill="red"/>
+    <circle data-primitive="free-via" data-net="GND" cx="50" cy="40" r="3" fill="red"/>
+  </g></g></svg>` });
+async function openClickableComponents(t) {
+  const result = await openPage(t, { render: (route, name) => reply(route, clickableComponents(name)) });
+  await result.page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(result.page, 'A.PcbDoc');
+  return result;
+}
+
+test('clicking components highlights all their geometry and retains selection of connected nets', async t => {
+  const { page, requests } = await openClickableComponents(t);
+  const viewBox = await page.locator('#view > svg').getAttribute('viewBox');
+  await page.locator('[data-primitive="component-pad"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('.component-match').count(), 2);
+  assert.equal(await page.locator('#component-highlight rect').count(), 2);
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
+  await page.locator('[data-primitive="component-pad-2"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  await page.locator('[data-primitive="nested-body"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'U[1]"');
+  assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"');
+  await page.locator('[data-primitive="component-body"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2', 'components without a net can be selected');
+  assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"');
+  await page.locator('[data-primitive="free-via"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2', 'a net-only item keeps the component selection');
+  await page.locator('#view').click({ position: { x: 20, y: 20 } });
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+  assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewBox);
+  assert.equal(requests.length, 1);
+});
+
+test('component selection ignores pans and measurement clicks and remains local to each board', async t => {
+  const { page } = await openClickableComponents(t);
+  await page.locator('[data-primitive="component-pad"]').click();
+  const body = await page.locator('[data-primitive="component-body"]').boundingBox();
+  const x = body.x + body.width / 2, y = body.y + body.height / 2;
+  await page.mouse.move(x, y); await page.mouse.down();
+  await page.mouse.move(x + 30, y + 20); await page.mouse.up();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  await page.locator('#measure-btn').click();
+  await page.locator('[data-primitive="component-body"]').click();
+  await page.locator('[data-primitive="nested-body"]').click();
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
+  await page.locator('#measure-btn').click();
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  await page.locator('[data-primitive="component-body"]').click();
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  await page.locator('#component-query').focus();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.component-match').count(), 0);
+  assert.equal(await page.locator('#component-highlight').count(), 0);
+  assert.equal(await page.locator('#net-highlight').count(), 0);
+  assert.equal(await page.locator('#measure line').count(), 1, 'Escape retains completed measurements');
+  await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-query').inputValue(), '');
 });
