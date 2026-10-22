@@ -445,8 +445,8 @@ test('retains multiple measurements with labels and units, cancels previews and 
   assert.equal(await page.locator('#measure line').count(), 3);
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('#measure line').count(), 2);
-  await page.locator('#measure-btn').click();
-  assert.equal(await page.locator('#measure line').count(), 2, 'turning off measuring keeps completed distances');
+  assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
+  assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
   await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
   assert.equal(await page.locator('#measure line').count(), 0);
   await page.keyboard.press('Shift+C');
@@ -700,4 +700,28 @@ test('Escape deselects nets from the canvas and search fields and only affects t
   await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#net-query').inputValue(), '', 'deselection survives switching tabs');
+});
+
+test('Escape exits measurement mode with a search field focused and retains finished measurements', async t => {
+  const { page } = await openClickableNets(t);
+  await page.locator('#measure-btn').click();
+  await page.locator('[data-primitive="pad"]').click();
+  await page.locator('[data-primitive="via"]').click();
+  const caption = await page.locator('.measure-label').textContent();
+  await page.locator('#component-query').focus();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
+  assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('.measure-label').textContent(), caption);
+  await page.locator('[data-primitive="pad"]').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'normal selection resumes after Escape');
+  assert.equal(await page.locator('#measure line').count(), 1);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  await page.locator('#view').click({ position: { x: 20, y: 20 } });
+  await page.keyboard.press('Shift+C');
+  assert.equal(await page.locator('#measure line').count(), 0, 'Shift+C still clears finished measurements');
 });
