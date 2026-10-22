@@ -59,3 +59,7 @@ and click-through selection and measurement.
 Via coverage checks annular-ring placement around large drills, duplicate copper
 across layers, mirrored geometry, small vias at closer zoom, visibility and tab
 state, and selection/measurement through the captions.
+Component pin tests cover numeric/alphanumeric identifiers, unconnected pads,
+two-row pin/net captions, cramped-pad fallback, mirrored pads, holes, visibility,
+navigation, and click-through interactions. A generated PCB verifies source pad
+numbers and component links in full, top, and bottom render modes.

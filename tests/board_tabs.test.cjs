@@ -2044,3 +2044,93 @@ test('via labels respect copper visibility and tab state and wait for enough zoo
   assert.deepEqual(await netCaptions(page).allTextContents(), ['SMALL']);
   await page.locator('#view-fit').click(); assert.equal(await netCaptions(page).count(), 0);
 });
+
+const pinBoardData = name => ({ ...boardData(name),
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 160" data-board="${name}">
+    <g id="scene">
+      <g id="layer-top" data-layer-name="Top copper" data-layer-role="copper">
+        <rect id="numbered-pad" data-primitive="pad" data-component="U1" data-pad-number="1" data-net="GND" x="94" y="73" width="4" height="4" fill="red"/>
+        <rect id="unconnected-numbered-pad" data-primitive="pad" data-component="U1" data-pad-number="A[1]&quot;&lt;&amp;" x="101" y="73" width="4" height="3" fill="orange"/>
+        <rect id="small-numbered-pad" data-primitive="pad" data-component="U2" data-pad-number="3" data-net="VCC" x="99.65" y="78.725" width="0.7" height="0.55" fill="red"/>
+        <g transform="translate(96 85) rotate(30) scale(-1 1)"><rect id="mirrored-numbered-pad" data-primitive="pad" data-component="U3" data-pad-designator="0" data-net="MIR" x="-1.5" y="-1" width="3" height="2" fill="orange"/></g>
+        <circle id="through-hole-numbered-pad" data-primitive="pad" data-component="J1" data-pad-number="2" data-net="PTH" cx="103" cy="85" r="1.5" fill="red"/>
+        <rect data-primitive="pad" data-pad-number="FREE" x="106" y="78" width="2" height="2" fill="red"/>
+        <circle data-primitive="via" data-pad-number="VIA_NUMBER" data-net="VIA" cx="97" cy="79" r="0.8" fill="red"/>
+      </g>
+      <g id="layer-bottom" data-layer-name="Bottom copper" data-layer-role="copper" transform="translate(200 0) scale(-1 1)">
+        <rect data-primitive="pad" data-component="J2" data-pad-number="B1" data-net="BOTTOM" x="92" y="78" width="3" height="3" fill="blue"/>
+      </g>
+      <g id="layer-topmask" data-layer-role="mask" data-layer-token="TOPMASK" data-layer-name="Top mask">
+        <rect data-primitive="pad" data-component="U1" data-pad-number="MASK" x="98" y="75" width="2" height="2" fill="purple"/>
+      </g>
+      <g id="layer-drills" data-layer-role="drill" data-layer-name="Drills">
+        <circle id="numbered-pad-hole" data-primitive="pad-hole" data-hole-owner="pad" data-component="J1" data-pad-number="2" data-net="PTH" cx="103" cy="85" r="0.55" fill="white"/>
+      </g>
+    </g></svg>` });
+const pinCaptions = page => page.locator('#net-labels .pin-label');
+const pinNamed = (page, number) => pinCaptions(page).filter({ hasText: new RegExp('^' + number.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') });
+
+test('component pin numbers share pads with net names and include literal unconnected and alphanumeric pad designators', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, pinBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('Pins.PcbDoc')); await loaded(page, 'Pins.PcbDoc');
+  assert.equal(await pinCaptions(page).count(), 0);
+  await zoomForLabels(page);
+  const numbers = await pinCaptions(page).allTextContents();
+  for (const number of ['1', 'A[1]"<&', '0', '2', '3', 'B1']) assert.ok(numbers.includes(number), number);
+  for (const number of ['FREE', 'VIA_NUMBER', 'MASK']) assert.ok(!numbers.includes(number), number);
+  const padCaption = page.locator('.copper-label').filter({ has: page.locator('.pin-label').filter({ hasText: /^1$/ }) });
+  assert.deepEqual(await padCaption.locator('span').allTextContents(), ['1', 'GND']);
+  assert.equal(await page.locator('#net-labels script, #net-labels svg').count(), 0);
+  const pin = await pinNamed(page, '1').boundingBox();
+  await page.mouse.click(pin.x + pin.width / 2, pin.y + pin.height / 2);
+  assert.equal(await page.locator('#component-query').inputValue(), 'U1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  await page.keyboard.press('Escape');
+  const unconnected = await pinNamed(page, 'A[1]"<&').boundingBox();
+  await page.mouse.click(unconnected.x + unconnected.width / 2, unconnected.y + unconnected.height / 2);
+  assert.equal(await page.locator('#component-query').inputValue(), 'U1');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  await page.keyboard.press('Escape');
+  await page.locator('#measure-btn').click();
+  await page.mouse.click(pin.x + pin.width / 2, pin.y + pin.height / 2);
+  await page.mouse.click(pin.x + pin.width / 2 + 20, pin.y + pin.height / 2);
+  assert.equal(await page.locator('#measure line').count(), 1);
+});
+
+test('small pads prioritize the pin number and reveal both pin and net at closer zoom', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, pinBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('Pins.PcbDoc')); await loaded(page, 'Pins.PcbDoc');
+  await zoomForLabels(page);
+  assert.equal(await pinNamed(page, '3').count(), 1);
+  assert.equal(await captionNamed(page, 'VCC').count(), 0, 'two rows do not fit yet');
+  await zoomForLabels(page, 2, 100, 79);
+  assert.equal(await pinNamed(page, '3').count(), 1);
+  assert.equal(await captionNamed(page, 'VCC').count(), 1);
+  const pin = await pinNamed(page, '3').boundingBox(), net = await captionNamed(page, 'VCC').boundingBox();
+  assert.ok(pin.y + pin.height <= net.y, 'pin and net occupy separate rows');
+});
+
+test('pin captions remain upright on mirrored pads, avoid holes and respect layer and tab visibility', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, name.endsWith('.SchDoc') ? schematicData(name) : pinBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await zoomForLabels(page);
+  const mirrored = await pinNamed(page, '0').evaluate(el => el.closest('.copper-label').style.transform);
+  assert.match(mirrored, /rotate\(0rad\)/);
+  const pin = await pinNamed(page, '2').boundingBox(), hole = await page.locator('#numbered-pad-hole').boundingBox();
+  assert.ok(pin.y + pin.height < hole.y || pin.y > hole.y + hole.height || pin.x + pin.width < hole.x || pin.x > hole.x + hole.width);
+  await page.locator('#layers label').filter({ hasText: 'Bottom copper' }).locator('input').uncheck();
+  assert.equal(await pinNamed(page, 'B1').count(), 0);
+  await page.locator('#none').click(); assert.equal(await pinCaptions(page).count(), 0);
+  await page.locator('#all').click(); assert.equal(await pinNamed(page, 'MASK').count(), 0);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await pinCaptions(page).count(), 0);
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  assert.equal(await pinCaptions(page).count(), 0);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await pinNamed(page, '1').count(), 1);
+  const before = await pinNamed(page, '1').boundingBox();
+  await page.locator('#view').dispatchEvent('wheel', { deltaX: 25, deltaY: 10 }); await settleView(page);
+  const after = await pinNamed(page, '1').boundingBox();
+  near(after.x - before.x, -25, 'pin follows pan X', 0.1); near(after.y - before.y, -10, 'pin follows pan Y', 0.1);
+  await page.locator('#view-fit').click(); assert.equal(await pinCaptions(page).count(), 0);
+});

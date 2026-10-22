@@ -126,6 +126,33 @@ class PolygonNetTests(unittest.TestCase):
                 self.assertEqual(primitive.net_index, 0xFFFF)
 
 
+class PadMetadataTests(unittest.TestCase):
+    def test_component_pin_numbers_and_unconnected_pads_survive_all_render_modes(self):
+        pcb = AltiumPcbDoc()
+        pcb.add_component(designator="U1", footprint="TEST", position_mils=(100, 100))
+        for index, (number, layer, net) in enumerate((("1", "TOP", "GND"), ("A1", "TOP", None), ("0", "BOTTOM", "VCC"))):
+            pad = pcb.add_pad(designator=number, position_mils=(100 + index * 100, 100),
+                              width_mils=50, height_mils=50, layer=layer, net=net)
+            pad.component_index = 0
+        expected = {"all": {"1", "A1", "0"}, "top": {"1", "A1"}, "bottom": {"0"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pins.PcbDoc"
+            pcb.save(path)
+            original = path.read_bytes()
+            for side, numbers in expected.items():
+                with self.subTest(side=side):
+                    root = ET.fromstring(render_file(path, side=side)["svg"])
+                    # Mask/paste copies carry the same source pad number; the UI
+                    # labels only the copper geometry from these relationships.
+                    pads = [el for el in root.iter() if el.get("data-primitive") == "pad"]
+                    self.assertEqual({pad.get("data-pad-number") for pad in pads}, numbers)
+                    self.assertTrue(all(pad.get("data-component") == "U1" for pad in pads))
+                    if "A1" in numbers:
+                        unconnected = [pad for pad in pads if pad.get("data-pad-number") == "A1"]
+                        self.assertTrue(all(pad.get("data-net") is None for pad in unconnected))
+                    self.assertEqual(path.read_bytes(), original)
+
+
 class SchematicTests(unittest.TestCase):
     def test_selection_follows_connected_nets_and_source_components(self):
         schematic = AltiumSchDoc()
