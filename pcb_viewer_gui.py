@@ -256,6 +256,7 @@ PAGE = r"""<!DOCTYPE html>
       <h1>PCB &amp; schematic viewer</h1>
       <input id="file" type="file" accept=".PcbDoc,.pcbdoc,.SchDoc,.schdoc" multiple hidden>
       <button class="primary" id="open">Open files…</button>
+      <div class="row"><button id="zoom-out" aria-label="Zoom out" disabled>−</button><button id="zoom-in" aria-label="Zoom in" disabled>+</button><button id="view-fit" aria-label="Fit document" title="Fit document" disabled>Fit</button></div>
       <div id="filename">No document loaded</div>
       <div id="warnings" role="status" hidden></div>
     </div>
@@ -283,7 +284,7 @@ PAGE = r"""<!DOCTYPE html>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <div id="readout"></div>
-      <div class="hint">Click copper to select a net. Scroll to zoom, drag to pan, double-click to reset. Measure: click two points. Esc exits measurement mode and deselects the net; Shift+C clears all measurements.</div>
+      <div class="hint">Click copper to select a net. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. Double-click to reset. Measure: click two points. Esc exits measurement mode and deselects the net; Shift+C clears all measurements.</div>
     </div>
     <div id="schematic-selection" hidden>
       <label>Selection</label>
@@ -298,7 +299,7 @@ PAGE = r"""<!DOCTYPE html>
       <div id="probe-result-status" role="status"></div>
       <button id="probe-back">Back to schematic</button>
     </div>
-    <div id="schematic-hint" class="hint" hidden>Click a component or net to select it. Shift-click to add to the selection. Esc clears the selection. Scroll to zoom, drag to pan, double-click to reset.</div>
+    <div id="schematic-hint" class="hint" hidden>Click a component or net to select it. Shift-click to add to the selection. Esc clears the selection. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. Double-click to reset.</div>
     <div id="stats"></div>
   </div>
   <div id="workspace">
@@ -368,12 +369,14 @@ PAGE = r"""<!DOCTYPE html>
     mountBoard(board);
   }
   function mountBoard(board) {
+    cancelViewUpdate();
     if (svg) svg.remove();
-    activeBoard = board; drag = null;
+    activeBoard = board; drag = null; gestureScale = null;
     ({ svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg } = board || {
       svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], measurements: [], hover: null, mg: null,
     });
     $('filename').textContent = board ? board.name : 'No document loaded';
+    for (const id of ['zoom-in', 'zoom-out', 'view-fit']) $(id).disabled = !svg;
     const schematic = board?.kind === 'schematic';
     document.querySelectorAll('[data-pcb-only]').forEach(el => { el.hidden = schematic; });
     $('schematic-selection').hidden = !schematic;
@@ -863,34 +866,105 @@ PAGE = r"""<!DOCTYPE html>
   $('none').addEventListener('click', () => updateNetStatus());
 
   // ------------------------------------------------------------ pan / zoom
-  function apply() { if (svg) { svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`); draw(); } }
+  let viewFrame = 0, drag = null, panned = false, gestureScale = null;
+  function cancelViewUpdate() { cancelAnimationFrame(viewFrame); viewFrame = 0; }
+  function apply(redrawMeasurements = true) {
+    cancelViewUpdate();
+    if (!svg) return;
+    svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+    if (redrawMeasurements) draw(); else positionMeasurementLabels();
+  }
+  function queueViewUpdate() {
+    if (!viewFrame) viewFrame = requestAnimationFrame(() => { viewFrame = 0; apply(false); });
+  }
+  function viewPoint(e) {
+    const point = new DOMPoint(e.clientX, e.clientY).matrixTransform(svg.getScreenCTM().inverse());
+    const shown = svg.viewBox.baseVal;
+    // Input can arrive several times before the next animation frame. Account
+    // for the pending viewBox while using the actual SVG letterbox transform.
+    return { x: vb.x + (point.x - shown.x) * vb.w / shown.width,
+             y: vb.y + (point.y - shown.y) * vb.h / shown.height };
+  }
+  function screenUnits() {
+    const inverse = svg.getScreenCTM().inverse(), ratio = vb.w / svg.viewBox.baseVal.width;
+    return { a: inverse.a * ratio, b: inverse.b * ratio, c: inverse.c * ratio, d: inverse.d * ratio };
+  }
+  function centerPoint() {
+    const r = view.getBoundingClientRect(); return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+  }
+  function zoomAt(point, factor) {
+    if (!svg || !Number.isFinite(factor) || factor <= 0) return;
+    const span = Math.max(vb.w, vb.h), base = Math.max(home.w, home.h);
+    const k = Math.max(base * 0.0001, Math.min(base * 100, span * factor)) / span;
+    const anchor = viewPoint(point);
+    vb = { x: anchor.x - (anchor.x - vb.x) * k, y: anchor.y - (anchor.y - vb.y) * k,
+           w: vb.w * k, h: vb.h * k };
+    queueViewUpdate();
+  }
+  function resetView() { if (svg) { drag = null; vb = { ...home }; apply(); } }
+  $('zoom-in').onclick = () => zoomAt(centerPoint(), 1 / 1.25);
+  $('zoom-out').onclick = () => zoomAt(centerPoint(), 1.25);
+  $('view-fit').onclick = resetView;
   view.addEventListener('wheel', e => {
-    if (!svg) return; e.preventDefault();
-    const r = view.getBoundingClientRect();
-    const px = vb.x + (e.clientX - r.left) / r.width * vb.w, py = vb.y + (e.clientY - r.top) / r.height * vb.h;
-    const k = Math.exp(e.deltaY * 0.0015);
-    vb = { x: px - (px - vb.x) * k, y: py - (py - vb.y) * k, w: vb.w * k, h: vb.h * k }; apply();
+    if (!svg) return;
+    e.preventDefault();
+    if (gestureScale !== null || !Number.isFinite(e.deltaX) || !Number.isFinite(e.deltaY)) return;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? view.clientHeight : 1;
+    if (e.ctrlKey || e.metaKey) {
+      zoomAt(e, Math.exp(Math.max(-100, Math.min(100, e.deltaY * unit)) * 0.01));
+    } else {
+      const scale = screenUnits(), dx = e.deltaX * unit, dy = e.deltaY * unit;
+      vb.x += scale.a * dx + scale.c * dy; vb.y += scale.b * dx + scale.d * dy;
+      queueViewUpdate();
+    }
   }, { passive: false });
-  let drag = null, panned = false;
+  // Safari exposes native pinch gestures separately from wheel events.
+  view.addEventListener('gesturestart', e => {
+    if (!svg) return; e.preventDefault(); gestureScale = e.scale > 0 ? e.scale : 1;
+  }, { passive: false });
+  view.addEventListener('gesturechange', e => {
+    if (!svg || gestureScale === null || !Number.isFinite(e.scale) || e.scale <= 0) return;
+    e.preventDefault();
+    const point = Number.isFinite(e.clientX) && Number.isFinite(e.clientY) ? e : centerPoint();
+    zoomAt(point, gestureScale / e.scale); gestureScale = e.scale;
+  }, { passive: false });
+  view.addEventListener('gestureend', e => { if (gestureScale !== null) e.preventDefault(); gestureScale = null; }, { passive: false });
   view.addEventListener('mousedown', e => {
     panned = false;
-    if (svg && (!measuring || e.button === 1)) drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y };
+    if (svg && (e.button === 1 || e.button === 0 && !measuring)) {
+      if (e.button === 1) e.preventDefault();
+      drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y, scale: screenUnits() };
+    }
   });
   window.addEventListener('mousemove', e => {
-    if (!drag) return; const r = view.getBoundingClientRect();
-    if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 3) panned = true;
-    vb.x = drag.vx - (e.clientX - drag.x) / r.width * vb.w; vb.y = drag.vy - (e.clientY - drag.y) / r.height * vb.h; apply();
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y, scale = drag.scale;
+    if (Math.hypot(dx, dy) > 3) panned = true;
+    vb.x = drag.vx - scale.a * dx - scale.c * dy; vb.y = drag.vy - scale.b * dx - scale.d * dy;
+    queueViewUpdate();
   });
   window.addEventListener('mouseup', () => { drag = null; });
-  view.addEventListener('dblclick', () => { if (svg && !measuring) { vb = { ...home }; apply(); } });
+  window.addEventListener('blur', () => { drag = null; gestureScale = null; });
+  view.addEventListener('dblclick', e => { if (e.button === 0 && !measuring) resetView(); });
 
   // ------------------------------------------------------------ measuring (SVG units are mm)
   const UNITS = { mm: { f: 1, d: 3 }, mil: { f: 1000 / 25.4, d: 1 }, in: { f: 1 / 25.4, d: 4 } };
   let unit = 'mm', measuring = false, pts = [], measurements = [], hover = null, mg = null;
   const fmt = v => (v * UNITS[unit].f).toFixed(UNITS[unit].d) + ' ' + unit;
-  const toSvg = e => { const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(svg.getScreenCTM().inverse()); return { x: p.x, y: p.y }; };
+  const toSvg = e => viewPoint(e);
   const toScreen = p => { const q = new DOMPoint(p.x, p.y).matrixTransform(svg.getScreenCTM()); const r = view.getBoundingClientRect(); return { x: q.x - r.left, y: q.y - r.top }; };
   function dot(p) { const c = document.createElementNS(NS, 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 0.3); return c; }
+  function positionMeasurementLabels() {
+    if (!svg || !label.childElementCount) return;
+    const segments = [...measurements];
+    if (pts.length && hover) segments.push([pts[0], hover]);
+    for (let i = 0; i < segments.length; i++) {
+      const [a, b] = segments[i], caption = label.children[i];
+      if (!caption) continue;
+      const point = toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+      caption.style.left = point.x + 'px'; caption.style.top = point.y + 'px';
+    }
+  }
   function draw() {
     if (!mg) return;
     mg.replaceChildren(); label.replaceChildren();
@@ -943,7 +1017,7 @@ PAGE = r"""<!DOCTYPE html>
   });
   view.addEventListener('mousemove', e => { if (svg && measuring) { hover = toSvg(e); if (pts.length || !measurements.length) draw(); } });
 
-  window.addEventListener('resize', () => draw());
+  window.addEventListener('resize', positionMeasurementLabels);
 
   // ------------------------------------------------------------ board passed on the command line
   fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {
