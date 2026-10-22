@@ -1835,3 +1835,212 @@ test('component selection ignores pans and measurement clicks and remains local 
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#component-query').inputValue(), '');
 });
+
+const labelBoardData = name => ({ ...boardData(name), polygon_elements: ['label-pour'],
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 160" data-board="${name}">
+    <g id="scene" transform="translate(0 0)">
+      <g id="layer-top" data-layer-name="Top copper" data-layer-role="copper">
+        <rect id="label-pad" data-primitive="pad" data-component="U1" data-net="GND" x="94" y="73" width="4" height="4" fill="red"/>
+        <rect data-net="OCCLUDED" x="101" y="73" width="4" height="3" fill="red"/>
+        <rect id="special-label-pad" data-primitive="pad" data-net="N[1]&quot;&lt;&amp;" x="101" y="73" width="4" height="3" fill="orange"/>
+        <path id="label-track" data-primitive="track" data-net="SCL" d="M94 81 H101" stroke="red" stroke-width="0.6" fill="none"/>
+        <line id="vertical-label-track" data-primitive="track" data-net="VCC" x1="104" y1="80" x2="104" y2="86" stroke="red" stroke-width="0.6"/>
+        <g transform="translate(96 85) rotate(30) scale(-1 1)"><rect id="mirrored-label-pad" data-primitive="pad" data-net="MIR" x="-1.5" y="-1" width="3" height="2" fill="orange"/></g>
+        <rect id="label-pour" data-primitive="region" data-net="POUR" x="100" y="84" width="2.5" height="2.5" fill="blue"/>
+        <rect data-primitive="pad" x="100" y="78" width="2" height="2" fill="red"/>
+      </g>
+      <g id="layer-bottom" data-layer-name="Bottom copper" data-layer-role="copper">
+        <rect id="bottom-label-pad" data-net="BOTTOM" x="106" y="78" width="3" height="3" fill="blue"/>
+      </g>
+      <g id="layer-topmask" data-layer-token="TOPMASK" data-layer-role="mask" data-layer-name="Top mask">
+        <rect data-net="MASK_ONLY" x="98" y="78" width="2" height="2" fill="purple"/>
+      </g>
+      <g id="layer-drills" data-layer-role="drill" data-layer-name="Drills">
+        <circle id="label-pad-hole" data-primitive="pad-hole" data-hole-owner="pad" data-net="GND" cx="96" cy="75" r="0.6" fill="white"/>
+        <circle data-primitive="via-hole" data-hole-owner="via" data-net="HOLE_ONLY" cx="99" cy="78" r="0.5" fill="white"/>
+      </g>
+    </g></svg>` });
+const netCaptions = page => page.locator('#net-labels .net-label');
+const captionNamed = (page, name) => netCaptions(page).filter({ hasText: new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') });
+async function zoomForLabels(page, factor = 10, x = 100, y = 80) {
+  const point = await pointOnScreen(page, x, y);
+  await page.locator('#view').evaluate((el, { point, factor }) => {
+    for (let i = 0; i < 3; i++) el.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true, cancelable: true, ctrlKey: true, deltaY: -Math.log(factor) * 100 / 3, ...point,
+    }));
+  }, { point, factor });
+  await settleView(page);
+}
+
+test('zoom reveals readable net names on pads and tracks, keeps names literal and labels transparent to selection', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, labelBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('Labels.PcbDoc')); await loaded(page, 'Labels.PcbDoc');
+  assert.equal(await netCaptions(page).count(), 0, 'overview stays uncluttered');
+  await zoomForLabels(page);
+  const names = await netCaptions(page).allTextContents();
+  for (const name of ['GND', 'SCL', 'VCC', 'MIR', 'N[1]"<&', 'POUR', 'BOTTOM']) assert.ok(names.includes(name), name);
+  for (const name of ['OCCLUDED', 'MASK_ONLY', 'HOLE_ONLY']) assert.ok(!names.includes(name), name);
+  assert.equal(await page.locator('#net-labels script, #net-labels svg').count(), 0);
+  const vertical = await captionNamed(page, 'VCC').evaluate(el => ({ font: getComputedStyle(el).fontSize, transform: el.style.transform }));
+  assert.equal(vertical.font, '12px');
+  assert.match(vertical.transform, /rotate\(1\.570/);
+  const padCaption = await captionNamed(page, 'GND').boundingBox();
+  const hole = await page.locator('#label-pad-hole').boundingBox();
+  assert.ok(padCaption.y + padCaption.height < hole.y || padCaption.y > hole.y + hole.height ||
+    padCaption.x + padCaption.width < hole.x || padCaption.x > hole.x + hole.width, 'caption avoids drill hole');
+  await page.mouse.click(padCaption.x + padCaption.width / 2, padCaption.y + padCaption.height / 2);
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  assert.equal(await page.locator('#component-query').inputValue(), 'U1');
+  assert.deepEqual(await netCaptions(page).allTextContents(), ['GND'], 'selection labels only highlighted copper');
+  await page.keyboard.press('Escape');
+  await page.locator('#view-fit').click();
+  assert.equal(await netCaptions(page).count(), 0);
+});
+
+test('net labels follow pans and resizing, remain readable while zooming, and leave measurement clicks available', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, labelBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('Labels.PcbDoc')); await loaded(page, 'Labels.PcbDoc');
+  await zoomForLabels(page);
+  const before = await captionNamed(page, 'MIR').boundingBox();
+  await page.locator('#view').dispatchEvent('wheel', { deltaX: 20, deltaY: 10 }); await settleView(page);
+  const after = await captionNamed(page, 'MIR').boundingBox();
+  near(after.x - before.x, -20, 'pan label X', 0.1); near(after.y - before.y, -10, 'pan label Y', 0.1);
+  near(after.width, before.width, 'constant screen width', 0.1);
+  await page.setViewportSize({ width: 1300, height: 850 }); await settleView(page);
+  const aligned = await captionNamed(page, 'MIR').evaluate(el => {
+    const label = el.getBoundingClientRect(), pad = document.getElementById('mirrored-label-pad').getBoundingClientRect();
+    return { x: label.x + label.width / 2, y: label.y + label.height / 2, px: pad.x + pad.width / 2, py: pad.y + pad.height / 2 };
+  });
+  near(aligned.x, aligned.px, 'resize alignment X', 0.1); near(aligned.y, aligned.py, 'resize alignment Y', 0.1);
+  await page.locator('#measure-btn').click();
+  const box = await captionNamed(page, 'MIR').boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.click(box.x + box.width / 2 + 30, box.y + box.height / 2);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  await page.locator('#view').dispatchEvent('wheel', { deltaX: 2000, deltaY: 2000 }); await settleView(page);
+  assert.equal(await netCaptions(page).count(), 0, 'offscreen copper has no floating labels');
+});
+
+test('net labels respect hidden layers and pours and are restored only for the active zoomed PCB tab', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, name.endsWith('.SchDoc') ? schematicData(name) : labelBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await zoomForLabels(page);
+  assert.equal(await captionNamed(page, 'BOTTOM').count(), 1);
+  await page.locator('#layers label').filter({ hasText: 'Bottom copper' }).locator('input').uncheck();
+  assert.equal(await captionNamed(page, 'BOTTOM').count(), 0);
+  await page.locator('#polygons-toggle').click();
+  assert.equal(await captionNamed(page, 'POUR').count(), 0);
+  await page.locator('#none').click(); assert.equal(await netCaptions(page).count(), 0);
+  await page.locator('#all').click();
+  assert.equal(await captionNamed(page, 'POUR').count(), 0);
+  assert.equal(await captionNamed(page, 'MASK_ONLY').count(), 0);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await netCaptions(page).count(), 0);
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  assert.equal(await netCaptions(page).count(), 0);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.ok(await netCaptions(page).count() > 0);
+  assert.equal(await captionNamed(page, 'POUR').count(), 0);
+  await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
+  assert.equal(await netCaptions(page).count(), 0);
+});
+
+test('net labels avoid collisions and clipped copper and appear only when the name fits', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, { ...labelBoardData(name),
+    svg: labelBoardData(name).svg.replace('<g id="scene"', `<defs><clipPath id="label-clip"><rect x="99" y="78" width="2" height="2"/></clipPath></defs><g id="scene"`)
+      .replace('</g></svg>', `<g id="layer-mid1" data-layer-role="copper" data-layer-name="Mid copper">
+        <rect id="clipped-label-pad" data-net="CLIP" x="98" y="77" width="4" height="4" fill="green" clip-path="url(#label-clip)"/>
+        <rect data-net="TOO_LONG_TO_FIT_ON_A_TINY_PAD" x="102" y="78" width="0.2" height="0.2" fill="green"/>
+      </g></g></svg>`) }) });
+  await page.locator('#file').setInputFiles(file('Clipped.PcbDoc')); await loaded(page, 'Clipped.PcbDoc');
+  await zoomForLabels(page);
+  assert.equal(await captionNamed(page, 'TOO_LONG_TO_FIT_ON_A_TINY_PAD').count(), 0);
+  const boxes = await netCaptions(page).evaluateAll(els => els.map(el => {
+    const b = el.getBoundingClientRect(); return { x: b.x, y: b.y, right: b.right, bottom: b.bottom };
+  }));
+  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+    const a = boxes[i], b = boxes[j];
+    assert.ok(a.right <= b.x || b.right <= a.x || a.bottom <= b.y || b.bottom <= a.y, 'labels do not overlap');
+  }
+  const clipLabels = await captionNamed(page, 'CLIP').count();
+  assert.equal(clipLabels, 1);
+  const caption = await captionNamed(page, 'CLIP').boundingBox();
+  const a = await pointOnScreen(page, 99, 78), b = await pointOnScreen(page, 101, 80);
+  assert.ok(caption.x >= a.clientX && caption.x + caption.width <= b.clientX);
+  assert.ok(caption.y >= a.clientY && caption.y + caption.height <= b.clientY);
+});
+
+test('net labels stay upright on mirrored routes and follow the visible segment of a long track', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, { ...boardData(name),
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 160" data-board="${name}">
+      <g id="scene"><g id="layer-top" data-layer-role="copper" data-layer-name="Top copper" transform="translate(100 80) rotate(30) scale(-1 1)">
+        <path data-net="LONG" data-primitive="track" d="M-1000 0 H1000" stroke="red" stroke-width="0.6" fill="none"/>
+      </g></g></svg>` }) });
+  await page.locator('#file').setInputFiles(file('Long.PcbDoc')); await loaded(page, 'Long.PcbDoc');
+  await zoomForLabels(page);
+  assert.equal(await captionNamed(page, 'LONG').count(), 1);
+  const angle = await captionNamed(page, 'LONG').evaluate(el => +el.style.transform.match(/rotate\(([-\d.]+)rad\)/)[1]);
+  near(angle, Math.PI / 6, 'mirrored route caption stays upright', 0.001);
+  await page.locator('#view').dispatchEvent('wheel', { deltaX: 1500, deltaY: 1500 * Math.tan(Math.PI / 6) });
+  await settleView(page);
+  assert.equal(await captionNamed(page, 'LONG').count(), 1, 'label follows visible copper when the track midpoint is offscreen');
+});
+
+const viaLabelBoardData = name => ({ ...boardData(name),
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 160" data-board="${name}">
+    <g id="scene">
+      <g id="layer-top" data-layer-name="Top copper" data-layer-role="copper">
+        <circle id="top-label-via" data-primitive="via" data-net="VIA" cx="100" cy="80" r="1.4" fill="red"/>
+        <circle id="small-label-via" data-primitive="via" data-net="SMALL" cx="96" cy="80" r="0.2" fill="red"/>
+        <circle data-primitive="via" cx="104" cy="80" r="1.4" fill="red"/>
+      </g>
+      <g id="layer-bottom" data-layer-name="Bottom copper" data-layer-role="copper" transform="translate(200 0) scale(-1 1)">
+        <circle id="bottom-label-via" data-primitive="via" data-net="VIA" cx="100" cy="80" r="1.4" fill="blue"/>
+      </g>
+      <g id="layer-drills" data-layer-name="Drills" data-layer-role="drill">
+        <circle id="label-via-hole" data-primitive="via-hole" data-hole-owner="via" data-net="VIA" cx="100" cy="80" r="0.95" fill="white"/>
+        <circle data-primitive="via-hole" data-hole-owner="via" data-net="SMALL" cx="96" cy="80" r="0.14" fill="white"/>
+        <circle data-primitive="via-hole" data-hole-owner="via" cx="104" cy="80" r="0.95" fill="white"/>
+      </g>
+    </g></svg>` });
+
+test('zoomed via labels fit on the annular ring, avoid the drill and allow selection and measurement clicks', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, viaLabelBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('Vias.PcbDoc')); await loaded(page, 'Vias.PcbDoc');
+  assert.equal(await netCaptions(page).count(), 0);
+  await zoomForLabels(page);
+  assert.deepEqual(await netCaptions(page).allTextContents(), ['VIA'], 'one label for stacked copper, none on drills or unconnected vias');
+  const label = await captionNamed(page, 'VIA').boundingBox();
+  const hole = await page.locator('#label-via-hole').boundingBox();
+  assert.ok(label.y + label.height < hole.y || label.y > hole.y + hole.height ||
+    label.x + label.width < hole.x || label.x > hole.x + hole.width, 'via label stays off the drill');
+  await page.mouse.click(label.x + label.width / 2, label.y + label.height / 2);
+  assert.equal(await page.locator('#net-query').inputValue(), 'VIA');
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  await page.keyboard.press('Escape');
+  await page.locator('#measure-btn').click();
+  await page.mouse.click(label.x + label.width / 2, label.y + label.height / 2);
+  await page.mouse.click(label.x + label.width / 2 + 20, label.y + label.height / 2);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+});
+
+test('via labels respect copper visibility and tab state and wait for enough zoom on small annular rings', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, viaLabelBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await zoomForLabels(page);
+  const bottom = page.locator('#layers label').filter({ hasText: 'Bottom copper' }).locator('input');
+  const top = page.locator('#layers label').filter({ hasText: 'Top copper' }).locator('input');
+  await bottom.uncheck(); assert.equal(await captionNamed(page, 'VIA').count(), 1);
+  await top.uncheck(); assert.equal(await netCaptions(page).count(), 0, 'drill graphics alone do not create captions');
+  await top.check(); assert.equal(await captionNamed(page, 'VIA').count(), 1);
+  assert.equal(await captionNamed(page, 'SMALL').count(), 0);
+  await zoomForLabels(page, 8, 96, 80);
+  assert.deepEqual(await netCaptions(page).allTextContents(), ['SMALL'], 'small via becomes readable at closer zoom');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await netCaptions(page).count(), 0);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.deepEqual(await netCaptions(page).allTextContents(), ['SMALL']);
+  await page.locator('#view-fit').click(); assert.equal(await netCaptions(page).count(), 0);
+});

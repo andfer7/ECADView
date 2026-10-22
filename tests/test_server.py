@@ -61,6 +61,7 @@ class ServerTests(unittest.TestCase):
             ("/", "index.html", "text/html"),
             ("/static/viewer.css", "viewer.css", "text/css"),
             ("/static/viewer.js", "viewer.js", "text/javascript"),
+            ("/static/net-labels.js", "net-labels.js", "text/javascript"),
         ):
             with self.subTest(route=route):
                 status, headers, body = self.request("GET", route + "?version=test")
