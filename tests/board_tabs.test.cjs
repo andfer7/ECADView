@@ -1032,6 +1032,17 @@ test('uploads the affected layout through the real Python server', {
   assert.ok(await page.locator('#net-highlight path[fill-rule="evenodd"]').count() > 0);
   assert.equal(await pour.evaluate(el => getComputedStyle(el).stroke), 'none');
   assert.equal(await page.locator('#net-highlight path[fill-rule="evenodd"]').first().evaluate(el => getComputedStyle(el).stroke), 'none');
+  const pourShape = await pour.getAttribute('d');
+  assert.equal(await pour.evaluate(el => el.classList.contains('polygon-copper')), true);
+  assert.ok(await page.locator('#net-highlight .polygon-copper').count() > 0);
+  await page.locator('#polygons-toggle').click();
+  assert.equal(await pour.isVisible(), false);
+  assert.equal(await page.locator('#net-highlight .polygon-copper').count(), 0);
+  assert.ok(await page.locator('#scene [data-primitive="pad"]:visible').count() > 0);
+  if (process.env.POLYGONS_TEST_SCREENSHOT) await page.screenshot({ path: process.env.POLYGONS_TEST_SCREENSHOT });
+  await page.locator('#polygons-toggle').click();
+  assert.equal(await pour.isVisible(), true);
+  assert.equal(await pour.getAttribute('d'), pourShape);
   await page.locator('#net-fit').click();
   await page.locator('#net-clear').click();
   await pour.click();
@@ -1406,6 +1417,88 @@ test('layout dimming follows visible matches, clears with Escape, and stays with
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('#component-highlight, #net-highlight').count(), 0);
   assert.equal(await page.locator('#layer-top').evaluate(el => getComputedStyle(el).filter), 'none');
+});
+
+const polygonBoardData = name => ({ ...boardData(name), polygon_elements: ['pour', 'hatch-track', 'hatch-arc', 'hatch-fill'],
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+    <g id="scene"><g id="layer-top" data-layer-name="Top copper">
+      <path id="route" data-primitive="track" data-net="SIGNAL" d="M10 30 H40" stroke="red" stroke-width="3"/>
+      <rect id="pad" data-primitive="pad" data-component="U1" data-net="SIGNAL" x="10" y="10" width="8" height="8" fill="red"/>
+      <path id="custom-pad" data-primitive="shapebased-region" data-component="U1" data-net="SIGNAL" d="M65 10 H75 V20 H65 Z" fill="red"/>
+      <path id="ordinary-region" data-primitive="region" data-net="SIGNAL" d="M65 25 H75 V35 H65 Z" fill="red"/>
+      <rect id="ordinary-fill" data-primitive="fill" x="65" y="40" width="10" height="8" fill="red"/>
+      <path id="pour" data-primitive="shapebased-region" data-net="GND" d="M5 5 H55 V50 H5 Z M20 10 H30 V20 H20 Z" fill="blue" fill-rule="evenodd"/>
+      <line id="hatch-track" data-primitive="track" data-net="GND" x1="5" y1="55" x2="55" y2="55" stroke="blue"/>
+      <path id="hatch-arc" data-primitive="arc" data-net="GND" d="M5 60 Q30 70 55 60" stroke="blue" fill="none"/>
+      <rect id="hatch-fill" data-primitive="fill" data-net="GND" x="5" y="70" width="50" height="2" fill="blue"/>
+      <path data-primitive="polygon-outline" d="M5 5 H55 V50 H5 Z" stroke="blue" fill="none"/>
+      <path data-primitive="polygon-cutout" d="M20 10 H30 V20 H20 Z" stroke="blue" fill="none"/>
+    </g></g></svg>` });
+
+test('polygon visibility hides only linked solid/hatched pours and their highlights while preserving ordinary copper and layer choices', async t => {
+  const { page, requests } = await openPage(t, { render: (route, name) => reply(route, polygonBoardData(name)) });
+  assert.equal(await page.locator('#polygons-toggle').isDisabled(), true);
+  await page.locator('#file').setInputFiles(file('Layout.PcbDoc')); await loaded(page, 'Layout.PcbDoc');
+  await page.locator('#net-query').fill('GND');
+  const viewBox = await page.locator('#view > svg').getAttribute('viewBox'), shape = await page.locator('#pour').getAttribute('d');
+  assert.equal(await page.locator('#net-highlight .polygon-copper').count(), 4);
+  await page.locator('#polygons-toggle').click();
+  assert.equal(await page.locator('#polygons-toggle').textContent(), 'Show polygons');
+  assert.equal(await page.locator('#polygons-toggle').getAttribute('aria-pressed'), 'true');
+  for (const id of ['pour', 'hatch-track', 'hatch-arc', 'hatch-fill']) assert.equal(await page.locator('#' + id).isVisible(), false);
+  assert.equal(await page.locator('[data-primitive="polygon-outline"]').isVisible(), false);
+  assert.equal(await page.locator('[data-primitive="polygon-cutout"]').isVisible(), false);
+  for (const id of ['route', 'pad', 'custom-pad', 'ordinary-region', 'ordinary-fill']) {
+    assert.equal(await page.locator('#' + id).evaluate(el => getComputedStyle(el).display !== 'none' &&
+      Boolean(el.getBoundingClientRect().width || el.getBoundingClientRect().height)), true);
+  }
+  assert.equal(await page.locator('#net-highlight').count(), 0);
+  assert.equal(await page.locator('#net-fit').isDisabled(), true);
+  assert.equal(await page.locator('#view > svg').evaluate(el => el.classList.contains('layout-selection')), false);
+  assert.match(await page.locator('#net-status').textContent(), /1 net matched; polygons hidden/);
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  await page.locator('#none').click(); await page.locator('#all').click();
+  assert.equal(await page.locator('#pour').isVisible(), false, 'Show all layers respects the polygon visibility choice');
+  assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewBox);
+  await page.locator('#polygons-toggle').click();
+  assert.equal(await page.locator('#pour').isVisible(), true);
+  assert.equal(await page.locator('#pour').getAttribute('d'), shape);
+  assert.equal(await page.locator('#net-highlight .polygon-copper').count(), 4);
+  assert.equal(await page.locator('#polygons-toggle').getAttribute('aria-pressed'), 'false');
+  await page.getByRole('checkbox', { name: 'Top copper', exact: true }).uncheck();
+  await page.locator('#polygons-toggle').click(); await page.locator('#polygons-toggle').click();
+  assert.equal(await page.getByRole('checkbox', { name: 'Top copper', exact: true }).isChecked(), false);
+  assert.equal(await page.locator('#pour').isVisible(), false, 'showing polygons does not enable a hidden layer');
+  assert.equal(requests.length, 1, 'visibility toggles use the rendered SVG without re-uploading');
+});
+
+test('hidden polygons expose routes for selection and retain measurements and visibility independently per tab', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? schematicData(name) : polygonBoardData(name)) });
+  await page.locator('#file').setInputFiles(file('First.PcbDoc')); await loaded(page, 'First.PcbDoc');
+  await page.locator('#measure-btn').click();
+  await page.locator('#view').click({ position: { x: 200, y: 200 } });
+  await page.locator('#view').click({ position: { x: 400, y: 300 } });
+  await page.keyboard.press('Escape');
+  const readout = await page.locator('#readout').textContent();
+  await page.locator('#polygons-toggle').click();
+  await clickSchematicGraphic(page, page.locator('#route'));
+  assert.equal(await page.locator('#net-query').inputValue(), 'SIGNAL');
+  assert.equal(await page.locator('#net-highlight .polygon-copper').count(), 0);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('#readout').textContent(), readout);
+  await page.locator('#file').setInputFiles(file('Second.PcbDoc')); await loaded(page, 'Second.PcbDoc');
+  assert.equal(await page.locator('#polygons-toggle').textContent(), 'Hide polygons');
+  assert.equal(await page.locator('#pour').isVisible(), true);
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  assert.equal(await page.locator('#polygons-toggle').isVisible(), false);
+  await page.getByRole('tab', { name: 'First.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#polygons-toggle').textContent(), 'Show polygons');
+  assert.equal(await page.locator('#pour').isVisible(), false);
+  assert.equal(await page.locator('#net-query').inputValue(), 'SIGNAL');
+  assert.equal(await page.locator('#measure line').count(), 1);
+  await page.locator('#polygons-toggle').click();
+  assert.equal(await page.locator('#pour').isVisible(), true);
 });
 
 test('net search highlights filled polygon copper and preserves its holes and layer controls', async t => {

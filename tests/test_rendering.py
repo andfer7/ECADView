@@ -18,7 +18,7 @@ from altium_monkey import (
 )
 
 from pcb_viewer_gui import (
-    AltiumPcbDoc, get_font_path_with_style, prepare_embedded_fonts, render_file, resolve_polygon_nets,
+    AltiumPcbDoc, get_font_path_with_style, polygon_element_ids, prepare_embedded_fonts, render_file, resolve_polygon_nets,
 )
 
 
@@ -73,6 +73,22 @@ class EmbeddedFontTests(unittest.TestCase):
 
 
 class PolygonNetTests(unittest.TestCase):
+    def test_visibility_identifies_only_linked_polygon_primitives_across_layers(self):
+        pcb = SimpleNamespace(polygons=[object()])
+        elements, expected = [], []
+        for collection, kind in (("regions", "region"), ("shapebased_regions", "shapebased-region"),
+                                 ("tracks", "track"), ("arcs", "arc"), ("fills", "fill")):
+            indices = [0, None, -1, 1, 0xFFFF, 0xFFFFFFFF]
+            setattr(pcb, collection, [SimpleNamespace(polygon_index=index) for index in indices])
+            for index in range(len(indices)):
+                for layer in (1, 32):
+                    element_id = f"pcb-{kind}-{index}-L{layer}-main"
+                    elements.append(f'<path id="{element_id}"/>')
+                    if index == 0:
+                        expected.append(element_id)
+        elements.append('<path id="pcb-pad-0-L1-main"/>')
+        self.assertEqual(polygon_element_ids(pcb, '<svg>' + ''.join(elements) + '</svg>'), expected)
+
     def test_poured_copper_inherits_its_polygon_net_in_both_region_streams_and_hatched_fills(self):
         pcb = SimpleNamespace(nets=[object(), object()], polygons=[SimpleNamespace(net=1)])
         for collection in ("regions", "shapebased_regions", "tracks", "arcs", "fills"):
@@ -210,6 +226,30 @@ class RealBoardTests(unittest.TestCase):
                 for pour in pours:
                     self.assertEqual(pour.get("d"), originals[pour.get("id")].get("d"))
                     self.assertEqual(pour.get("fill-rule"), "evenodd")
+
+    def test_polygon_visibility_metadata_covers_real_pours_in_all_views_and_excludes_unlinked_shapes(self):
+        pcb = AltiumPcbDoc.from_file(Path(os.environ["PCB_TEST_FILE"]))
+        for side in ("all", "top", "bottom"):
+            with self.subTest(side=side):
+                data = render_file(Path(os.environ["PCB_TEST_FILE"]), side=side)
+                elements = {e.get("id"): e for e in ET.fromstring(data["svg"]).iter() if e.get("id")}
+                if side in ("all", "bottom"):
+                    self.assertTrue(data["polygon_elements"], "Real pours need visibility metadata")
+                else:
+                    self.assertEqual(data["polygon_elements"], [], "This board's top surface contains no polygon pour")
+                self.assertTrue(set(data["polygon_elements"]) <= elements.keys())
+                by_kind = {"region": pcb.regions, "shapebased-region": pcb.shapebased_regions,
+                           "track": pcb.tracks, "arc": pcb.arcs, "fill": pcb.fills}
+                for kind, primitives in by_kind.items():
+                    for index, primitive in enumerate(primitives):
+                        prefix = f"pcb-{kind}-{index}-"
+                        for element_id, element in elements.items():
+                            if element.get("data-primitive") != kind or not element_id.startswith(prefix):
+                                continue
+                            polygon_index = primitive.polygon_index
+                            linked = (isinstance(polygon_index, int) and 0 <= polygon_index < len(pcb.polygons)
+                                      and polygon_index not in (0xFFFF, 0xFFFFFFFF))
+                            self.assertEqual(element_id in data["polygon_elements"], linked)
 
     def test_renders_all_views_without_modifying_source(self):
         path = Path(os.environ["PCB_TEST_FILE"])

@@ -34,3 +34,8 @@ schematic selection into its matching PCB and back into the source sheet.
 Cross-probing coverage in both directions includes renamed source components,
 pin connectivity, exact name/alias fallbacks, multiple document targets, missing
 and ambiguous matches, and preservation of source selections and views.
+
+Polygon visibility tests cover solid and hatched pours, preservation of custom
+pad shapes and ordinary copper, selection overlays, click-through to routes,
+layer controls, and per-tab visibility. Python rendering checks verify the
+source polygon links against SVG IDs in full, top, and bottom views.

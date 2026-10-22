@@ -22,6 +22,7 @@ import base64
 from dataclasses import replace
 from io import BytesIO
 import json
+import re
 import secrets
 import subprocess
 import sys
@@ -114,6 +115,25 @@ def schematic_selection(schematic: AltiumSchDoc) -> dict:
     return {"components": components, "nets": nets}
 
 
+def polygon_element_ids(pcb: AltiumPcbDoc, svg: str) -> list[str]:
+    """Identify polygon pours without confusing unlinked regions with custom pads.
+
+    The renderer's deterministic IDs encode primitive kind and collection index;
+    one source primitive can appear on several layers in a surface rendering.
+    Read IDs without reserializing SVG (including its embedded fonts and styles).
+    """
+    linked = set()
+    for collection, kind in (("regions", "region"), ("shapebased_regions", "shapebased-region"),
+                             ("tracks", "track"), ("arcs", "arc"), ("fills", "fill")):
+        for index, primitive in enumerate(getattr(pcb, collection, [])):
+            polygon_index = getattr(primitive, "polygon_index", None)
+            if (isinstance(polygon_index, int) and 0 <= polygon_index < len(pcb.polygons)
+                    and polygon_index not in (0xFFFF, 0xFFFFFFFF)):
+                linked.add((kind, index))
+    pattern = r'\bid="(pcb-(shapebased-region|region|track|arc|fill)-(\d+)(?:-[^"]*)?)"'
+    return [element_id for element_id, kind, index in re.findall(pattern, svg) if (kind, int(index)) in linked]
+
+
 def render_file(path: Path, side: str = "all", clip: bool = False,
                 pour_color: str | None = None, polygon_outlines: bool = False) -> dict:
     if path.suffix.lower() == ".schdoc":
@@ -152,6 +172,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         "svg": svg,
         "name": path.name,
         "kind": "pcb",
+        "polygon_elements": polygon_element_ids(pcb, svg),
         "layout_components": [
             {"name": component.designator, "source_name": component.source_designator,
              "source_id": component.source_unique_id_segments[-1] if component.source_unique_id_segments else ""}
@@ -193,6 +214,7 @@ PAGE = r"""<!DOCTYPE html>
   #component-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
                      border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
   #view svg.layout-selection #scene > :not(#component-highlight):not(#net-highlight) { filter: opacity(0.15); }
+  #view svg.hide-polygons .polygon-copper { display: none !important; }
   button { background: #3a3e45; color: var(--text); border: 1px solid #4a4f58; border-radius: 4px;
            padding: 5px 8px; cursor: pointer; font: inherit; }
   button:hover { background: #474c56; }
@@ -278,6 +300,7 @@ PAGE = r"""<!DOCTYPE html>
     </div>
     <div id="layers-wrap" data-pcb-only>
       <div class="row" style="margin:0 0 6px"><button id="all">Show all</button><button id="none">Hide all</button></div>
+      <button id="polygons-toggle" aria-pressed="false" disabled>Hide polygons</button>
       <div id="layers"></div>
     </div>
     <div data-pcb-only>
@@ -405,6 +428,7 @@ PAGE = r"""<!DOCTYPE html>
       else buildLayers();
       apply();
     }
+    updatePolygonControl();
     mountNetSearch();
     updateTabs();
     mountComponentSearch();
@@ -464,6 +488,10 @@ PAGE = r"""<!DOCTYPE html>
     const previousLayers = new Map(board.groups.map(g => [g.id, g.style.display]));
     // Schematic groups are drawing containers, not PCB layers.
     const kind = data.kind || 'pcb';
+    const polygonIds = new Set(data.polygon_elements || []);
+    if (kind === 'pcb') for (const el of rendered.querySelectorAll('#scene [id], #scene [data-primitive]')) {
+      if (polygonIds.has(el.id) || ['polygon-outline', 'polygon-cutout'].includes(el.dataset.primitive)) el.classList.add('polygon-copper');
+    }
     for (const g of kind === 'pcb' ? rendered.querySelectorAll('#scene > g') : []) {
       g.style.display = previousLayers.has(g.id) ? previousLayers.get(g.id) : defaultLayerVisible(g) ? '' : 'none';
     }
@@ -732,8 +760,10 @@ PAGE = r"""<!DOCTYPE html>
     svg?.querySelector('#' + id)?.remove();
     const overlay = document.createElementNS(NS, 'g'); overlay.id = id;
     overlay.style.pointerEvents = 'none';
-    const matched = new Set(hits), branches = new Set();
-    for (const el of hits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
+    const hiddenPolygon = el => activeBoard?.polygonsHidden && el.closest('.polygon-copper');
+    const visibleHits = hits.filter(el => !hiddenPolygon(el));
+    const matched = new Set(visibleHits), branches = new Set();
+    for (const el of visibleHits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
     function tintedCopy(node) {
       const copy = node.cloneNode(true);
       const originals = [node, ...node.querySelectorAll('*')], copies = [copy, ...copy.querySelectorAll('*')];
@@ -766,7 +796,8 @@ PAGE = r"""<!DOCTYPE html>
     }
     if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
     svg?.classList.toggle('layout-selection', Boolean(svg.querySelector('#component-highlight, #net-highlight')));
-    return { overlay, hidden: groups.filter(group => group.style.display === 'none' && branches.has(group)).length };
+    return { overlay, hidden: groups.filter(group => group.style.display === 'none' && branches.has(group)).length,
+      hiddenPolygons: hits.some(hiddenPolygon) };
   }
 
   // ------------------------------------------------------------ component search
@@ -800,11 +831,12 @@ PAGE = r"""<!DOCTYPE html>
     updateProbeTargets();
   }
   function updateComponentStatus(count = new Set(componentHits.map(el => el.dataset.component)).size) {
-    const { overlay, hidden } = buildLayoutHighlight('component-highlight', componentHits, '#ffe066');
+    const { overlay, hidden, hiddenPolygons } = buildLayoutHighlight('component-highlight', componentHits, '#ffe066');
     $('component-fit').disabled = !overlay.childElementCount;
     $('component-reveal').hidden = !hidden;
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
-      `${count} component${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
+      `${count} component${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
+      (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
   }
   function clearComponent() { resetProbeSelection('probeComponents'); $('component-query').value = ''; searchComponents(); }
   $('component-query').oninput = () => { resetProbeSelection('probeComponents'); searchComponents(); };
@@ -826,6 +858,18 @@ PAGE = r"""<!DOCTYPE html>
   };
 
   // ------------------------------------------------------------ layers
+  function updatePolygonControl() {
+    const hidden = Boolean(activeBoard?.polygonsHidden);
+    svg?.classList.toggle('hide-polygons', hidden);
+    $('polygons-toggle').textContent = hidden ? 'Show polygons' : 'Hide polygons';
+    $('polygons-toggle').setAttribute('aria-pressed', String(hidden));
+    $('polygons-toggle').disabled = activeBoard?.kind !== 'pcb' || !svg?.querySelector('.polygon-copper');
+  }
+  $('polygons-toggle').onclick = () => {
+    if (activeBoard?.kind !== 'pcb' || !svg) return;
+    activeBoard.polygonsHidden = !activeBoard.polygonsHidden;
+    updatePolygonControl(); updateComponentStatus(); updateNetStatus();
+  };
   function defaultLayerVisible(g) {
     const { layerRole: role, layerFamily: family, layerToken: token } = g.dataset;
     if (g.id === 'board-outline' || role === 'copper' || role === 'drill' ||
@@ -891,11 +935,12 @@ PAGE = r"""<!DOCTYPE html>
     updateProbeTargets();
   }
   function updateNetStatus(count = new Set(netHits.map(el => el.dataset.net)).size) {
-    const { overlay, hidden } = buildLayoutHighlight('net-highlight', netHits, '#68e0ff');
+    const { overlay, hidden, hiddenPolygons } = buildLayoutHighlight('net-highlight', netHits, '#68e0ff');
     $('net-fit').disabled = !overlay.childElementCount;
     $('net-reveal').hidden = !hidden;
     $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
-      `${count} net${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
+      `${count} net${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
+      (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
   }
   function clearNet() { resetProbeSelection('probeNets'); $('net-query').value = ''; searchNets(); }
   $('net-query').oninput = () => { resetProbeSelection('probeNets'); searchNets(); };
