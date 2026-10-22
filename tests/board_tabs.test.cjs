@@ -798,3 +798,29 @@ test('Escape exits measurement mode with a search field focused and retains fini
   await page.keyboard.press('Shift+C');
   assert.equal(await page.locator('#measure line').count(), 0, 'Shift+C still clears finished measurements');
 });
+
+test('Escape together exits measuring, clears component/net selections and retains completed distances', async t => {
+  const { page } = await openClickableComponents(t);
+  await page.locator('[data-primitive="component-pad"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
+  await page.locator('#measure-btn').click();
+  await page.locator('[data-primitive="component-body"]').click();
+  await page.locator('[data-primitive="nested-body"]').click();
+  await page.locator('[data-primitive="component-pad-2"]').click();
+  await page.mouse.move(800, 600);
+  assert.equal(await page.locator('#measure line').count(), 2);
+  await page.locator('#component-query').focus();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  assert.equal(await page.locator('#component-highlight, #net-highlight').count(), 0);
+  assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
+  assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('.measure-label').count(), 1);
+  await page.locator('[data-primitive="nested-body"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'U[1]"');
+  assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"');
+  assert.equal(await page.locator('#measure line').count(), 1);
+});
