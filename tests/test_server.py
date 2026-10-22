@@ -100,6 +100,25 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(data["stats"], {"components": 0, "wires": 1, "net_labels": 0})
         self.assertIn("<svg", data["svg"])
 
+    def test_upload_renders_kicad_pcb_and_schematic_files(self):
+        for extension, kind in (("kicad_pcb", "pcb"), ("kicad_sch", "schematic")):
+            with self.subTest(extension=extension):
+                source = (ROOT / "tests" / "fixtures" / "kicad" / f"demo.{extension}").read_bytes()
+                status, _, body = self.request("POST", "/render", source,
+                                               {"X-Filename": quote(f"KiCad board.{extension}")})
+                data = json.loads(body)
+                self.assertEqual(status, 200)
+                self.assertEqual(data["kind"], kind)
+                self.assertEqual(data["stats"]["components"], 2)
+                self.assertEqual(data["name"], f"KiCad board.{extension}")
+                self.assertIn("<svg", data["svg"])
+
+    def test_malformed_kicad_upload_returns_an_error_and_keeps_serving(self):
+        status, _, body = self.request("POST", "/render", b"(kicad_pcb", {"X-Filename": "broken.kicad_pcb"})
+        self.assertEqual(status, 500)
+        self.assertIn("Invalid KiCad", json.loads(body)["error"])
+        self.assertEqual(self.request("GET", "/")[0], 200)
+
     def test_upload_passes_render_options_and_removes_temporary_file(self):
         with patch("pcbvisualizer.server.render_file", return_value={"svg": "<svg/>"}) as render:
             status, _, body = self.request("POST", "/render?side=bottom&clip=1&pour=%23ff0000&outlines=1",
@@ -120,6 +139,42 @@ class ServerTests(unittest.TestCase):
 
 
 class LaunchTests(unittest.TestCase):
+    def test_kicad_startup_document_is_available_without_a_kicad_installation(self):
+        command = [sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py"),
+                   str(ROOT / "tests" / "fixtures" / "kicad" / "demo.kicad_pcb"), "--no-open"]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            output = queue.Queue()
+            def read_output():
+                for line in process.stdout:
+                    output.put(line)
+                output.put(None)
+            reader = threading.Thread(target=read_output, daemon=True); reader.start()
+            while True:
+                line = output.get(timeout=20)
+                self.assertIsNotNone(line, "Viewer exited before startup")
+                match = re.search(r"http://127\.0\.0\.1:\d+/", line)
+                if match:
+                    break
+            url = urlsplit(match[0])
+            connection = HTTPConnection(url.hostname, url.port, timeout=10)
+            try:
+                connection.request("GET", "/initial")
+                data = json.loads(connection.getresponse().read())
+                self.assertEqual(data["name"], "demo.kicad_pcb")
+                self.assertEqual(data["kind"], "pcb")
+                self.assertEqual(data["stats"]["components"], 2)
+                self.assertEqual(base64.b64decode(data["source"]), (ROOT / "tests" / "fixtures" / "kicad" / "demo.kicad_pcb").read_bytes())
+            finally:
+                connection.close()
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=5)
+            reader.join(timeout=5); process.stdout.close()
+
     def test_launch_commands_load_initial_document_and_packaged_assets(self):
         data = schematic_bytes()
         with tempfile.TemporaryDirectory() as tmp:

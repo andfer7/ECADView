@@ -1,4 +1,4 @@
-"""Render Altium documents and build selection metadata for the viewer."""
+"""Render supported EDA documents and build selection metadata for the viewer."""
 
 from dataclasses import replace
 from io import BytesIO
@@ -103,6 +103,12 @@ def polygon_element_ids(pcb: AltiumPcbDoc, svg: str) -> list[str]:
 
 def render_file(path: Path, side: str = "all", clip: bool = False,
                 pour_color: str | None = None, polygon_outlines: bool = False) -> dict:
+    if path.suffix.lower() == ".kicad_pcb":
+        from .kicad_pcb import render_pcb
+        return render_pcb(path, side, clip, pour_color, polygon_outlines)
+    if path.suffix.lower() == ".kicad_sch":
+        from .kicad_schematic import render_schematic
+        return render_schematic(path)
     if path.suffix.lower() == ".schdoc":
         schematic = AltiumSchDoc(path)
         return {
@@ -118,7 +124,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
             },
         }
     if path.suffix.lower() != ".pcbdoc":
-        raise ValueError("Open an Altium .PcbDoc or .SchDoc file.")
+        raise ValueError("Open an Altium .PcbDoc or .SchDoc, or a KiCad .kicad_pcb or .kicad_sch file.")
     pcb = AltiumPcbDoc.from_file(path)
     warnings = prepare_embedded_fonts(pcb)
     resolve_polygon_nets(pcb)

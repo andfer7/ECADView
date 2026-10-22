@@ -428,7 +428,7 @@ import { NetLabels } from './net-labels.js';
     const selected = fromSchematic ? source.selectedComponents.size + source.selectedNets.size : componentHits.length + netHits.length;
     button.disabled = !source?.svg || !selected || !source.probeTargetId;
     status.textContent = !source?.svg ? '' : source.probeMessage || (!targets.length ?
-      'Open a ' + (fromSchematic ? '.PcbDoc layout' : '.SchDoc schematic') + ' to cross-probe.' :
+      'Open a ' + (fromSchematic ? 'PCB layout (.PcbDoc or .kicad_pcb)' : 'schematic (.SchDoc or .kicad_sch)') + ' to cross-probe.' :
       !selected ? 'Select ' + (fromSchematic ? 'schematic' : 'layout') + ' components or nets.' : !source.probeTargetId ? 'Choose the ' + noun + ' to probe.' : '');
   }
   function updateProbeResult() {

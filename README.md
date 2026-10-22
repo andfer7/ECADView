@@ -1,7 +1,7 @@
 # PCBVisualizer
 
-A local Altium PCB and schematic viewer. Open `.PcbDoc` and `.SchDoc` files in
-separate tabs, inspect layers and polygon pours, find components and nets,
+A local Altium and KiCad PCB and schematic viewer. Open `.PcbDoc`, `.SchDoc`,
+`.kicad_pcb`, and `.kicad_sch` files in separate tabs, inspect layers and polygon pours, find components and nets,
 cross-probe between documents, and measure PCB geometry. Files are parsed on
 your machine and the browser displays the rendered SVG.
 
@@ -25,7 +25,7 @@ The body list also supports keyboard selection, including bodies hidden behind
 the board. Use **Delete selected**, Delete, or Backspace to remove selected
 bodies from the preview, and **Undo delete** or Ctrl/Cmd+Z to restore the last
 deletion. Selection, deletions, and undo history stay with each tab across mode
-switches. These changes last for the current viewer session; the source PcbDoc
+switches. These changes last for the current viewer session; the source document
 and its 2D geometry remain unchanged.
 
 The preview uses the first physical layer stack's thickness, or an explicitly
@@ -51,6 +51,8 @@ The existing launch command continues to work from an activated environment:
 python pcb_viewer_gui.py
 python pcb_viewer_gui.py board.PcbDoc
 python pcb_viewer_gui.py sheet.SchDoc --browser default
+python pcb_viewer_gui.py board.kicad_pcb
+python pcb_viewer_gui.py sheet.kicad_sch
 python pcb_viewer_gui.py --no-open --port 8000
 ```
 
@@ -60,6 +62,36 @@ with `python -m pcbvisualizer`, or use the `pcbvisualizer` command after install
 the package. Without uv, install it with `python -m pip install .` in your Python
 environment. No Node.js installation or frontend build is needed to run the app.
 
+## KiCad support
+
+Modern KiCad files (KiCad 6 and newer) open directly, without installing KiCad or
+resolving external symbol libraries. Use Open files or drag files into the viewer;
+KiCad and Altium documents can share the same session. The legacy schematic
+`.sch` format is not supported.
+
+PCB previews include footprints, pads and drills, tracks and arcs, vias, saved
+zone fills, and board/footprint graphics. Layer controls, polygon visibility,
+component and net searches, pin captions, cross-probing, and measurements use the
+same controls as Altium documents. Refill and save zones in KiCad to include
+their copper; this viewer does not calculate pours. Custom pad primitives are
+supported, while chamfered and trapezoidal pads use a rectangular approximation.
+
+Schematic previews use embedded symbols, units, rotation and mirroring, pins,
+properties, wires, labels, junctions, and sheet boxes. Click bodies to select
+components and wires or pins to select connected nets, then cross-probe into an
+open PCB. Connectivity is derived for the individual sheet, including named
+labels and power symbols. Open child sheets individually: the viewer does not
+compile hierarchical projects or expand bus-member connectivity. Symbol and pin
+decorations and text use simplified drawing and browser fonts; images, text
+boxes, tables, and PCB dimensions are omitted. Applicable omissions appear in
+the sidebar.
+
+KiCad 3D previews show closed Edge.Cuts board profiles, cutouts, through drills,
+slots, and the saved board thickness. Tiny outline endpoint gaps up to 0.002 mm
+are joined when constructing the profile. External STEP/VRML component models
+are not loaded, so KiCad's 3D preview currently shows the board only. Source
+files are never modified.
+
 ## Project layout
 
 ```text
@@ -68,7 +100,10 @@ pcbvisualizer/
   __init__.py             Package identity
   __main__.py             python -m pcbvisualizer entry point
   cli.py                  Arguments, startup, and browser launching
-  rendering.py            Altium rendering and selection metadata
+  rendering.py            Format dispatch, Altium rendering and selection metadata
+  kicad_common.py         KiCad S-expression and SVG helpers
+  kicad_pcb.py            KiCad board geometry, layers, and metadata
+  kicad_schematic.py      Embedded symbols and sheet-local connectivity
   scene3d.py              Board and simple-body solid geometry in millimetres
   server.py               Local HTTP endpoints and uploads
   static/
@@ -79,8 +114,10 @@ pcbvisualizer/
     viewer-3d.js          Local WebGL scene, controls, and camera management
 tests/
   test_rendering.py       Rendering regression tests
+  test_kicad.py           KiCad geometry, connectivity, and input tests
   test_server.py          HTTP and launch-command integration tests
   board_tabs.test.cjs     Browser regression tests
+  fixtures/kicad/         Small native-format PCB and schematic examples
 ```
 
 The server serves frontend resources explicitly. They are included in
