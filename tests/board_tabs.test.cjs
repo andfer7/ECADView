@@ -241,7 +241,7 @@ async function clickSchematicGraphic(page, target, shift = false) {
   finally { if (shift) await page.keyboard.up('Shift'); }
 }
 
-test('selects schematic components and entire nets; Shift adds and ordinary clicks replace the selection', async t => {
+test('selects schematic components and entire nets; Shift adds, selected items toggle off, and new clicks replace', async t => {
   const { page } = await openSelectableSchematic(t);
   const component = symbolBodies(page);
   await clickSchematicGraphic(page, component.first());
@@ -262,6 +262,8 @@ test('selects schematic components and entire nets; Shift adds and ordinary clic
   assert.equal(await page.locator('.sch-net-match').count(), 7);
   assert.match(await schematicStatus(page), /Nets: GND, VCC$/);
   await clickSchematicGraphic(page, component.first());
+  assert.equal(await schematicStatus(page), 'Components: U[2]"<test>\nNets: GND, VCC', 'clicking a selected item removes only that item');
+  await clickSchematicGraphic(page, component.first());
   assert.equal(await schematicStatus(page), 'Components: R1');
   assert.equal(await page.locator('.sch-net-match').count(), 0);
   await clickSchematicGraphic(page, page.locator('#pin-2 .sch-hit'));
@@ -273,6 +275,37 @@ test('selects schematic components and entire nets; Shift adds and ordinary clic
   assert.equal(await schematicStatus(page), 'Nothing selected.');
   assert.equal(await page.locator('.sch-net-match').count(), 0);
   assert.equal(await page.locator('#wire-1 line:not(.sch-hit)').evaluate(el => getComputedStyle(el).stroke), 'rgb(0, 0, 255)');
+});
+
+test('schematic components and nets can be deselected and reselected, including Shift selections and shared graphics', async t => {
+  const { page } = await openSelectableSchematic(t);
+  const component = symbolBodies(page);
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await clickSchematicGraphic(page, component.first());
+    assert.equal(await schematicStatus(page), 'Components: R1');
+    await clickSchematicGraphic(page, component.first());
+    assert.equal(await schematicStatus(page), 'Nothing selected.');
+    assert.equal(await page.locator('.sch-component-match').count(), 0);
+    assert.equal(await page.locator('#schematic-clear').isDisabled(), true);
+    assert.equal(await page.locator('#probe-layout-btn').isDisabled(), true);
+  }
+  await clickSchematicGraphic(page, component.first());
+  await clickSchematicGraphic(page, component.nth(1), true);
+  await clickSchematicGraphic(page, component.first(), true);
+  assert.equal(await schematicStatus(page), 'Components: U[2]"<test>');
+  await clickSchematicGraphic(page, component.first());
+  await clickSchematicGraphic(page, page.locator('#wire-1 .sch-hit'), true);
+  await page.locator('#label-1 text').click();
+  assert.equal(await schematicStatus(page), 'Components: R1', 'a label can deselect its already selected wire net without clearing the component');
+  await clickSchematicGraphic(page, page.locator('#pin-1 .sch-hit'));
+  assert.equal(await schematicStatus(page), 'Nets: GND', 'an unselected pin net replaces the selection');
+  await clickSchematicGraphic(page, page.locator('#wire-3 .sch-hit'), true);
+  await clickSchematicGraphic(page, page.locator('#shared .sch-hit'), true);
+  assert.equal(await schematicStatus(page), 'Nothing selected.', 'all nets represented by a selected shared graphic toggle off together');
+  await clickSchematicGraphic(page, page.locator('#shared .sch-hit'));
+  assert.equal(await schematicStatus(page), 'Nets: GND, VCC');
+  await clickSchematicGraphic(page, page.locator('#shared .sch-hit'));
+  assert.equal(await page.locator('.sch-net-match').count(), 0);
 });
 
 test('schematic selections survive tabs and pans; Escape clears only the active sheet', async t => {
@@ -391,6 +424,16 @@ test('cross-probes multiple schematic selections using source IDs and pin connec
   assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), schematicView);
   await page.getByRole('tab', { name: 'Layout.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('.component-match').count(), 2, 'exact multi-selection survives remounting');
+  await page.locator('#pcb-r').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'U7', 'deselecting one probed component retains the other exact match');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  assert.equal(await page.locator('.component-match').count(), 1);
+  assert.equal(await page.locator('#probe-result').isVisible(), false);
+  await page.getByRole('tab', { name: 'Sheet.SchDoc', exact: true }).click();
+  await page.getByRole('tab', { name: 'Layout.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'U7');
+  await page.locator('#pcb-r').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R99', 'the deselected component can be selected again');
   await page.locator('#component-query').fill('R10');
   assert.equal(await page.locator('.component-match').count(), 1, 'typing replaces the probed component selection');
   assert.equal(await page.locator('#probe-result').isVisible(), false);
@@ -1047,6 +1090,10 @@ test('uploads the affected layout through the real Python server', {
   await page.locator('#net-clear').click();
   await pour.click();
   assert.equal(await page.locator('#net-query').inputValue(), netName, 'clicking real polygon copper selects its net');
+  await pour.click();
+  assert.equal(await page.locator('#net-query').inputValue(), '', 'clicking real polygon copper again deselects its net');
+  await pour.click();
+  assert.equal(await page.locator('#net-query').inputValue(), netName, 'clicking real polygon copper again reselects its net');
   if (process.env.PCB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.PCB_TEST_SCREENSHOT });
 });
 
@@ -1551,13 +1598,15 @@ test('clicking pads, tracks, vias, polygon copper and nested geometry selects th
   await page.locator('#component-query').fill('R1');
   await page.locator('[data-primitive="pad"]').click();
   assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
-  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('#component-query').inputValue(), '', 'clicking a searched component deselects it');
   const track = await page.locator('[data-primitive="track"]').boundingBox();
   await page.mouse.click(track.x + track.width / 2, track.y + track.height / 2);
   assert.equal(await page.locator('#net-query').inputValue(), 'GND');
   assert.equal(await page.locator('.net-match').count(), 3, 'selects all copper on the clicked net');
   await page.locator('[data-primitive="via"]').click();
-  assert.equal(await page.locator('#net-query').inputValue(), 'GND', 'highlight overlay permits clicking the native via');
+  assert.equal(await page.locator('#net-query').inputValue(), '', 'clicking another primitive on the selected net deselects the whole net');
+  assert.equal(await page.locator('.net-match, #net-highlight').count(), 0);
+  assert.equal(await page.locator('#net-fit').isDisabled(), true);
   await page.locator('[data-primitive="shapebased-region"]').click();
   assert.equal(await page.locator('#net-query').inputValue(), 'GND');
   await page.locator('[data-primitive="nested"] circle').click();
@@ -1665,7 +1714,7 @@ test('clicking components highlights all their geometry and retains selection of
   assert.equal(await page.locator('#component-highlight rect').count(), 2);
   assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
   await page.locator('[data-primitive="component-pad-2"]').click();
-  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('#component-query').inputValue(), '', 'another pad of the selected component deselects the whole component');
   assert.equal(await page.locator('#net-query').inputValue(), 'GND');
   await page.locator('[data-primitive="nested-body"]').click();
   assert.equal(await page.locator('#component-query').inputValue(), 'U[1]"');
@@ -1679,6 +1728,71 @@ test('clicking components highlights all their geometry and retains selection of
   assert.equal(await page.locator('#component-query').inputValue(), 'C2');
   assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewBox);
   assert.equal(requests.length, 1);
+});
+
+test('repeated layout component clicks toggle selection, highlighting and dimming while pan and measurement clicks do not', async t => {
+  const { page } = await openClickableComponents(t);
+  const body = page.locator('[data-primitive="component-body"]');
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await body.click();
+    assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+    assert.equal(await page.locator('.component-match').count(), 1);
+    await body.click();
+    assert.equal(await page.locator('#component-query').inputValue(), '');
+    assert.equal(await page.locator('.component-match, #component-highlight').count(), 0);
+    assert.equal(await page.locator('#component-fit').isDisabled(), true);
+    assert.equal(await page.locator('#component-status').textContent(), '');
+    assert.equal(await page.locator('#view > svg').evaluate(el => el.classList.contains('layout-selection')), false);
+  }
+  await body.click();
+  const b = await body.boundingBox(), x = b.x + b.width / 2, y = b.y + b.height / 2;
+  await page.mouse.move(x, y); await page.mouse.down();
+  await page.mouse.move(x + 30, y + 10); await page.mouse.move(x, y); await page.mouse.up();
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+  await page.locator('#measure-btn').click();
+  await body.click(); await page.locator('[data-primitive="component-pad"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+  await page.locator('#measure-btn').click();
+  await body.click();
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  assert.equal(await page.locator('#measure line').count(), 1);
+  await body.click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+  assert.equal(await page.locator('#measure line').count(), 1);
+});
+
+test('deselecting one layout search match preserves the other exact matches across tabs', async t => {
+  const { page } = await openPage(t, { render: (route, name) => {
+    const data = clickableComponents(name);
+    data.svg = data.svg.replace('</g></g></svg>', `<rect id="r10" data-component="R10" data-net="VCC_A" x="65" y="30" width="6" height="6" fill="red"/>
+      <rect id="r100" data-component="R100" data-net="VCC_B" x="80" y="30" width="6" height="6" fill="red"/></g></g></svg>`);
+    return reply(route, data);
+  } });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#component-query').fill('R');
+  await page.locator('#net-query').fill('V');
+  await page.locator('[data-primitive="component-pad"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R10, R100');
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC_A, VCC_B');
+  assert.equal(await page.locator('.component-match').count(), 2);
+  assert.equal(await page.locator('.net-match').count(), 2);
+  assert.equal(await page.locator('[data-primitive="component-pad"]').evaluate(el => el.classList.contains('component-match') || el.classList.contains('net-match')), false);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('.component-match').count(), 2);
+  assert.equal(await page.locator('.net-match').count(), 2);
+  await page.locator('#r10').click(); await page.locator('#r100').click();
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  await page.locator('[data-primitive="component-pad"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
+  await page.locator('[data-primitive="component-pad"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  assert.equal(await page.locator('#net-query').inputValue(), '', 'a repeated pad click deselects both its component and its net');
+  await page.locator('[data-primitive="component-pad"]').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
 });
 
 test('component selection ignores pans and measurement clicks and remains local to each board', async t => {
