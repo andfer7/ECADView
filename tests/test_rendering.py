@@ -12,7 +12,10 @@ import zlib
 
 import freetype
 from altium_monkey.altium_embedded_files import EmbeddedFont
-from altium_monkey import AltiumSchDoc, SchPointMils, make_sch_wire
+from altium_monkey import (
+    AltiumSchComponent, AltiumSchDesignator, AltiumSchDoc, SchPointMils, SchRectMils,
+    make_sch_net_label, make_sch_rectangle, make_sch_wire,
+)
 
 from pcb_viewer_gui import (
     AltiumPcbDoc, get_font_path_with_style, prepare_embedded_fonts, render_file, resolve_polygon_nets,
@@ -108,6 +111,37 @@ class PolygonNetTests(unittest.TestCase):
 
 
 class SchematicTests(unittest.TestCase):
+    def test_selection_follows_connected_nets_and_source_components(self):
+        schematic = AltiumSchDoc()
+        component = AltiumSchComponent()
+        schematic.add_object(component)
+        designator = AltiumSchDesignator(); designator.text = 'U[1]&"'
+        schematic.add_object(designator, owner=component)
+        schematic.add_object(make_sch_rectangle(bounds_mils=SchRectMils(500, 500, 700, 700)), owner=component)
+        wires = []
+        for points, name in [([(100, 100), (500, 100)], "GND"),
+                             ([(300, 0), (300, 200)], "SIGNAL"),
+                             ([(100, 400), (500, 400)], "GND")]:
+            wire = make_sch_wire(points_mils=[SchPointMils(*point) for point in points])
+            wires.append(wire)
+            schematic.add_object(wire)
+            schematic.add_object(make_sch_net_label(location_mils=SchPointMils(*points[0]), text=name))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "selection.SchDoc"
+            schematic.save(path)
+            data = render_file(path)
+        nets = {net["name"]: set(net["elements"]) for net in data["selection"]["nets"]}
+        self.assertEqual(set(nets), {"GND", "SIGNAL"}, "Wire-only nets must be selectable")
+        self.assertIn(wires[0].unique_id, nets["GND"])
+        self.assertIn(wires[2].unique_id, nets["GND"], "Disconnected same-name labels belong to the same net")
+        self.assertNotIn(wires[1].unique_id, nets["GND"], "A crossing without a junction must not merge nets")
+        self.assertIn(wires[1].unique_id, nets["SIGNAL"])
+        selection = data["selection"]["components"]
+        self.assertEqual(selection, [{"id": component.unique_id, "name": 'U[1]&"', "elements": [component.unique_id]}])
+        svg_ids = {element.get("id") for element in ET.fromstring(data["svg"]).iter()}
+        for row in data["selection"]["nets"] + selection:
+            self.assertTrue(set(row["elements"]) <= svg_ids)
+
     def test_parses_and_renders_a_saved_schematic_without_modifying_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sheet.sChDoC"
@@ -138,6 +172,12 @@ class SchematicTests(unittest.TestCase):
         self.assertGreater(data["stats"]["components"], 0)
         self.assertGreater(data["stats"]["wires"], 0)
         self.assertIsNotNone(root.find(".//{http://www.w3.org/2000/svg}text"))
+        svg_ids = {element.get("id") for element in root.iter()}
+        self.assertEqual(len(data["selection"]["components"]), data["stats"]["components"])
+        self.assertTrue(all(row["id"] in svg_ids for row in data["selection"]["components"]))
+        ground = next(net for net in data["selection"]["nets"] if net["name"] == "GND")
+        self.assertGreater(len(ground["elements"]), 2)
+        self.assertTrue(set(ground["elements"]) <= svg_ids)
         self.assertEqual(hashlib.sha256(path.read_bytes()).digest(), original)
 
 
