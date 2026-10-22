@@ -124,3 +124,15 @@ class Scene3DTests(unittest.TestCase):
         self.assertIn('<svg', data['svg'])
         self.assertEqual(data['scene3d']['board'], [])
         self.assertIn('unsupported body', data['scene3d']['notes'][0])
+
+    def test_body_identity_groups_split_solids_and_distinguishes_duplicate_names(self):
+        pcb = board()
+        pcb.add_extruded_3d_body(outline_points_mils=[(100, 100), (300, 300), (100, 300), (300, 100)],
+                                 overall_height_mils=100, name='Body')
+        pcb.add_extruded_3d_body(outline_points_mils=[(500, 100), (700, 100), (700, 300), (500, 300)],
+                                 overall_height_mils=100, name='Body')
+        scene = build_scene(pcb)
+        self.assertEqual(len(scene['bodies']), 3)
+        self.assertEqual([body['id'] for body in scene['bodies']], ['body-0', 'body-0', 'body-1'])
+        self.assertEqual({body['name'] for body in scene['bodies']}, {'Body'})
+        self.assertEqual(build_scene(pcb)['bodies'], scene['bodies'])

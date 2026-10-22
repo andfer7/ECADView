@@ -118,7 +118,7 @@ def build_scene(pcb):
     owners = {b.component_index for b in standard}
     records = list(standard) + [b for b in pcb.shapebased_component_bodies if b.component_index not in owners]
     approximated = 0
-    for body in records:
+    for body_number, body in enumerate(records):
         points = contour(body.outline)
         low, high = body.standoff_height * IU_MM, body.overall_height * IU_MM
         if len(points) < 3 or high <= low:
@@ -134,7 +134,7 @@ def build_scene(pcb):
         color = body.body_color_3d
         rgb = ((color & 255) << 16) | (color & 0x00FF00) | ((color >> 16) & 255)
         for shape in solid_shapes(make_valid(Polygon(points, [contour(h) for h in body.holes])), origin):
-            bodies.append({**shape, "z": z, "height": high - low, "color": rgb,
+            bodies.append({**shape, "id": f"body-{body_number}", "z": z, "height": high - low, "color": rgb,
                            "opacity": max(0, min(1, body.body_opacity_3d)),
                            "name": component.designator if component else body.name.strip() or "Body"})
         if component:

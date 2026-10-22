@@ -3,13 +3,14 @@ import { OrbitControls } from './OrbitControls.js';
 
 // One WebGL context is shared by all tabs. Geometry is released on every switch.
 export class Board3D {
-  constructor(host, onError) {
+  constructor(host, onError, onPick) {
     this.host = host;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setClearColor(0x1b1d21);
     this.renderer.domElement.setAttribute('aria-label', '3D PCB view');
-    this.renderer.domElement.setAttribute('role', 'img');
+    this.renderer.domElement.setAttribute('role', 'region');
+    this.renderer.domElement.tabIndex = 0;
     this.renderer.domElement.addEventListener('webglcontextlost', event => {
       event.preventDefault(); onError('The 3D graphics context was lost. Switch to 2D or reload to try again.');
     });
@@ -18,11 +19,40 @@ export class Board3D {
     this.camera.up.set(0, 0, 1);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.addEventListener('change', () => this.render());
+    this.raycaster = new THREE.Raycaster();
+    const canvas = this.renderer.domElement;
+    const pointers = new Set();
+    let click = null;
+    this.cancelPick = () => { pointers.clear(); click = null; };
+    window.addEventListener('blur', this.cancelPick);
+    canvas.addEventListener('pointerdown', event => {
+      pointers.add(event.pointerId);
+      click = pointers.size === 1 && event.button === 0 ?
+        { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false } : null;
+    });
+    canvas.addEventListener('pointermove', event => {
+      if (click?.id === event.pointerId && Math.hypot(event.clientX - click.x, event.clientY - click.y) > 4) click.moved = true;
+    });
+    canvas.addEventListener('pointerup', event => {
+      const selected = click; click = null; pointers.delete(event.pointerId);
+      if (!this.scene || selected?.id !== event.pointerId || selected.moved) return;
+      canvas.focus({ preventScroll: true });
+      const rect = canvas.getBoundingClientRect();
+      const point = new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1,
+        -(event.clientY - rect.top) / rect.height * 2 + 1);
+      this.scene.updateMatrixWorld(true);
+      this.raycaster.setFromCamera(point, this.camera);
+      // Include board surfaces so an occluded body cannot be picked through it.
+      const hit = this.raycaster.intersectObjects(this.pickMeshes.filter(mesh => mesh.visible), false)[0];
+      onPick?.(hit?.object.userData.bodyId ?? null, event.shiftKey);
+    });
+    canvas.addEventListener('pointercancel', event => { pointers.delete(event.pointerId); click = null; });
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(host);
   }
 
   clear() {
+    this.cancelPick();
     this.controls.enabled = false;
     this.scene?.traverse(object => {
       object.geometry?.dispose();
@@ -30,10 +60,12 @@ export class Board3D {
       materials.forEach(material => material?.dispose());
     });
     this.scene = null;
+    this.pickMeshes = [];
+    this.bodyMeshes = [];
     this.renderer.clear();
   }
 
-  show(model, state) {
+  show(model, state, bodies) {
     this.clear();
     this.scene = new THREE.Scene();
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.8));
@@ -41,33 +73,57 @@ export class Board3D {
     light.position.set(-30, -50, 100); this.scene.add(light);
     const bottomLight = new THREE.DirectionalLight(0xc5dfff, 2);
     bottomLight.position.set(30, 50, -100); this.scene.add(bottomLight);
-    const addSolid = (data, z, height, color, opacity = 1, edgeColor = 0x182323) => {
+    const addSolid = (data, z, height, color, opacity = 1, edgeColor = 0x182323, bodyId = null) => {
       const shape = new THREE.Shape(data.outline.map(p => new THREE.Vector2(...p)));
       shape.holes = (data.holes || []).map(points => new THREE.Path(points.map(p => new THREE.Vector2(...p))));
       const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
       const material = new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.05,
         opacity, transparent: opacity < 1 });
       const mesh = new THREE.Mesh(geometry, material);
+      mesh.visible = bodyId === null || !bodies?.deleted.has(bodyId);
       mesh.position.z = z; mesh.name = data.name || 'Board'; this.scene.add(mesh);
+      mesh.userData.bodyId = bodyId;
+      if (opacity > 0) this.pickMeshes.push(mesh);
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25),
         new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.45 * opacity }));
       edges.position.z = z; this.scene.add(edges);
+      edges.visible = mesh.visible;
+      if (bodyId !== null) this.bodyMeshes.push({ id: bodyId, mesh, edges, edgeColor, edgeOpacity: 0.45 * opacity });
     };
     model.board.forEach(part => addSolid(part, -model.thickness / 2, model.thickness, 0x16764f, 1, 0xbcc28a));
-    model.bodies.forEach(body => addSolid(body, body.z, body.height, body.color, body.opacity));
-    const bounds = new THREE.Box3().setFromObject(this.scene);
-    this.center = bounds.getCenter(new THREE.Vector3());
-    this.radius = Math.max(bounds.getSize(new THREE.Vector3()).length() / 2, 0.1);
-    this.camera.near = Math.max(this.radius / 10000, 0.0001);
-    this.camera.far = this.radius * 1000;
-    this.controls.minDistance = this.radius * 0.01;
-    this.controls.maxDistance = this.radius * 100;
+    model.bodies.forEach((body, index) => addSolid(body, body.z, body.height, body.color, body.opacity,
+      0x182323, body.id ?? `body-${index}`));
+    this.updateBounds();
     this.controls.enabled = true;
     this.resize();
     if (state) {
       this.camera.position.fromArray(state.position); this.camera.up.fromArray(state.up);
       this.controls.target.fromArray(state.target); this.controls.update();
     } else this.fit();
+    this.updateBodies(bodies);
+  }
+
+  updateBounds() {
+    const bounds = new THREE.Box3();
+    this.pickMeshes.filter(mesh => mesh.visible).forEach(mesh => bounds.expandByObject(mesh));
+    this.center = bounds.getCenter(new THREE.Vector3());
+    this.radius = Math.max(bounds.getSize(new THREE.Vector3()).length() / 2, 0.1);
+    this.camera.near = Math.max(this.radius / 10000, 0.0001);
+    this.camera.far = this.radius * 1000;
+    this.controls.minDistance = this.radius * 0.01;
+    this.controls.maxDistance = this.radius * 100;
+    this.camera.updateProjectionMatrix();
+  }
+
+  updateBodies(state) {
+    for (const { id, mesh, edges, edgeColor, edgeOpacity } of this.bodyMeshes) {
+      mesh.visible = edges.visible = !state?.deleted.has(id);
+      const selected = Boolean(state?.selected.has(id));
+      mesh.material.emissive.setHex(selected ? 0x147b8a : 0);
+      edges.material.color.setHex(selected ? 0x35c2d8 : edgeColor);
+      edges.material.opacity = selected ? 1 : edgeOpacity;
+    }
+    this.updateBounds();
     this.render();
   }
 

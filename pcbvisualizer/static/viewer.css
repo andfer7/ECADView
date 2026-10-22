@@ -84,4 +84,10 @@
   #three-view canvas { width: 100%; height: 100%; display: block; }
   #three-status { white-space: pre-line; margin-top: 6px; }
   #three-summary { margin-top: 6px; }
+  #three-body-list { width: 100%; box-sizing: border-box; margin: 4px 0; background: var(--bg);
+                     color: var(--text); border: 1px solid var(--line); font: inherit; }
+  #three-controls > label { display: block; margin-top: 10px; }
+  #three-selection { overflow-wrap: anywhere; margin-bottom: 6px; }
+  #three-undo { margin-top: 6px; }
+  #three-view canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   [hidden] { display: none !important; }
