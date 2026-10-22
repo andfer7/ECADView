@@ -461,6 +461,30 @@ test('retains multiple measurements with labels and units, cancels previews and 
   assert.equal(await page.locator('#readout').textContent(), '');
 });
 
+test('Escape exits measurement mode with a search field focused and retains finished measurements', async t => {
+  const { page } = await openClickableNets(t);
+  await page.locator('#measure-btn').click();
+  await page.locator('[data-primitive="pad"]').click();
+  await page.locator('[data-primitive="via"]').click();
+  const caption = await page.locator('.measure-label').textContent();
+  await page.locator('#component-query').focus();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
+  assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('.measure-label').textContent(), caption);
+  await page.locator('[data-primitive="pad"]').click();
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'normal selection resumes after Escape');
+  assert.equal(await page.locator('#measure line').count(), 1);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  await page.locator('#view').click({ position: { x: 20, y: 20 } });
+  await page.keyboard.press('Shift+C');
+  assert.equal(await page.locator('#measure line').count(), 0, 'Shift+C still clears finished measurements');
+});
+
 const componentBoardData = name => ({ ...boardData(name), svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
   <g id="scene"><g id="layer-top" data-layer-name="Top copper">
     <rect data-component="R1" x="10" y="10" width="10" height="5" fill="red"/>
@@ -700,28 +724,4 @@ test('Escape deselects nets from the canvas and search fields and only affects t
   await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#net-query').inputValue(), '', 'deselection survives switching tabs');
-});
-
-test('Escape exits measurement mode with a search field focused and retains finished measurements', async t => {
-  const { page } = await openClickableNets(t);
-  await page.locator('#measure-btn').click();
-  await page.locator('[data-primitive="pad"]').click();
-  await page.locator('[data-primitive="via"]').click();
-  const caption = await page.locator('.measure-label').textContent();
-  await page.locator('#component-query').focus();
-  await page.keyboard.press('Escape');
-  assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
-  assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
-  assert.equal(await page.locator('#measure line').count(), 1);
-  assert.equal(await page.locator('.measure-label').textContent(), caption);
-  await page.locator('[data-primitive="pad"]').click();
-  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'normal selection resumes after Escape');
-  assert.equal(await page.locator('#measure line').count(), 1);
-  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
-  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
-  assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
-  assert.equal(await page.locator('#measure line').count(), 1);
-  await page.locator('#view').click({ position: { x: 20, y: 20 } });
-  await page.keyboard.press('Shift+C');
-  assert.equal(await page.locator('#measure line').count(), 0, 'Shift+C still clears finished measurements');
 });
