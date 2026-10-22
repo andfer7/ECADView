@@ -8,6 +8,9 @@ your machine and the browser displays the rendered SVG.
 Zoom into a PCB to see net names directly over visible pads, vias, and routes when
 the text fits. Labels remain readable while navigating and respect layer and polygon
 visibility. Via captions fit on the copper ring around the drill hole.
+Component pads also show their pin numbers, including alphanumeric and
+unconnected pins. Pin numbers appear above net names when both fit; on cramped
+pads the pin number takes priority.
 
 ## Setup and launch
 
@@ -47,7 +50,7 @@ pcbvisualizer/
     index.html            Browser interface
     viewer.css            Interface styling
     viewer.js             Tabs, navigation, selection, probing, and measurement
-    net-labels.js         Automatic net captions for zoomed PCB views
+    net-labels.js         Net and component pin captions for zoomed PCB views
 tests/
   test_rendering.py       Rendering regression tests
   test_server.py          HTTP and launch-command integration tests
