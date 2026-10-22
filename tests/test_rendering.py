@@ -3,6 +3,7 @@ import hashlib
 from io import BytesIO
 import os
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,7 @@ import zlib
 
 import freetype
 from altium_monkey.altium_embedded_files import EmbeddedFont
+from altium_monkey import AltiumSchDoc, SchPointMils, make_sch_wire
 
 from pcb_viewer_gui import (
     AltiumPcbDoc, get_font_path_with_style, prepare_embedded_fonts, render_file, resolve_polygon_nets,
@@ -103,6 +105,40 @@ class PolygonNetTests(unittest.TestCase):
                 pcb = SimpleNamespace(nets=[object()], polygons=[SimpleNamespace(net=net_index)], regions=[primitive])
                 resolve_polygon_nets(pcb)
                 self.assertEqual(primitive.net_index, 0xFFFF)
+
+
+class SchematicTests(unittest.TestCase):
+    def test_parses_and_renders_a_saved_schematic_without_modifying_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sheet.sChDoC"
+            schematic = AltiumSchDoc()
+            schematic.add_object(make_sch_wire(points_mils=[SchPointMils(100, 100), SchPointMils(400, 100)]))
+            schematic.save(path)
+            original = path.read_bytes()
+            data = render_file(path)
+            root = ET.fromstring(data["svg"])
+            self.assertEqual(data["kind"], "schematic")
+            self.assertEqual(data["name"], path.name)
+            self.assertEqual(data["stats"], {"components": 0, "wires": 1, "net_labels": 0})
+            self.assertEqual(root.tag, "{http://www.w3.org/2000/svg}svg")
+            self.assertTrue(root.get("viewBox"))
+            self.assertIsNotNone(root.find(".//*[@id='scene']"))
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_unsupported_files_report_supported_formats(self):
+        with self.assertRaisesRegex(ValueError, r"PcbDoc.*SchDoc"):
+            render_file(Path("notes.txt"))
+
+    @unittest.skipUnless(os.environ.get("SCH_TEST_FILE"), "Set SCH_TEST_FILE to exercise a real schematic")
+    def test_real_schematic_renders_components_wires_and_text(self):
+        path = Path(os.environ["SCH_TEST_FILE"])
+        original = hashlib.sha256(path.read_bytes()).digest()
+        data = render_file(path)
+        root = ET.fromstring(data["svg"])
+        self.assertGreater(data["stats"]["components"], 0)
+        self.assertGreater(data["stats"]["wires"], 0)
+        self.assertIsNotNone(root.find(".//{http://www.w3.org/2000/svg}text"))
+        self.assertEqual(hashlib.sha256(path.read_bytes()).digest(), original)
 
 
 @unittest.skipUnless(os.environ.get("PCB_TEST_FILE"), "Set PCB_TEST_FILE to exercise a real PCB layout")

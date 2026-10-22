@@ -39,6 +39,14 @@ const boardData = (name, components = 1) => ({
   </svg>`,
   stats: { components, pads: 2, tracks: 3, vias: 4, polygons: 5, regions: 6 },
 });
+const schematicData = name => ({
+  name, kind: 'schematic', stats: { components: 3, wires: 7, net_labels: 2 },
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 1100" data-board="${name}">
+    <g id="scene"><g id="DocumentMainGroup"><g id="sheet-id">
+      <rect width="1700" height="1100" fill="#fffcf8"/>
+      <path d="M100 100 L500 100" stroke="blue"/><text x="100" y="90" fill="black">R1</text>
+    </g></g></g></svg>`,
+});
 const layeredBoardData = name => ({
   ...boardData(name),
   svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
@@ -93,10 +101,62 @@ test('opens multiple files, switches tabs, and closes back to the empty view', a
   await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
   assert.equal(await page.getByRole('tab').count(), 0);
   assert.equal(await page.locator('#empty').isVisible(), true);
-  assert.equal(await page.locator('#filename').textContent(), 'No board loaded');
+  assert.equal(await page.locator('#filename').textContent(), 'No document loaded');
   assert.equal(await page.locator('#view > svg').count(), 0);
   await page.locator('#file').setInputFiles(file('A.PcbDoc'));
   await loaded(page, 'A.PcbDoc');
+});
+
+test('mixes PCB and schematic tabs while preserving the view and PCB measurements', async t => {
+  const { page, requests } = await openPage(t, {
+    render: (route, name) => reply(route, /\.schdoc$/i.test(name) ? schematicData(name) : boardData(name)),
+  });
+  assert.match(await page.locator('#file').getAttribute('accept'), /\.SchDoc/);
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#measure-btn').click();
+  await page.locator('#view').click({ position: { x: 200, y: 200 } });
+  await page.locator('#view').click({ position: { x: 400, y: 300 } });
+  const measurement = await page.locator('#readout').textContent();
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  assert.equal(await page.locator('#DocumentMainGroup').isVisible(), true);
+  assert.equal(await page.locator('#layers-wrap').isVisible(), false);
+  assert.equal(await page.locator('#component-query').isVisible(), false);
+  assert.equal(await page.locator('#net-query').isVisible(), false);
+  assert.equal(await page.locator('#measure-btn').isVisible(), false);
+  assert.equal(await page.locator('#stats').textContent(), '3 components, 7 wires, 2 net labels');
+  await page.locator('#view').click(); await page.keyboard.press('m');
+  assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
+  await page.locator('#view').dispatchEvent('wheel', { deltaY: -250, clientX: 600, clientY: 400 });
+  await page.mouse.move(600, 400); await page.mouse.down();
+  await page.mouse.move(630, 420); await page.mouse.up();
+  const zoom = await page.locator('#view > svg').getAttribute('viewBox');
+  assert.notEqual(zoom, '0 0 1700 1100');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#measure-btn').isVisible(), true);
+  assert.equal(await page.locator('#layers-wrap').isVisible(), true);
+  assert.equal(await page.locator('#measure line').count(), 1);
+  assert.equal(await page.locator('#readout').textContent(), measurement);
+  await page.getByRole('tab', { name: 'Sheet.SchDoc', exact: true }).click();
+  assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), zoom);
+  await page.locator('#view').dblclick();
+  assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), '0 0 1700 1100');
+  assert.equal(requests.length, 2);
+});
+
+test('loads an initial schematic and accepts schematic drag and drop', async t => {
+  const { page } = await openPage(t, {
+    initial: { ...schematicData('Initial.SchDoc'), source: Buffer.from('schematic').toString('base64') },
+    render: (route, name) => reply(route, schematicData(name)),
+  });
+  await loaded(page, 'Initial.SchDoc');
+  assert.equal(await page.locator('#DocumentMainGroup').isVisible(), true);
+  await page.locator('#view').evaluate(el => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(['schematic'], 'Dropped.schdoc'));
+    el.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+  });
+  await loaded(page, 'Dropped.schdoc');
+  assert.equal(await page.getByRole('tab').count(), 2);
 });
 
 test('preserves each board’s layers, zoom, pan, measurements, and units', async t => {
@@ -253,6 +313,40 @@ test('font substitution notices stay with their board tab', async t => {
   assert.equal(await page.locator('#warnings').isVisible(), true);
   await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#warnings').isVisible(), false);
+});
+
+test('loads and uploads a real schematic through the Python server', {
+  skip: !process.env.SCH_TEST_FILE, timeout: 60000,
+}, async t => {
+  const app = spawn(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'),
+    ['-B', '-u', resolve(__dirname, '../pcb_viewer_gui.py'), process.env.SCH_TEST_FILE, '--no-open']);
+  t.after(() => app.kill());
+  const url = await new Promise((resolve, reject) => {
+    let output = '';
+    app.stdout.on('data', chunk => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:\d+\//);
+      if (match) resolve(match[0]);
+    });
+    app.on('error', reject);
+    app.on('exit', code => reject(new Error(`Viewer exited with code ${code}`)));
+  });
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  t.after(async () => { await page.close(); assert.deepEqual(errors, []); });
+  await page.goto(url);
+  await page.waitForFunction(() => document.querySelector('#scene text'));
+  assert.equal(await page.getByRole('tab').count(), 1);
+  assert.equal(await page.locator('#scene > g').first().isVisible(), true);
+  assert.equal(await page.locator('#measure-btn').isVisible(), false);
+  assert.match(await page.locator('#stats').textContent(), /\d+ components, \d+ wires, \d+ net labels/);
+  await page.locator('#file').setInputFiles(process.env.SCH_TEST_FILE);
+  await page.waitForFunction(() => document.querySelectorAll('[role="tab"]').length === 2 &&
+    document.getElementById('busy').style.display === 'none');
+  assert.ok(await page.locator('#scene text').count() > 0);
+  assert.equal(await page.locator('#toast').isVisible(), false);
+  if (process.env.SCH_TEST_SCREENSHOT) await page.screenshot({ path: process.env.SCH_TEST_SCREENSHOT });
 });
 
 test('uploads the affected layout through the real Python server', {

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Standalone Altium PCB viewer.
+Standalone Altium PCB and schematic viewer.
 
     python pcb_viewer_gui.py                 # starts a local server and opens Chrome
     python pcb_viewer_gui.py board.PcbDoc    # ...and loads this board straight away
+    python pcb_viewer_gui.py sheet.SchDoc    # ...or loads a schematic sheet
     python pcb_viewer_gui.py --browser default
 
-Pick .PcbDoc files with the "Open boards" button (or drag & drop them onto the
-page). Each board opens in its own tab. Everything runs locally; the file is parsed by altium-monkey on your
+Pick .PcbDoc or .SchDoc files with the "Open files" button (or drag & drop them onto the
+page). Each document opens in its own tab. Everything runs locally; the file is parsed by altium-monkey on your
 machine and only the rendered SVG is sent to the browser tab.
 
 Requires:  pip install altium-monkey   (Python 3.12+)
@@ -31,7 +32,7 @@ from pathlib import Path
 
 try:
     import freetype
-    from altium_monkey import AltiumPcbDoc, PcbSvgRenderOptions
+    from altium_monkey import AltiumPcbDoc, AltiumSchDoc, PcbSvgRenderOptions, SchSvgRenderOptions
     from altium_monkey.altium_pcb_surface import PCB_SurfaceSide
     from altium_monkey.altium_ttf_metrics import get_font_path_with_style
 except ImportError:
@@ -91,6 +92,21 @@ def resolve_polygon_nets(pcb: AltiumPcbDoc) -> None:
 
 def render_file(path: Path, side: str = "all", clip: bool = False,
                 pour_color: str | None = None, polygon_outlines: bool = False) -> dict:
+    if path.suffix.lower() == ".schdoc":
+        schematic = AltiumSchDoc(path)
+        return {
+            "svg": schematic.to_svg(options=SchSvgRenderOptions(embed_bundled_fallback_fonts=True)),
+            "name": path.name,
+            "kind": "schematic",
+            "warnings": [],
+            "stats": {
+                "components": len(schematic.components),
+                "wires": len(schematic.wires),
+                "net_labels": len(schematic.net_labels),
+            },
+        }
+    if path.suffix.lower() != ".pcbdoc":
+        raise ValueError("Open an Altium .PcbDoc or .SchDoc file.")
     pcb = AltiumPcbDoc.from_file(path)
     warnings = prepare_embedded_fonts(pcb)
     resolve_polygon_nets(pcb)
@@ -110,6 +126,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
     return {
         "svg": svg,
         "name": path.name,
+        "kind": "pcb",
         "warnings": warnings,
         "stats": {
             "components": len(pcb.components),
@@ -127,7 +144,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
 # ---------------------------------------------------------------------------
 
 PAGE = r"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>PCB viewer</title>
+<html><head><meta charset="utf-8"><title>PCB &amp; schematic viewer</title>
 <style>
   :root { color-scheme: dark;
           --bg: #1b1d21; --panel: #24272c; --line: #3a3e45; --text: #d8dbe0; --muted: #8b909a;
@@ -203,13 +220,13 @@ PAGE = r"""<!DOCTYPE html>
 <div id="app">
   <div id="panel">
     <div>
-      <h1>PCB viewer</h1>
-      <input id="file" type="file" accept=".PcbDoc,.pcbdoc" multiple hidden>
-      <button class="primary" id="open">Open boards…</button>
-      <div id="filename">No board loaded</div>
+      <h1>PCB &amp; schematic viewer</h1>
+      <input id="file" type="file" accept=".PcbDoc,.pcbdoc,.SchDoc,.schdoc" multiple hidden>
+      <button class="primary" id="open">Open files…</button>
+      <div id="filename">No document loaded</div>
       <div id="warnings" role="status" hidden></div>
     </div>
-    <div>
+    <div data-pcb-only>
       <label for="component-query">Find component</label>
       <input id="component-query" type="search" list="component-options" placeholder="Designator, e.g. R12" title="Search by designator or click a component. Escape clears the selection." autocomplete="off" disabled>
       <datalist id="component-options"></datalist>
@@ -217,7 +234,7 @@ PAGE = r"""<!DOCTYPE html>
       <button id="component-reveal" hidden>Show matching layers</button>
       <div id="component-status" class="hint" role="status"></div>
     </div>
-    <div>
+    <div data-pcb-only>
       <label for="net-query">Find net</label>
       <input id="net-query" type="search" list="net-options" placeholder="Net name, e.g. GND" autocomplete="off" disabled>
       <datalist id="net-options"></datalist>
@@ -225,22 +242,23 @@ PAGE = r"""<!DOCTYPE html>
       <button id="net-reveal" hidden>Show matching layers</button>
       <div id="net-status" class="hint" role="status"></div>
     </div>
-    <div id="layers-wrap">
+    <div id="layers-wrap" data-pcb-only>
       <div class="row" style="margin:0 0 6px"><button id="all">Show all</button><button id="none">Hide all</button></div>
       <div id="layers"></div>
     </div>
-    <div>
+    <div data-pcb-only>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <div id="readout"></div>
       <div class="hint">Click copper to select a net. Scroll to zoom, drag to pan, double-click to reset. Measure: click two points. Esc exits measurement mode and deselects the net; Shift+C clears all measurements.</div>
     </div>
+    <div id="schematic-hint" class="hint" hidden>Scroll to zoom, drag to pan, double-click to reset.</div>
     <div id="stats"></div>
   </div>
   <div id="workspace">
-    <div id="tabs" role="tablist" aria-label="Open boards"></div>
-    <div id="view" role="tabpanel" aria-label="Board view">
-      <div id="empty">Open .PcbDoc files<br>or drop them here</div>
+    <div id="tabs" role="tablist" aria-label="Open documents"></div>
+    <div id="view" role="tabpanel" aria-label="Document view">
+      <div id="empty">Open .PcbDoc or .SchDoc files<br>or drop them here</div>
       <div id="measure-label"></div>
       <div id="toast"></div>
       <div id="busy">Rendering…</div>
@@ -307,18 +325,23 @@ PAGE = r"""<!DOCTYPE html>
     ({ svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg } = board || {
       svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], measurements: [], hover: null, mg: null,
     });
-    $('filename').textContent = board ? board.name : 'No board loaded';
+    $('filename').textContent = board ? board.name : 'No document loaded';
+    const schematic = board?.kind === 'schematic';
+    document.querySelectorAll('[data-pcb-only]').forEach(el => { el.hidden = schematic; });
+    $('schematic-hint').hidden = !schematic;
     $('warnings').textContent = board ? board.warnings.join('\n') : '';
     $('warnings').hidden = !$('warnings').textContent;
     const s = board && board.stats;
-    $('stats').textContent = s ? `${s.components} components, ${s.pads} pads, ${s.tracks} tracks, ${s.vias} vias\n${s.polygons} polygons, ${s.regions} poured regions` : '';
+    $('stats').textContent = !s ? '' : schematic ?
+      `${s.components} components, ${s.wires} wires, ${s.net_labels} net labels` :
+      `${s.components} components, ${s.pads} pads, ${s.tracks} tracks, ${s.vias} vias\n${s.polygons} polygons, ${s.regions} poured regions`;
     $('empty').style.display = board ? 'none' : '';
     $('busy').style.display = board && board.loading ? 'flex' : 'none';
     label.replaceChildren(); readout.textContent = '';
     $('measure-btn').classList.toggle('on', measuring); view.classList.toggle('measuring', measuring);
     document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
     layersEl.replaceChildren();
-    if (svg) { view.prepend(svg); buildLayers(); apply(); }
+    if (svg) { view.prepend(svg); if (!schematic) buildLayers(); apply(); }
     mountNetSearch();
     updateTabs();
     mountComponentSearch();
@@ -375,11 +398,13 @@ PAGE = r"""<!DOCTYPE html>
     const b = rendered.viewBox.baseVal;
     const origin = { x: b.x, y: b.y, w: b.width, h: b.height };
     const previousLayers = new Map(board.groups.map(g => [g.id, g.style.display]));
-    for (const g of rendered.querySelectorAll('#scene > g')) {
+    // Schematic groups are drawing containers, not PCB layers.
+    const kind = data.kind || 'pcb';
+    for (const g of kind === 'pcb' ? rendered.querySelectorAll('#scene > g') : []) {
       g.style.display = previousLayers.has(g.id) ? previousLayers.get(g.id) : defaultLayerVisible(g) ? '' : 'none';
     }
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
-    Object.assign(board, { svg: rendered, name: data.name, stats: data.stats, warnings: data.warnings || [], groups: [],
+    Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
     if (board === activeBoard) mountBoard(board);
   }
@@ -645,6 +670,7 @@ PAGE = r"""<!DOCTYPE html>
     readout.textContent = `dist ${fmt(Math.hypot(dx, dy))}\ndx   ${fmt(Math.abs(dx))}\ndy   ${fmt(Math.abs(dy))}\nang  ${(Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1)}°`;
   }
   function setMeasuring(v) {
+    v = Boolean(v && svg && activeBoard?.kind !== 'schematic');
     measuring = v; $('measure-btn').classList.toggle('on', v); view.classList.toggle('measuring', v);
     if (!v) { pts = []; hover = null; draw(); }
   }
@@ -681,7 +707,7 @@ PAGE = r"""<!DOCTYPE html>
     show(board, d);
     if (!activeBoard) activateBoard(board);
     else updateTabs();
-  }).catch(e => toast('Could not load the initial board: ' + e.message));
+  }).catch(e => toast('Could not load the initial document: ' + e.message));
 })();
 </script>
 </body></html>
@@ -770,8 +796,8 @@ def open_in_browser(url: str, browser: str = "chrome") -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Standalone Altium PCB viewer")
-    ap.add_argument("pcbdoc", nargs="?", type=Path, help="optional .PcbDoc to load at startup")
+    ap = argparse.ArgumentParser(description="Standalone Altium PCB and schematic viewer")
+    ap.add_argument("pcbdoc", nargs="?", type=Path, help="optional .PcbDoc or .SchDoc to load at startup")
     ap.add_argument("--port", type=int, default=0, help="port to listen on (default: random free port)")
     ap.add_argument("--browser", default="chrome", help="chrome (default), firefox, safari, default, ...")
     ap.add_argument("--no-open", action="store_true", help="don't open a browser, just print the URL")
