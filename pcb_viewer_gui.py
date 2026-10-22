@@ -284,7 +284,7 @@ PAGE = r"""<!DOCTYPE html>
     </div>
     <div data-pcb-only>
       <label for="component-query">Find component</label>
-      <input id="component-query" type="search" list="component-options" placeholder="Designator, e.g. R12" title="Search by designator or click a component. Escape clears the selection." autocomplete="off" disabled>
+      <input id="component-query" type="search" list="component-options" placeholder="Designator, e.g. R12" title="Search by designator or click a component. Click a selected component again to deselect it. Escape clears the selection." autocomplete="off" disabled>
       <datalist id="component-options"></datalist>
       <div class="row"><button id="component-clear">Clear</button><button id="component-fit" disabled>Fit matches</button></div>
       <button id="component-reveal" hidden>Show matching layers</button>
@@ -307,7 +307,7 @@ PAGE = r"""<!DOCTYPE html>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <div id="readout"></div>
-      <div class="hint">Click copper to select a net. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. Double-click to reset. Measure: click two points. Esc exits measurement mode and deselects the net; Shift+C clears all measurements.</div>
+      <div class="hint">Click copper to select a net. Click a selected net or component again to deselect it. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. Double-click to reset. Measure: click two points. Esc exits measurement mode and deselects the net; Shift+C clears all measurements.</div>
     </div>
     <div id="schematic-selection" hidden>
       <label>Selection</label>
@@ -328,7 +328,7 @@ PAGE = r"""<!DOCTYPE html>
       <div id="probe-result-status" role="status"></div>
       <button id="probe-back">Back to schematic</button>
     </div>
-    <div id="schematic-hint" class="hint" hidden>Click a component or net to select it. Shift-click to add to the selection. Esc clears the selection. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. Double-click to reset.</div>
+    <div id="schematic-hint" class="hint" hidden>Click a component or net to select it; click it again to deselect it. Shift-click to add to the selection. Esc clears the selection. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. Double-click to reset.</div>
     <div id="stats"></div>
   </div>
   <div id="workspace">
@@ -594,14 +594,18 @@ PAGE = r"""<!DOCTYPE html>
   function selectSchematic(e) {
     const net = e.target.closest('#scene [data-sch-nets]');
     const component = e.target.closest('#scene [data-sch-components]');
-    if (!e.shiftKey) clearSchematicSelection();
     activeBoard.probeMessage = ''; activeBoard.probeResult = null; updateProbeResult();
     // A pin selects its net; clicking the symbol body selects the component.
     const target = net || component;
     if (target && svg.contains(target)) {
       const selected = net ? activeBoard.selectedNets : activeBoard.selectedComponents;
-      for (const id of JSON.parse(target.getAttribute(net ? 'data-sch-nets' : 'data-sch-components'))) selected.add(id);
-    }
+      const ids = JSON.parse(target.getAttribute(net ? 'data-sch-nets' : 'data-sch-components'));
+      if (ids.every(id => selected.has(id))) ids.forEach(id => selected.delete(id));
+      else {
+        if (!e.shiftKey) clearSchematicSelection();
+        ids.forEach(id => selected.add(id));
+      }
+    } else if (!e.shiftKey) clearSchematicSelection();
     updateSchematicSelection();
   }
   $('schematic-clear').onclick = clearSchematicSelection;
@@ -945,22 +949,28 @@ PAGE = r"""<!DOCTYPE html>
   function clearNet() { resetProbeSelection('probeNets'); $('net-query').value = ''; searchNets(); }
   $('net-query').oninput = () => { resetProbeSelection('probeNets'); searchNets(); };
   $('net-clear').onclick = clearNet;
+  function toggleLayoutSelection(name, attribute, hits, selectionKey, queryId, search) {
+    const selected = new Set(hits.map(el => el.dataset[attribute]));
+    const remove = selected.delete(name);
+    resetProbeSelection(selectionKey);
+    // Retain the other exact matches from a search or cross-probe. The query
+    // remains a readable list; the array prevents substring or comma matching.
+    if (remove && selected.size) activeBoard[selectionKey] = [...selected];
+    $(queryId).value = remove ? [...selected].join(', ') : name;
+    search();
+  }
   view.addEventListener('click', e => {
     if (!svg || measuring || panned || e.button !== 0) return;
     if (activeBoard.kind === 'schematic') { selectSchematic(e); return; }
     const primitive = e.target.closest('#scene [data-net]');
     const name = primitive?.dataset.net;
     if (name && svg.contains(primitive) && netIndex.has(name)) {
-      resetProbeSelection('probeNets');
-      $('net-query').value = name;
-      searchNets();
+      toggleLayoutSelection(name, 'net', netHits, 'probeNets', 'net-query', searchNets);
     }
     const component = e.target.closest('#scene [data-component]');
     const designator = component?.dataset.component;
     if (designator && svg.contains(component) && componentIndex.has(designator)) {
-      resetProbeSelection('probeComponents');
-      $('component-query').value = designator;
-      searchComponents();
+      toggleLayoutSelection(designator, 'component', componentHits, 'probeComponents', 'component-query', searchComponents);
     }
   });
   $('net-fit').onclick = () => fitMatches(netHits);

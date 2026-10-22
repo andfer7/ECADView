@@ -15,6 +15,11 @@ Navigation coverage includes scroll-to-pan, Ctrl-wheel pinch zoom, native Safari
 gesture event handling, cursor anchoring with SVG margins, redraw batching,
 measurement label positioning, and pending gestures during tab changes.
 
+Selection tests cover repeated clicks to deselect and reselect components and
+nets in both views, including selections from searches and cross-probing.
+They also check Shift selections, shared schematic graphics, remaining exact
+matches across tabs, and preservation of selections during pans and measurements.
+
 Font validation and rendering tests use the project's Python environment:
 
 ```sh
