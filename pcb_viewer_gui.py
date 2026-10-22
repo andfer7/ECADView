@@ -94,7 +94,8 @@ def schematic_selection(schematic: AltiumSchDoc) -> dict:
     """Link selectable source components and compiled nets to their SVG groups."""
     components = [
         {"id": component.record.unique_id, "name": component.designator or component.record.unique_id,
-         "elements": [component.record.unique_id]}
+         "elements": [component.record.unique_id],
+         "body_elements": [graphic.unique_id for graphic in component.record.graphics]}
         for component in schematic.get_components()
     ]
     nets = []
@@ -209,6 +210,7 @@ PAGE = r"""<!DOCTYPE html>
   #scene .sch-net-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #007f9d !important; stroke-width: 3px !important; }
   #scene .sch-net-match [fill]:not([fill="none"]):not(.sch-hit) { fill: #007f9d !important; }
   #scene .sch-hit { stroke: transparent; fill: none; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
+  #scene .sch-component-hit { fill: transparent; stroke: none; pointer-events: all; }
   #schematic-selection-status { white-space: pre-line; overflow-wrap: anywhere; margin-bottom: 6px; }
   #panel { overflow-y: auto; }
   #panel > * { flex-shrink: 0; }
@@ -372,7 +374,12 @@ PAGE = r"""<!DOCTYPE html>
     $('measure-btn').classList.toggle('on', measuring); view.classList.toggle('measuring', measuring);
     document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
     layersEl.replaceChildren();
-    if (svg) { view.prepend(svg); if (!schematic) buildLayers(); apply(); }
+    if (svg) {
+      view.prepend(svg);
+      if (schematic) buildSchematicComponentTargets(board);
+      else buildLayers();
+      apply();
+    }
     mountNetSearch();
     updateTabs();
     mountComponentSearch();
@@ -459,7 +466,8 @@ PAGE = r"""<!DOCTYPE html>
       for (const row of rows || []) {
         const targets = row.elements.map(id => elements.get(id)).filter(Boolean);
         if (!targets.length) continue;
-        result.set(row.id, { name: row.name, elements: targets });
+        result.set(row.id, { name: row.name, elements: targets,
+          bodyElements: (row.body_elements || []).map(id => elements.get(id)).filter(Boolean) });
         for (const el of targets) {
           const ids = JSON.parse(el.getAttribute(attribute) || '[]');
           el.setAttribute(attribute, JSON.stringify([...new Set([...ids, row.id])]));
@@ -476,6 +484,32 @@ PAGE = r"""<!DOCTYPE html>
       for (const attr of [...hit.attributes]) if (attr.name === 'id' || attr.name.startsWith('data-')) hit.removeAttribute(attr.name);
       hit.removeAttribute('style'); hit.setAttribute('class', 'sch-hit');
       hit.setAttribute('aria-hidden', 'true'); el.before(hit);
+    }
+  }
+  function buildSchematicComponentTargets(board) {
+    // getBBox/CTM require the SVG to be mounted. Work in each component's local
+    // coordinates so rotated/mirrored symbol graphics keep their correct bounds.
+    for (const row of board.schematicComponents.values()) for (const component of row.elements) {
+      if (component.querySelector('.sch-component-hit')) continue;
+      const points = [];
+      const inverse = component.getScreenCTM().inverse();
+      for (const graphic of row.bodyElements) {
+        if (!component.contains(graphic)) continue;
+        const b = graphic.getBBox(), transform = inverse.multiply(graphic.getScreenCTM());
+        if (!b.width && !b.height) continue;
+        for (const [x, y] of [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]])
+          points.push(new DOMPoint(x, y).matrixTransform(transform));
+      }
+      if (!points.length) continue;
+      const xs = points.map(p => p.x), ys = points.map(p => p.y);
+      const x = Math.min(...xs), y = Math.min(...ys);
+      const hit = document.createElementNS(NS, 'rect');
+      hit.setAttribute('x', x); hit.setAttribute('y', y);
+      hit.setAttribute('width', Math.max(Math.max(...xs) - x, 1));
+      hit.setAttribute('height', Math.max(Math.max(...ys) - y, 1));
+      hit.setAttribute('class', 'sch-component-hit'); hit.setAttribute('aria-hidden', 'true');
+      // Above the symbol's own pin hit targets, within the symbol body only.
+      component.append(hit);
     }
   }
   function updateSchematicSelection() {
