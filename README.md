@@ -51,6 +51,11 @@ with `python -m pcbvisualizer`, or use the `pcbvisualizer` command after install
 the package. Without uv, install it with `python -m pip install .` in your Python
 environment. No Node.js installation or frontend build is needed to run the app.
 
+On macOS, the viewer opens the browser through Launch Services (`/usr/bin/open`),
+so launching Chrome does not require AppleScript Automation permission. If the
+chosen browser cannot open, the viewer tries the system default browser and
+reports the URL to open manually if that also fails. `--no-open` skips launching.
+
 ## Project layout
 
 ```text
