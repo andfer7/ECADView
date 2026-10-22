@@ -117,7 +117,8 @@ class SchematicTests(unittest.TestCase):
         schematic.add_object(component)
         designator = AltiumSchDesignator(); designator.text = 'U[1]&"'
         schematic.add_object(designator, owner=component)
-        schematic.add_object(make_sch_rectangle(bounds_mils=SchRectMils(500, 500, 700, 700)), owner=component)
+        body = make_sch_rectangle(bounds_mils=SchRectMils(500, 500, 700, 700))
+        schematic.add_object(body, owner=component)
         wires = []
         for points, name in [([(100, 100), (500, 100)], "GND"),
                              ([(300, 0), (300, 200)], "SIGNAL"),
@@ -137,7 +138,8 @@ class SchematicTests(unittest.TestCase):
         self.assertNotIn(wires[1].unique_id, nets["GND"], "A crossing without a junction must not merge nets")
         self.assertIn(wires[1].unique_id, nets["SIGNAL"])
         selection = data["selection"]["components"]
-        self.assertEqual(selection, [{"id": component.unique_id, "name": 'U[1]&"', "elements": [component.unique_id]}])
+        self.assertEqual(selection, [{"id": component.unique_id, "name": 'U[1]&"', "elements": [component.unique_id],
+                                      "body_elements": [body.unique_id]}])
         svg_ids = {element.get("id") for element in ET.fromstring(data["svg"]).iter()}
         for row in data["selection"]["nets"] + selection:
             self.assertTrue(set(row["elements"]) <= svg_ids)
@@ -175,6 +177,11 @@ class SchematicTests(unittest.TestCase):
         svg_ids = {element.get("id") for element in root.iter()}
         self.assertEqual(len(data["selection"]["components"]), data["stats"]["components"])
         self.assertTrue(all(row["id"] in svg_ids for row in data["selection"]["components"]))
+        self.assertTrue(all(row["body_elements"] for row in data["selection"]["components"]))
+        pin_ids = {element.unique_id for component in AltiumSchDoc(path).get_components() for element in component.pins}
+        for row in data["selection"]["components"]:
+            self.assertTrue(set(row["body_elements"]) <= svg_ids)
+            self.assertFalse(set(row["body_elements"]) & pin_ids, "Body targets must exclude pin/net graphics")
         ground = next(net for net in data["selection"]["nets"] if net["name"] == "GND")
         self.assertGreater(len(ground["elements"]), 2)
         self.assertTrue(set(ground["elements"]) <= svg_ids)
