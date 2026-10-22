@@ -32,7 +32,7 @@ from pathlib import Path
 
 try:
     import freetype
-    from altium_monkey import AltiumPcbDoc, AltiumSchDoc, PcbSvgRenderOptions, SchSvgRenderOptions
+    from altium_monkey import AltiumDesign, AltiumPcbDoc, AltiumSchDoc, PcbSvgRenderOptions, SchSvgRenderOptions
     from altium_monkey.altium_pcb_surface import PCB_SurfaceSide
     from altium_monkey.altium_ttf_metrics import get_font_path_with_style
 except ImportError:
@@ -90,6 +90,24 @@ def resolve_polygon_nets(pcb: AltiumPcbDoc) -> None:
                 primitive.net_index = net_index
 
 
+def schematic_selection(schematic: AltiumSchDoc) -> dict:
+    """Link selectable source components and compiled nets to their SVG groups."""
+    components = [
+        {"id": component.record.unique_id, "name": component.designator or component.record.unique_id,
+         "elements": [component.record.unique_id]}
+        for component in schematic.get_components()
+    ]
+    nets = []
+    # Logical nets retain wire-only and single-pin networks that manufacturing
+    # netlist output may omit. Each tab contains one source sheet.
+    for net in AltiumDesign(schdocs=[schematic]).compile().nets:
+        if net.scope != "logical_local":
+            continue
+        elements = {item.element_id for item in net.items if not item.removed}
+        nets.append({"id": f"net-{len(nets)}", "name": net.name, "elements": sorted(elements - {""})})
+    return {"components": components, "nets": nets}
+
+
 def render_file(path: Path, side: str = "all", clip: bool = False,
                 pour_color: str | None = None, polygon_outlines: bool = False) -> dict:
     if path.suffix.lower() == ".schdoc":
@@ -98,6 +116,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
             "svg": schematic.to_svg(options=SchSvgRenderOptions(embed_bundled_fallback_fonts=True)),
             "name": path.name,
             "kind": "schematic",
+            "selection": schematic_selection(schematic),
             "warnings": [],
             "stats": {
                 "components": len(schematic.components),
@@ -185,6 +204,12 @@ PAGE = r"""<!DOCTYPE html>
   #scene .net-match { filter: drop-shadow(0 0 0.25px #68e0ff); }
   #scene #net-highlight * { fill: #68e0ff !important; stroke: #68e0ff !important; }
   #scene .net-match[data-primitive$="region"], #scene #net-highlight [fill-rule="evenodd"] { stroke: none !important; }
+  #scene .sch-component-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #bd6100 !important; stroke-width: 2px !important; }
+  #scene .sch-component-match text { fill: #bd6100 !important; }
+  #scene .sch-net-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #007f9d !important; stroke-width: 3px !important; }
+  #scene .sch-net-match [fill]:not([fill="none"]):not(.sch-hit) { fill: #007f9d !important; }
+  #scene .sch-hit { stroke: transparent; fill: none; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
+  #schematic-selection-status { white-space: pre-line; overflow-wrap: anywhere; margin-bottom: 6px; }
   #panel { overflow-y: auto; }
   #panel > * { flex-shrink: 0; }
   #layers-wrap { min-height: 160px; }
@@ -205,7 +230,7 @@ PAGE = r"""<!DOCTYPE html>
   #view:active { cursor: grabbing; }
   #view.measuring, #view.measuring:active { cursor: crosshair; }
   #view.drop { outline: 3px dashed var(--accent); outline-offset: -3px; }
-  #view svg { width: 100%; height: 100%; display: block; }
+  #view svg { width: 100%; height: 100%; display: block; user-select: none; }
   #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
            color: var(--muted); font-size: 15px; text-align: center; pointer-events: none; }
   #measure { pointer-events: none; }
@@ -252,7 +277,12 @@ PAGE = r"""<!DOCTYPE html>
       <div id="readout"></div>
       <div class="hint">Click copper to select a net. Scroll to zoom, drag to pan, double-click to reset. Measure: click two points. Esc exits measurement mode and deselects the net; Shift+C clears all measurements.</div>
     </div>
-    <div id="schematic-hint" class="hint" hidden>Scroll to zoom, drag to pan, double-click to reset.</div>
+    <div id="schematic-selection" hidden>
+      <label>Selection</label>
+      <div id="schematic-selection-status" role="status"></div>
+      <button id="schematic-clear" disabled>Clear selection (Esc)</button>
+    </div>
+    <div id="schematic-hint" class="hint" hidden>Click a component or net to select it. Shift-click to add to the selection. Esc clears the selection. Scroll to zoom, drag to pan, double-click to reset.</div>
     <div id="stats"></div>
   </div>
   <div id="workspace">
@@ -328,6 +358,7 @@ PAGE = r"""<!DOCTYPE html>
     $('filename').textContent = board ? board.name : 'No document loaded';
     const schematic = board?.kind === 'schematic';
     document.querySelectorAll('[data-pcb-only]').forEach(el => { el.hidden = schematic; });
+    $('schematic-selection').hidden = !schematic;
     $('schematic-hint').hidden = !schematic;
     $('warnings').textContent = board ? board.warnings.join('\n') : '';
     $('warnings').hidden = !$('warnings').textContent;
@@ -345,6 +376,7 @@ PAGE = r"""<!DOCTYPE html>
     mountNetSearch();
     updateTabs();
     mountComponentSearch();
+    updateSchematicSelection();
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
     else $('view').removeAttribute('aria-labelledby');
   }
@@ -406,6 +438,7 @@ PAGE = r"""<!DOCTYPE html>
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
+    if (kind === 'schematic') prepareSchematicSelection(board, data.selection);
     if (board === activeBoard) mountBoard(board);
   }
 
@@ -416,6 +449,70 @@ PAGE = r"""<!DOCTYPE html>
   view.addEventListener('drop', e => { e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files); });
 
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 5000); }
+
+  // ------------------------------------------------------------ schematic selection
+  function prepareSchematicSelection(board, selection = {}) {
+    // Resolve IDs within this SVG only. Source IDs and names need no CSS escaping.
+    const elements = new Map([...board.svg.querySelectorAll('#scene [id]')].map(el => [el.id, el]));
+    function index(rows, attribute) {
+      const result = new Map();
+      for (const row of rows || []) {
+        const targets = row.elements.map(id => elements.get(id)).filter(Boolean);
+        if (!targets.length) continue;
+        result.set(row.id, { name: row.name, elements: targets });
+        for (const el of targets) {
+          const ids = JSON.parse(el.getAttribute(attribute) || '[]');
+          el.setAttribute(attribute, JSON.stringify([...new Set([...ids, row.id])]));
+        }
+      }
+      return result;
+    }
+    board.schematicComponents = index(selection.components, 'data-sch-components');
+    board.schematicNets = index(selection.nets, 'data-sch-nets');
+    board.selectedComponents = new Set(); board.selectedNets = new Set();
+    // Give thin wires and pins a usable screen-space click target without changing their drawing.
+    for (const el of board.svg.querySelectorAll('[data-sch-nets] line, [data-sch-nets] path, [data-sch-nets] polyline')) {
+      const hit = el.cloneNode(false);
+      for (const attr of [...hit.attributes]) if (attr.name === 'id' || attr.name.startsWith('data-')) hit.removeAttribute(attr.name);
+      hit.removeAttribute('style'); hit.setAttribute('class', 'sch-hit');
+      hit.setAttribute('aria-hidden', 'true'); el.before(hit);
+    }
+  }
+  function updateSchematicSelection() {
+    if (activeBoard?.kind !== 'schematic') return;
+    const board = activeBoard;
+    for (const [index, selected, cls] of [
+      [board.schematicComponents, board.selectedComponents, 'sch-component-match'],
+      [board.schematicNets, board.selectedNets, 'sch-net-match'],
+    ]) {
+      const matched = new Set([...selected].flatMap(id => index.get(id).elements));
+      for (const row of index.values()) for (const el of row.elements) el.classList.toggle(cls, matched.has(el));
+    }
+    const names = (selected, index) => [...selected].map(id => index.get(id).name).join(', ');
+    const selected = [];
+    if (board.selectedComponents.size) selected.push('Components: ' + names(board.selectedComponents, board.schematicComponents));
+    if (board.selectedNets.size) selected.push('Nets: ' + names(board.selectedNets, board.schematicNets));
+    $('schematic-selection-status').textContent = selected.join('\n') || 'Nothing selected.';
+    $('schematic-clear').disabled = !selected.length;
+  }
+  function clearSchematicSelection() {
+    if (activeBoard?.kind !== 'schematic') return;
+    activeBoard.selectedComponents.clear(); activeBoard.selectedNets.clear();
+    updateSchematicSelection();
+  }
+  function selectSchematic(e) {
+    const net = e.target.closest('#scene [data-sch-nets]');
+    const component = e.target.closest('#scene [data-sch-components]');
+    if (!e.shiftKey) clearSchematicSelection();
+    // A pin selects its net; clicking the symbol body selects the component.
+    const target = net || component;
+    if (target && svg.contains(target)) {
+      const selected = net ? activeBoard.selectedNets : activeBoard.selectedComponents;
+      for (const id of JSON.parse(target.getAttribute(net ? 'data-sch-nets' : 'data-sch-components'))) selected.add(id);
+    }
+    updateSchematicSelection();
+  }
+  $('schematic-clear').onclick = clearSchematicSelection;
 
   // ------------------------------------------------------------ component search
   let componentIndex = new Map(), componentHits = [];
@@ -585,6 +682,7 @@ PAGE = r"""<!DOCTYPE html>
   $('net-clear').onclick = clearNet;
   view.addEventListener('click', e => {
     if (!svg || measuring || panned || e.button !== 0) return;
+    if (activeBoard.kind === 'schematic') { selectSchematic(e); return; }
     const primitive = e.target.closest('#scene [data-net]');
     const name = primitive?.dataset.net;
     if (name && svg.contains(primitive) && netIndex.has(name)) {
@@ -677,6 +775,7 @@ PAGE = r"""<!DOCTYPE html>
   $('measure-btn').onclick = () => setMeasuring(!measuring);
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
+      clearSchematicSelection();
       clearComponent();
       e.preventDefault();
       clearNet(); setMeasuring(false);

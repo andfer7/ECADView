@@ -47,6 +47,34 @@ const schematicData = name => ({
       <path d="M100 100 L500 100" stroke="blue"/><text x="100" y="90" fill="black">R1</text>
     </g></g></g></svg>`,
 });
+const selectableSchematicData = name => ({
+  ...schematicData(name),
+  selection: {
+    components: [
+      { id: 'component-1', name: 'R1', elements: ['component-1'] },
+      { id: 'component-2', name: 'U[2]"<test>', elements: ['component[2]"'] },
+    ],
+    nets: [
+      { id: 'net[1]"', name: 'GND', elements: ['wire-1', 'wire-2', 'pin-1', 'label-1', 'shared'] },
+      { id: 'net-2', name: 'VCC', elements: ['wire-3', 'pin-2', 'shared'] },
+    ],
+  },
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}" fill="none">
+    <g id="scene" transform="translate(2 1)"><g id="DocumentMainGroup"><g id="sheet-id">
+      <rect width="96" height="78" fill="#fffcf8"/>
+      <g id="component-1"><rect x="10" y="10" width="12" height="10" fill="#ffffb0" stroke="brown"/>
+        <text x="10" y="9" fill="black">R1</text>
+        <g id="pin-1"><line x1="22" y1="15" x2="30" y2="15" stroke="black" stroke-width="1"/></g></g>
+      <g id="component[2]&quot;"><rect x="65" y="10" width="12" height="10" fill="#ffffb0" stroke="brown"/>
+        <text x="65" y="9" fill="black">U2</text>
+        <g id="pin-2"><line x1="57" y1="15" x2="65" y2="15" stroke="black" stroke-width="1"/></g></g>
+      <g id="wire-1"><line x1="30" y1="15" x2="50" y2="15" stroke="blue" stroke-width="1"/></g>
+      <g id="wire-2"><line x1="30" y1="45" x2="50" y2="45" stroke="blue" stroke-width="1"/></g>
+      <g id="label-1"><text x="30" y="43" fill="blue">GND</text></g>
+      <g id="wire-3"><line x1="30" y1="60" x2="50" y2="60" stroke="blue" stroke-width="1"/></g>
+      <g id="shared"><line x1="65" y1="65" x2="75" y2="65" stroke="blue" stroke-width="1"/></g>
+    </g></g></g></svg>`,
+});
 const layeredBoardData = name => ({
   ...boardData(name),
   svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
@@ -157,6 +185,102 @@ test('loads an initial schematic and accepts schematic drag and drop', async t =
   });
   await loaded(page, 'Dropped.schdoc');
   assert.equal(await page.getByRole('tab').count(), 2);
+});
+
+async function openSelectableSchematic(t) {
+  const result = await openPage(t, {
+    render: (route, name) => reply(route, /\.schdoc$/i.test(name) ? selectableSchematicData(name) : boardData(name)),
+  });
+  await result.page.locator('#file').setInputFiles(file('A.SchDoc')); await loaded(result.page, 'A.SchDoc');
+  return result;
+}
+const schematicStatus = page => page.locator('#schematic-selection-status').textContent();
+async function clickSchematicGraphic(page, target, shift = false) {
+  const point = await target.evaluate(el => {
+    const b = el.getBBox();
+    const p = new DOMPoint(b.x + b.width / 2, b.y + b.height / 2).matrixTransform(el.getScreenCTM());
+    return { x: p.x, y: p.y };
+  });
+  if (shift) await page.keyboard.down('Shift');
+  try { await page.mouse.click(point.x, point.y); }
+  finally { if (shift) await page.keyboard.up('Shift'); }
+}
+
+test('selects schematic components and entire nets; Shift adds and ordinary clicks replace the selection', async t => {
+  const { page } = await openSelectableSchematic(t);
+  const component = page.locator('[data-sch-components] > rect');
+  await component.first().click();
+  assert.equal(await schematicStatus(page), 'Components: R1');
+  assert.equal(await page.locator('.sch-component-match').count(), 1);
+  await component.nth(1).click({ modifiers: ['Shift'] });
+  assert.equal(await page.locator('.sch-component-match').count(), 2);
+  assert.equal(await schematicStatus(page), 'Components: R1, U[2]"<test>');
+  assert.equal(await page.locator('#schematic-selection-status test').count(), 0);
+  await page.locator('#label-1 text').click({ modifiers: ['Shift'] });
+  assert.equal(await page.locator('.sch-net-match').count(), 5);
+  assert.equal(await page.locator('#pin-1').evaluate(el => el.classList.contains('sch-net-match')), true);
+  assert.equal(await page.locator('#wire-2').evaluate(el => el.classList.contains('sch-net-match')), true);
+  assert.equal(await page.locator('#wire-3').evaluate(el => el.classList.contains('sch-net-match')), false);
+  assert.match(await schematicStatus(page), /Nets: GND$/);
+  assert.equal(await page.locator('#wire-1 .sch-hit').evaluate(el => getComputedStyle(el).stroke), 'rgba(0, 0, 0, 0)');
+  await clickSchematicGraphic(page, page.locator('#wire-3 .sch-hit'), true);
+  assert.equal(await page.locator('.sch-net-match').count(), 7);
+  assert.match(await schematicStatus(page), /Nets: GND, VCC$/);
+  await component.first().click();
+  assert.equal(await schematicStatus(page), 'Components: R1');
+  assert.equal(await page.locator('.sch-net-match').count(), 0);
+  await clickSchematicGraphic(page, page.locator('#pin-2 .sch-hit'));
+  assert.equal(await schematicStatus(page), 'Nets: VCC', 'a pin selects its net rather than its containing component');
+  assert.equal(await page.locator('.sch-component-match').count(), 0);
+  await clickSchematicGraphic(page, page.locator('#shared .sch-hit'), true);
+  assert.equal(await page.locator('.sch-net-match').count(), 7, 'shared graphics retain the union of selected nets');
+  await page.locator('#schematic-clear').click();
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  assert.equal(await page.locator('.sch-net-match').count(), 0);
+  assert.equal(await page.locator('#wire-1 line:not(.sch-hit)').evaluate(el => getComputedStyle(el).stroke), 'rgb(0, 0, 255)');
+});
+
+test('schematic selections survive tabs and pans; Escape clears only the active sheet', async t => {
+  const { page, requests } = await openSelectableSchematic(t);
+  await page.locator('[data-sch-components] > rect').first().click();
+  await clickSchematicGraphic(page, page.locator('#wire-1 .sch-hit'), true);
+  const selection = await schematicStatus(page);
+  await page.mouse.move(600, 400); await page.mouse.down();
+  await page.mouse.move(640, 420); await page.mouse.up();
+  assert.equal(await schematicStatus(page), selection);
+  await page.locator('#file').setInputFiles(file('B.SchDoc')); await loaded(page, 'B.SchDoc');
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  await clickSchematicGraphic(page, page.locator('#wire-3 .sch-hit'));
+  await page.locator('#file').setInputFiles(file('Board.PcbDoc')); await loaded(page, 'Board.PcbDoc');
+  assert.equal(await page.locator('#schematic-selection').isVisible(), false);
+  await page.getByRole('tab', { name: 'A.SchDoc', exact: true }).click();
+  assert.equal(await schematicStatus(page), selection);
+  assert.equal(await page.locator('.sch-component-match').count(), 1);
+  assert.equal(await page.locator('.sch-net-match').count(), 5);
+  await page.locator('#schematic-clear').focus(); await page.keyboard.press('Escape');
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  assert.equal(await page.locator('.sch-component-match, .sch-net-match').count(), 0);
+  assert.equal(await page.locator('#schematic-clear').isDisabled(), true);
+  await page.getByRole('tab', { name: 'B.SchDoc', exact: true }).click();
+  assert.equal(await schematicStatus(page), 'Nets: VCC');
+  await page.getByRole('tab', { name: 'A.SchDoc', exact: true }).click();
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  assert.equal(requests.length, 3);
+});
+
+test('thin schematic wires have screen-space hit targets and blank clicks clear selection', async t => {
+  const { page } = await openSelectableSchematic(t);
+  const point = await page.locator('#wire-1').evaluate(el => {
+    const p = new DOMPoint(40, 15).matrixTransform(el.getScreenCTM()); return { x: p.x, y: p.y };
+  });
+  await page.mouse.click(point.x, point.y + 3);
+  assert.equal(await schematicStatus(page), 'Nets: GND');
+  await page.locator('#view').dispatchEvent('click', { button: 1 });
+  assert.equal(await schematicStatus(page), 'Nets: GND');
+  await page.locator('#view').click({ position: { x: 10, y: 10 }, modifiers: ['Shift'] });
+  assert.equal(await schematicStatus(page), 'Nets: GND');
+  await page.locator('#view').click({ position: { x: 10, y: 10 } });
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
 });
 
 test('preserves each board’s layers, zoom, pan, measurements, and units', async t => {
@@ -346,7 +470,20 @@ test('loads and uploads a real schematic through the Python server', {
     document.getElementById('busy').style.display === 'none');
   assert.ok(await page.locator('#scene text').count() > 0);
   assert.equal(await page.locator('#toast').isVisible(), false);
+  const component = page.locator('[data-sch-components] rect').first();
+  await component.click();
+  assert.match(await schematicStatus(page), /^Components: /);
+  const pin = page.locator('[data-sch-nets] .sch-hit').first();
+  const netIds = await pin.evaluate(el => JSON.parse(el.closest('[data-sch-nets]').dataset.schNets));
+  await clickSchematicGraphic(page, pin, true);
+  assert.match(await schematicStatus(page), /Components: .*\nNets: /);
+  const expected = await page.locator('[data-sch-nets]').evaluateAll((els, ids) =>
+    els.filter(el => JSON.parse(el.dataset.schNets).some(id => ids.includes(id))).length, netIds);
+  assert.equal(await page.locator('.sch-net-match').count(), expected);
+  assert.ok(expected > 1, 'clicking actual pin or wire highlights connected graphics');
   if (process.env.SCH_TEST_SCREENSHOT) await page.screenshot({ path: process.env.SCH_TEST_SCREENSHOT });
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.sch-component-match, .sch-net-match').count(), 0);
 });
 
 test('uploads the affected layout through the real Python server', {
