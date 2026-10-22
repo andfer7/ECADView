@@ -11,8 +11,8 @@ Pick .PcbDoc or .SchDoc files with the "Open files" button (or drag & drop them 
 page). Each document opens in its own tab. Everything runs locally; the file is parsed by altium-monkey on your
 machine and only the rendered SVG is sent to the browser tab.
 
-To cross-probe, open a schematic and its PCB, select schematic components or
-nets, then choose the target layout and press "Show in layout".
+To cross-probe, open a schematic and its PCB, select components or nets, then
+choose the target document and press "Show in layout" or "Show in schematic".
 
 Requires:  pip install altium-monkey   (Python 3.12+)
 """
@@ -216,8 +216,8 @@ PAGE = r"""<!DOCTYPE html>
   #scene .sch-hit { stroke: transparent; fill: none; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
   #scene .sch-component-hit { fill: transparent; stroke: none; pointer-events: all; }
   #schematic-selection-status { white-space: pre-line; overflow-wrap: anywhere; margin-bottom: 6px; }
-  #probe-layout { box-sizing: border-box; width: 100%; margin: 4px 0 6px; background: var(--bg); color: var(--text); padding: 4px; }
-  #probe-status, #probe-result-status { white-space: pre-line; overflow-wrap: anywhere; margin-top: 6px; }
+  #probe-layout, #probe-schematic { box-sizing: border-box; width: 100%; margin: 4px 0 6px; background: var(--bg); color: var(--text); padding: 4px; }
+  #probe-status, #probe-schematic-status, #probe-result-status { white-space: pre-line; overflow-wrap: anywhere; margin-top: 6px; }
   #panel { overflow-y: auto; }
   #panel > * { flex-shrink: 0; }
   #layers-wrap { min-height: 160px; }
@@ -294,6 +294,12 @@ PAGE = r"""<!DOCTYPE html>
       <select id="probe-layout" disabled></select>
       <button id="probe-layout-btn" disabled>Show in layout</button>
       <div id="probe-status" class="hint" role="status"></div>
+    </div>
+    <div data-pcb-only>
+      <label for="probe-schematic">Schematic</label>
+      <select id="probe-schematic" disabled></select>
+      <button id="probe-schematic-btn" disabled>Show in schematic</button>
+      <div id="probe-schematic-status" class="hint" role="status"></div>
     </div>
     <div id="probe-result" hidden>
       <div id="probe-result-status" role="status"></div>
@@ -554,14 +560,14 @@ PAGE = r"""<!DOCTYPE html>
   function clearSchematicSelection() {
     if (activeBoard?.kind !== 'schematic') return;
     activeBoard.selectedComponents.clear(); activeBoard.selectedNets.clear();
-    activeBoard.probeMessage = '';
+    activeBoard.probeMessage = ''; activeBoard.probeResult = null; updateProbeResult();
     updateSchematicSelection();
   }
   function selectSchematic(e) {
     const net = e.target.closest('#scene [data-sch-nets]');
     const component = e.target.closest('#scene [data-sch-components]');
     if (!e.shiftKey) clearSchematicSelection();
-    activeBoard.probeMessage = '';
+    activeBoard.probeMessage = ''; activeBoard.probeResult = null; updateProbeResult();
     // A pin selects its net; clicking the symbol body selects the component.
     const target = net || component;
     if (target && svg.contains(target)) {
@@ -572,33 +578,43 @@ PAGE = r"""<!DOCTYPE html>
   }
   $('schematic-clear').onclick = clearSchematicSelection;
 
-  // ------------------------------------------------------------ schematic to layout cross-probing
+  // ------------------------------------------------------------ cross-probing
   const identity = value => String(value || '').trim().toLowerCase();
   function updateProbeTargets() {
-    if (activeBoard?.kind !== 'schematic') return;
     const source = activeBoard;
-    const layouts = boards.filter(board => board.kind === 'pcb' && board.svg && !board.loading);
-    if (!layouts.some(board => board.id === source.probeTargetId))
-      source.probeTargetId = layouts.length === 1 ? layouts[0].id : null;
-    const empty = document.createElement('option'); empty.value = ''; empty.textContent = layouts.length ? 'Choose a layout…' : 'No layout open';
-    $('probe-layout').replaceChildren(empty, ...layouts.map(board => {
+    const fromSchematic = source?.kind === 'schematic';
+    const kind = fromSchematic ? 'pcb' : 'schematic', noun = fromSchematic ? 'layout' : 'schematic';
+    const select = $(fromSchematic ? 'probe-layout' : 'probe-schematic');
+    const button = $(fromSchematic ? 'probe-layout-btn' : 'probe-schematic-btn');
+    const status = $(fromSchematic ? 'probe-status' : 'probe-schematic-status');
+    const targets = boards.filter(board => board.kind === kind && board.svg && !board.loading);
+    if (source && !targets.some(board => board.id === source.probeTargetId))
+      source.probeTargetId = targets.length === 1 ? targets[0].id : null;
+    const empty = document.createElement('option'); empty.value = ''; empty.textContent = targets.length ? 'Choose a ' + noun + '…' : 'No ' + noun + ' open';
+    select.replaceChildren(empty, ...targets.map(board => {
       const option = document.createElement('option'); option.value = board.id; option.textContent = board.name; return option;
     }));
-    $('probe-layout').value = source.probeTargetId || '';
-    $('probe-layout').disabled = !layouts.length;
-    const selected = source.selectedComponents.size + source.selectedNets.size;
-    $('probe-layout-btn').disabled = !selected || !source.probeTargetId;
-    $('probe-status').textContent = source.probeMessage || (!layouts.length ? 'Open a .PcbDoc layout to cross-probe.' :
-      !selected ? 'Select schematic components or nets.' : !source.probeTargetId ? 'Choose the layout to probe.' : '');
+    select.value = source?.probeTargetId || '';
+    select.disabled = !targets.length || !source?.svg;
+    const selected = fromSchematic ? source.selectedComponents.size + source.selectedNets.size : componentHits.length + netHits.length;
+    button.disabled = !source?.svg || !selected || !source.probeTargetId;
+    status.textContent = !source?.svg ? '' : source.probeMessage || (!targets.length ?
+      'Open a ' + (fromSchematic ? '.PcbDoc layout' : '.SchDoc schematic') + ' to cross-probe.' :
+      !selected ? 'Select ' + (fromSchematic ? 'schematic' : 'layout') + ' components or nets.' : !source.probeTargetId ? 'Choose the ' + noun + ' to probe.' : '');
   }
   function updateProbeResult() {
-    const result = activeBoard?.kind === 'pcb' && activeBoard.probeResult;
+    const result = activeBoard?.probeResult;
     $('probe-result').hidden = !result;
     $('probe-result-status').textContent = result?.message || '';
     $('probe-back').disabled = !result || !boards.some(board => board.id === result.sourceId);
+    $('probe-back').textContent = activeBoard?.kind === 'schematic' ? 'Back to layout' : 'Back to schematic';
   }
   $('probe-layout').onchange = () => {
     activeBoard.probeTargetId = Number($('probe-layout').value) || null;
+    activeBoard.probeMessage = ''; updateProbeTargets();
+  };
+  $('probe-schematic').onchange = () => {
+    activeBoard.probeTargetId = Number($('probe-schematic').value) || null;
     activeBoard.probeMessage = ''; updateProbeTargets();
   };
   $('probe-back').onclick = () => {
@@ -606,20 +622,21 @@ PAGE = r"""<!DOCTYPE html>
     if (source) activateBoard(source);
   };
   function matchingComponents(sourceId, row, layout, names) {
-    const linked = layout.layoutComponents.filter(component => component.source_id && identity(component.source_id) === identity(sourceId));
-    const matches = linked.length ? linked.map(component => component.name) :
-      layout.layoutComponents.filter(component => identity(component.source_name) === identity(row.name)).map(component => component.name);
-    if (!matches.length) matches.push(row.name);
-    return [...names].filter(name => matches.some(match => identity(match) === identity(name)));
+    const linked = layout.layoutComponents.filter(component => sourceId && component.source_id && identity(component.source_id) === identity(sourceId));
+    if (linked.length) return [...names].filter(name => linked.some(component => identity(component.name) === identity(name)));
+    return [...names].filter(name => {
+      const link = layout.layoutComponents.find(component => identity(component.name) === identity(name));
+      // An explicit link to another source symbol must not match by designator.
+      if (sourceId && link?.source_id) return false;
+      return identity(link?.source_name || name) === identity(row.name);
+    });
   }
-  $('probe-layout-btn').onclick = () => {
-    const source = activeBoard;
-    const layout = boards.find(board => board.id === source?.probeTargetId && board.kind === 'pcb' && board.svg && !board.loading);
-    if (source?.kind !== 'schematic' || !layout) return;
+  const padKey = (component, pin) => JSON.stringify([identity(component), identity(pin)]);
+  function layoutConnections(layout) {
     const primitives = [...layout.svg.querySelectorAll('#scene [data-component], #scene [data-net]')];
     const names = new Set(primitives.map(el => el.dataset.component).filter(Boolean));
     const netNames = new Set(primitives.map(el => el.dataset.net).filter(Boolean));
-    const padNets = new Map(), padKey = (component, pin) => JSON.stringify([identity(component), identity(pin)]);
+    const padNets = new Map();
     for (const el of primitives) {
       const { component, padNumber, padDesignator, net } = el.dataset;
       if (!component || !(padNumber || padDesignator) || !net) continue;
@@ -627,6 +644,29 @@ PAGE = r"""<!DOCTYPE html>
       if (!padNets.has(key)) padNets.set(key, new Set());
       padNets.get(key).add(net);
     }
+    return { names, netNames, padNets };
+  }
+  function matchingNets(row, schematic, layout, { names, netNames, padNets }) {
+    const byPins = new Set();
+    for (const terminal of row.terminals) {
+      if (!terminal.component || !terminal.pin) continue;
+      const component = [...schematic.schematicComponents].find(([, item]) => identity(item.name) === identity(terminal.component));
+      const matches = matchingComponents(component?.[0] || '', component?.[1] || { name: terminal.component }, layout, names);
+      for (const name of matches) for (const net of padNets.get(padKey(name, terminal.pin)) || []) byPins.add(net);
+    }
+    return byPins.size ? [...byPins] : [...netNames].filter(name =>
+      [row.name, ...row.aliases].some(alias => identity(alias) === identity(name)));
+  }
+  function probeResult(source, components, nets, unmatched) {
+    return { sourceId: source.id,
+      message: 'From ' + source.name + ': ' + components.size + ' component' + (components.size === 1 ? '' : 's') +
+        ', ' + nets.size + ' net' + (nets.size === 1 ? '' : 's') + ' highlighted.' + unmatched };
+  }
+  $('probe-layout-btn').onclick = () => {
+    const source = activeBoard;
+    const layout = boards.find(board => board.id === source?.probeTargetId && board.kind === 'pcb' && board.svg && !board.loading);
+    if (source?.kind !== 'schematic' || !layout) return;
+    const connections = layoutConnections(layout), { names } = connections;
     const components = new Set(), nets = new Set(), missing = [];
     const resolveComponent = (id, row) => matchingComponents(id, row, layout, names);
     for (const id of source.selectedComponents) {
@@ -635,15 +675,8 @@ PAGE = r"""<!DOCTYPE html>
       else missing.push('component ' + row.name);
     }
     for (const id of source.selectedNets) {
-      const row = source.schematicNets.get(id), byPins = new Set();
-      for (const terminal of row.terminals) {
-        if (!terminal.component || !terminal.pin) continue;
-        const component = [...source.schematicComponents].find(([, item]) => identity(item.name) === identity(terminal.component));
-        const matches = resolveComponent(component?.[0] || '', component?.[1] || { name: terminal.component });
-        for (const name of matches) for (const net of padNets.get(padKey(name, terminal.pin)) || []) byPins.add(net);
-      }
-      const matches = byPins.size ? [...byPins] : [...netNames].filter(name =>
-        [row.name, ...row.aliases].some(alias => identity(alias) === identity(name)));
+      const row = source.schematicNets.get(id);
+      const matches = matchingNets(row, source, layout, connections);
       if (matches.length === 1) nets.add(matches[0]);
       else missing.push('net ' + row.name + (matches.length > 1 ? ' (ambiguous)' : ''));
     }
@@ -653,17 +686,45 @@ PAGE = r"""<!DOCTYPE html>
     }
     layout.probeComponents = [...components]; layout.probeNets = [...nets];
     layout.componentQuery = [...components].join(', '); layout.netQuery = [...nets].join(', ');
-    layout.probeResult = { sourceId: source.id,
-      message: 'From ' + source.name + ': ' + components.size + ' component' + (components.size === 1 ? '' : 's') +
-        ', ' + nets.size + ' net' + (nets.size === 1 ? '' : 's') + ' highlighted.' + unmatched };
+    layout.probeResult = probeResult(source, components, nets, unmatched);
     activateBoard(layout); setMeasuring(false);
     const hits = [...componentHits, ...netHits];
     for (const group of groups) if (group.style.display === 'none' && hits.some(el => group.contains(el))) group._cb.click();
     fitMatches(hits);
   };
+  $('probe-schematic-btn').onclick = () => {
+    const source = activeBoard;
+    const target = boards.find(board => board.id === source?.probeTargetId && board.kind === 'schematic' && board.svg && !board.loading);
+    if (source?.kind !== 'pcb' || !target) return;
+    const connections = layoutConnections(source);
+    const components = new Set(), nets = new Set(), missing = [];
+    for (const name of new Set(componentHits.map(el => el.dataset.component))) {
+      const link = source.layoutComponents.find(component => identity(component.name) === identity(name));
+      const matches = [...target.schematicComponents].filter(([id, row]) => link?.source_id ?
+        identity(id) === identity(link.source_id) : identity(row.name) === identity(link?.source_name || name));
+      if (matches.length) matches.forEach(([id]) => components.add(id));
+      else missing.push('component ' + name);
+    }
+    const netMatches = [...target.schematicNets].map(([id, row]) => [id, matchingNets(row, target, source, connections)]);
+    for (const name of new Set(netHits.map(el => el.dataset.net))) {
+      const matches = netMatches.filter(([, names]) => names.length === 1 && names[0] === name);
+      if (matches.length) matches.forEach(([id]) => nets.add(id));
+      else missing.push('net ' + name + (netMatches.some(([, names]) => names.includes(name)) ? ' (ambiguous)' : ''));
+    }
+    const unmatched = missing.length ? '\nNot found: ' + missing.join(', ') : '';
+    if (!components.size && !nets.size) {
+      source.probeMessage = 'No matches in ' + target.name + '.' + unmatched; updateProbeTargets(); return;
+    }
+    target.selectedComponents = components; target.selectedNets = nets; target.probeMessage = '';
+    target.probeResult = probeResult(source, components, nets, unmatched);
+    activateBoard(target);
+    const hits = [...components].flatMap(id => target.schematicComponents.get(id).elements)
+      .concat([...nets].flatMap(id => target.schematicNets.get(id).elements));
+    fitMatches(hits);
+  };
   function resetProbeSelection(kind) {
     if (!activeBoard) return;
-    activeBoard[kind] = null; activeBoard.probeResult = null; updateProbeResult();
+    activeBoard[kind] = null; activeBoard.probeResult = null; activeBoard.probeMessage = ''; updateProbeResult();
   }
 
   // ------------------------------------------------------------ layout highlight drawing
@@ -736,6 +797,7 @@ PAGE = r"""<!DOCTYPE html>
     componentHits = matches.flatMap(name => componentIndex.get(name));
     for (const el of componentHits) el.classList.add('component-match');
     updateComponentStatus(matches.length);
+    updateProbeTargets();
   }
   function updateComponentStatus(count = new Set(componentHits.map(el => el.dataset.component)).size) {
     const { overlay, hidden } = buildLayoutHighlight('component-highlight', componentHits, '#ffe066');
@@ -826,6 +888,7 @@ PAGE = r"""<!DOCTYPE html>
     netHits = matches.flatMap(name => netIndex.get(name));
     for (const el of netHits) el.classList.add('net-match');
     updateNetStatus(matches.length);
+    updateProbeTargets();
   }
   function updateNetStatus(count = new Set(netHits.map(el => el.dataset.net)).size) {
     const { overlay, hidden } = buildLayoutHighlight('net-highlight', netHits, '#68e0ff');
