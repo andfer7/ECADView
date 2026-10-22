@@ -211,7 +211,7 @@ PAGE = r"""<!DOCTYPE html>
     </div>
     <div>
       <label for="component-query">Find component</label>
-      <input id="component-query" type="search" list="component-options" placeholder="Designator, e.g. R12" autocomplete="off" disabled>
+      <input id="component-query" type="search" list="component-options" placeholder="Designator, e.g. R12" title="Search by designator or click a component. Escape clears the selection." autocomplete="off" disabled>
       <datalist id="component-options"></datalist>
       <div class="row"><button id="component-clear">Clear</button><button id="component-fit" disabled>Fit matches</button></div>
       <button id="component-reveal" hidden>Show matching layers</button>
@@ -447,8 +447,9 @@ PAGE = r"""<!DOCTYPE html>
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
       `${count} component${count === 1 ? '' : 's'} highlighted` + (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}.` : '.');
   }
+  function clearComponent() { $('component-query').value = ''; searchComponents(); }
   $('component-query').oninput = searchComponents;
-  $('component-clear').onclick = () => { $('component-query').value = ''; searchComponents(); };
+  $('component-clear').onclick = clearComponent;
   $('component-fit').onclick = () => {
     const rects = componentHits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
     if (!rects.length) return;
@@ -561,9 +562,16 @@ PAGE = r"""<!DOCTYPE html>
     if (!svg || measuring || panned || e.button !== 0) return;
     const primitive = e.target.closest('#scene [data-net]');
     const name = primitive?.dataset.net;
-    if (!name || !svg.contains(primitive) || !netIndex.has(name)) return;
-    $('net-query').value = name;
-    searchNets();
+    if (name && svg.contains(primitive) && netIndex.has(name)) {
+      $('net-query').value = name;
+      searchNets();
+    }
+    const component = e.target.closest('#scene [data-component]');
+    const designator = component?.dataset.component;
+    if (designator && svg.contains(component) && componentIndex.has(designator)) {
+      $('component-query').value = designator;
+      searchComponents();
+    }
   });
   $('net-fit').onclick = () => {
     const rects = netHits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
@@ -643,6 +651,7 @@ PAGE = r"""<!DOCTYPE html>
   $('measure-btn').onclick = () => setMeasuring(!measuring);
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
+      clearComponent();
       e.preventDefault();
       clearNet(); pts = []; hover = null; draw();
       return;
