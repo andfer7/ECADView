@@ -17,52 +17,27 @@ except ImportError:
 
 
 def open_in_browser(url: str, browser: str = "chrome") -> None:
-    if sys.platform == "darwin":
-        # Python's macOS controllers use AppleScript, which can fail or wait for
-        # Automation permission. Launch Services opens URLs without scripting Chrome.
-        app = {"chrome": "Google Chrome", "firefox": "Firefox", "safari": "Safari"}.get(browser.lower(), browser)
-
-        def native_open(application: str | None = None) -> bool:
-            command = ["/usr/bin/open"]
-            if application:
-                command.extend(["-a", application])
-            try:
-                return subprocess.run(command + [url], timeout=10, check=False).returncode == 0
-            except (OSError, subprocess.TimeoutExpired):
-                return False
-
-        if browser == "default":
-            opened = native_open()
-        else:
-            opened = native_open(app)
-            if not opened:
-                print(f"Could not open {browser}; trying the system default browser.")
-                opened = native_open()
-        if not opened:
-            print(f"Could not open a browser automatically. Open this URL manually: {url}")
-        return
     if browser == "default":
-        if not webbrowser.open(url):
-            print(f"Could not open a browser automatically. Open this URL manually: {url}")
+        webbrowser.open(url)
         return
     for name in (browser, f"{browser}.exe", f"google-{browser}", f"{browser}-browser"):
         try:
-            if webbrowser.get(name).open(url):
-                return
-        except (webbrowser.Error, OSError):
+            webbrowser.get(name).open(url)
+            return
+        except webbrowser.Error:
             pass
-    if sys.platform == "win32" and browser == "chrome":
+    if sys.platform == "darwin":
+        app = {"chrome": "Google Chrome", "firefox": "Firefox", "safari": "Safari"}.get(browser, browser)
+        if subprocess.run(["open", "-a", app, url]).returncode == 0:
+            return
+    elif sys.platform == "win32" and browser == "chrome":
         for exe in (r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"):
             if Path(exe).is_file():
-                try:
-                    subprocess.Popen([exe, url])
-                    return
-                except OSError:
-                    pass
+                subprocess.Popen([exe, url])
+                return
     print(f"Could not find {browser}; opening with the system default browser instead.")
-    if not webbrowser.open(url):
-        print(f"Could not open a browser automatically. Open this URL manually: {url}")
+    webbrowser.open(url)
 
 
 def main() -> None:
