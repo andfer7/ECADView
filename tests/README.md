@@ -11,6 +11,10 @@ NODE_PATH=/tmp/pcb-viewer-tests/node_modules node --test tests/board_tabs.test.c
 To use an installed Google Chrome instead of downloading Chromium, skip the
 browser installation and add `PLAYWRIGHT_CHANNEL=chrome` to the test command.
 
+Navigation coverage includes scroll-to-pan, Ctrl-wheel pinch zoom, native Safari
+gesture event handling, cursor anchoring with SVG margins, redraw batching,
+measurement label positioning, and pending gestures during tab changes.
+
 Font validation and rendering tests use the project's Python environment:
 
 ```sh

@@ -135,6 +135,18 @@ async function openPage(t, { render, initial = {} } = {}) {
   return { page, requests };
 }
 
+const settleView = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve())));
+const currentViewBox = page => page.locator('#view > svg').evaluate(svg => {
+  const b = svg.viewBox.baseVal; return { x: b.x, y: b.y, w: b.width, h: b.height };
+});
+const pointOnScreen = (page, x, y) => page.locator('#view > svg').evaluate((svg, p) => {
+  const q = new DOMPoint(p.x, p.y).matrixTransform(svg.getScreenCTM()); return { clientX: q.x, clientY: q.y };
+}, { x, y });
+const pointInView = (page, p) => page.locator('#view > svg').evaluate((svg, p) => {
+  const q = new DOMPoint(p.clientX, p.clientY).matrixTransform(svg.getScreenCTM().inverse()); return { x: q.x, y: q.y };
+}, p);
+function near(actual, expected, message, tolerance = 0.0001) { assert.ok(Math.abs(actual - expected) < tolerance, `${message}: ${actual} vs ${expected}`); }
+
 test('opens multiple files, switches tabs, and closes back to the empty view', async t => {
   const { page, requests } = await openPage(t);
   await page.locator('#file').setInputFiles([file('A.PcbDoc'), file('B.PcbDoc')]);
@@ -175,7 +187,8 @@ test('mixes PCB and schematic tabs while preserving the view and PCB measurement
   assert.equal(await page.locator('#stats').textContent(), '3 components, 7 wires, 2 net labels');
   await page.locator('#view').click(); await page.keyboard.press('m');
   assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
-  await page.locator('#view').dispatchEvent('wheel', { deltaY: -250, clientX: 600, clientY: 400 });
+  await page.locator('#view').dispatchEvent('wheel', { ctrlKey: true, deltaY: -250, clientX: 600, clientY: 400 });
+  await settleView(page);
   await page.mouse.move(600, 400); await page.mouse.down();
   await page.mouse.move(630, 420); await page.mouse.up();
   const zoom = await page.locator('#view > svg').getAttribute('viewBox');
@@ -466,12 +479,176 @@ test('unmatched and conflicting schematic probes are reported without selecting 
   assert.match(await page.locator('#probe-result-status').textContent(), /net GND \(ambiguous\)/);
 });
 
+test('two-finger wheel scrolling pans PCB and schematic views in screen pixels without zooming', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? schematicData(name) : boardData(name)) });
+  for (const name of ['Board.PcbDoc', 'Sheet.SchDoc']) {
+    await page.locator('#file').setInputFiles(file(name)); await loaded(page, name);
+    const before = await currentViewBox(page), point = await pointOnScreen(page, 30, 30);
+    await page.locator('#view').dispatchEvent('wheel', { deltaX: 25, deltaY: -40, ...point });
+    await settleView(page);
+    const after = await currentViewBox(page), moved = await pointOnScreen(page, 30, 30);
+    near(after.w, before.w, 'scroll preserves zoom width'); near(after.h, before.h, 'scroll preserves zoom height');
+    near(moved.clientX - point.clientX, -25, 'horizontal scroll displacement');
+    near(moved.clientY - point.clientY, 40, 'vertical scroll displacement');
+    await page.locator('#view').dispatchEvent('wheel', { deltaY: 2, deltaMode: 1, ...point });
+    await settleView(page);
+    const lineScroll = await pointOnScreen(page, 30, 30);
+    near(lineScroll.clientY - moved.clientY, -32, 'line deltas are normalized');
+    const height = await page.locator('#view').evaluate(el => el.clientHeight);
+    await page.locator('#view').dispatchEvent('wheel', { deltaY: 1, deltaMode: 2, ...point });
+    await settleView(page);
+    near((await pointOnScreen(page, 30, 30)).clientY - lineScroll.clientY, -height, 'page deltas are normalized');
+  }
+});
+
+test('pinch zoom is cursor-anchored inside letterboxed SVGs even for several events in one frame', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    { ...boardData(name), svg: boardData(name).svg.replace('viewBox="0 0 100 80"', 'viewBox="0 0 20 100"') }) });
+  await page.locator('#file').setInputFiles(file('Tall.PcbDoc')); await loaded(page, 'Tall.PcbDoc');
+  const screen = await pointOnScreen(page, 3, 30), before = await currentViewBox(page);
+  // WheelEvent mouse coordinates are integer CSS pixels in Chromium.
+  const point = { clientX: Math.round(screen.clientX), clientY: Math.round(screen.clientY) };
+  const expected = await pointInView(page, point);
+  await page.locator('#view').evaluate((el, point) => {
+    for (let i = 0; i < 3; i++) el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -20, ...point }));
+  }, point);
+  await settleView(page);
+  const after = await currentViewBox(page), anchor = await pointInView(page, point);
+  assert.ok(after.w < before.w && after.h < before.h);
+  near(anchor.x, expected.x, 'pinch keeps cursor X fixed'); near(anchor.y, expected.y, 'pinch keeps cursor Y fixed');
+  await page.locator('#view').evaluate((el, point) => {
+    for (let i = 0; i < 3; i++) el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: 20, ...point }));
+  }, point);
+  await settleView(page);
+  const restored = await currentViewBox(page);
+  for (const key of ['x', 'y', 'w', 'h']) near(restored[key], before[key], 'opposite pinch restores ' + key);
+  await page.locator('#view').evaluate((el, point) => {
+    for (let i = 0; i < 30; i++) el.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -10000, ...point }));
+  }, point);
+  await settleView(page);
+  const minimum = await currentViewBox(page);
+  near(Math.max(minimum.w, minimum.h), 0.01, 'zoom-in limit');
+  await page.locator('#view').evaluate((el, point) => {
+    for (let i = 0; i < 30; i++) el.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: 10000, ...point }));
+  }, point);
+  await settleView(page);
+  const maximum = await currentViewBox(page);
+  near(Math.max(maximum.w, maximum.h), 10000, 'zoom-out limit');
+  assert.ok(Object.values(maximum).every(Number.isFinite));
+});
+
+test('drag panning follows screen distance through letterboxing and supports the middle button in measurement mode', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    { ...boardData(name), svg: boardData(name).svg.replace('viewBox="0 0 100 80"', 'viewBox="0 0 20 100"') }) });
+  await page.locator('#file').setInputFiles(file('Tall.PcbDoc')); await loaded(page, 'Tall.PcbDoc');
+  const point = await pointOnScreen(page, 10, 50);
+  await page.mouse.move(point.clientX, point.clientY); await page.mouse.down();
+  await page.mouse.move(point.clientX + 40, point.clientY + 30); await page.mouse.up(); await settleView(page);
+  const moved = await pointOnScreen(page, 10, 50);
+  near(moved.clientX - point.clientX, 40, 'drag X distance'); near(moved.clientY - point.clientY, 30, 'drag Y distance');
+  await page.locator('#measure-btn').click();
+  await page.mouse.move(moved.clientX, moved.clientY); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(moved.clientX - 20, moved.clientY + 15); await page.mouse.up({ button: 'middle' }); await settleView(page);
+  const middle = await pointOnScreen(page, 10, 50);
+  near(middle.clientX - moved.clientX, -20, 'middle drag X'); near(middle.clientY - moved.clientY, 15, 'middle drag Y');
+  assert.equal(await page.locator('#measure line').count(), 0, 'middle panning does not create measurements');
+});
+
+test('pan/zoom redraws are batched and reposition completed measurement labels without recreating their geometry', async t => {
+  const { page } = await openPage(t);
+  await page.locator('#file').setInputFiles(file('Board.PcbDoc')); await loaded(page, 'Board.PcbDoc');
+  await page.locator('#measure-btn').click();
+  await page.locator('#view').click({ position: { x: 200, y: 200 } });
+  await page.locator('#view').click({ position: { x: 400, y: 300 } });
+  await page.keyboard.press('Escape');
+  const readout = await page.locator('#readout').textContent();
+  const result = await page.locator('#view').evaluate(el => new Promise(resolve => {
+    const svg = el.querySelector('svg'), line = el.querySelector('#measure line'), label = el.querySelector('.measure-label');
+    let updates = 0;
+    const observer = new MutationObserver(records => { updates += records.length; });
+    observer.observe(svg, { attributes: true, attributeFilter: ['viewBox'] });
+    for (let i = 0; i < 20; i++) el.dispatchEvent(new WheelEvent('wheel', { deltaX: 1, deltaY: 2, bubbles: true, cancelable: true }));
+    requestAnimationFrame(() => setTimeout(() => {
+      observer.disconnect();
+      const midpoint = new DOMPoint((+line.getAttribute('x1') + +line.getAttribute('x2')) / 2,
+        (+line.getAttribute('y1') + +line.getAttribute('y2')) / 2).matrixTransform(svg.getScreenCTM());
+      const r = el.getBoundingClientRect();
+      resolve({ updates, sameLine: line === el.querySelector('#measure line'), sameLabel: label === el.querySelector('.measure-label'),
+        x: parseFloat(label.style.left), y: parseFloat(label.style.top), expectedX: midpoint.x - r.left, expectedY: midpoint.y - r.top });
+    }, 0));
+  }));
+  assert.equal(result.updates, 1, 'one viewBox update for a burst of events in a frame');
+  assert.equal(result.sameLine, true); assert.equal(result.sameLabel, true);
+  near(result.x, result.expectedX, 'label X follows measurement', 0.001); near(result.y, result.expectedY, 'label Y follows measurement', 0.001);
+  assert.equal(await page.locator('#readout').textContent(), readout);
+});
+
+test('zoom controls and native Safari gesture events work for both document kinds and reset safely', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? schematicData(name) : boardData(name)) });
+  assert.equal(await page.locator('#zoom-in').isDisabled(), true);
+  for (const name of ['Board.PcbDoc', 'Sheet.SchDoc']) {
+    await page.locator('#file').setInputFiles(file(name)); await loaded(page, name);
+    const home = await currentViewBox(page);
+    await page.locator('#zoom-in').click(); await settleView(page);
+    assert.ok((await currentViewBox(page)).w < home.w);
+    await page.locator('#zoom-out').click(); await settleView(page);
+    near((await currentViewBox(page)).w, home.w, 'zoom button pair restores scale');
+    const point = await pointOnScreen(page, home.w * 0.3, home.h * 0.4);
+    await page.locator('#view').evaluate((el, point) => {
+      for (const [type, scale] of [['gesturestart', 1], ['gesturechange', 2]]) {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.assign(event, { scale, ...point }); el.dispatchEvent(event);
+      }
+      el.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -90, ...point }));
+      el.dispatchEvent(new Event('gestureend', { cancelable: true }));
+    }, point);
+    await settleView(page);
+    near((await currentViewBox(page)).w, home.w / 2, 'native gesture scale, without a duplicate wheel zoom');
+    const anchor = await pointInView(page, point);
+    near(anchor.x, home.w * 0.3, 'native gesture cursor X'); near(anchor.y, home.h * 0.4, 'native gesture cursor Y');
+    await page.locator('#view-fit').click();
+    assert.deepEqual(await currentViewBox(page), home);
+  }
+  await page.getByRole('button', { name: 'Close Sheet.SchDoc', exact: true }).click();
+  await page.getByRole('button', { name: 'Close Board.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#zoom-in').isDisabled(), true);
+  assert.equal(await page.locator('#view-fit').isDisabled(), true);
+});
+
+test('pending gesture frames do not leak into another tab or a closed document', async t => {
+  const { page } = await openPage(t);
+  await page.locator('#file').setInputFiles([file('A.PcbDoc'), file('B.PcbDoc')]); await loaded(page, 'B.PcbDoc');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  const origin = await pointOnScreen(page, 30, 30);
+  await page.locator('#view').evaluate(el => {
+    el.dispatchEvent(new WheelEvent('wheel', { deltaX: 20, deltaY: 40, cancelable: true }));
+    [...document.querySelectorAll('[role="tab"]')].find(tab => tab.title === 'B.PcbDoc').click();
+  });
+  await settleView(page);
+  assert.equal(await activeName(page), 'B.PcbDoc');
+  assert.deepEqual(await currentViewBox(page), { x: 0, y: 0, w: 100, h: 80 });
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
+  const moved = await pointOnScreen(page, 30, 30);
+  near(moved.clientX - origin.clientX, -20, 'pending horizontal pan was saved');
+  near(moved.clientY - origin.clientY, -40, 'pending vertical pan was saved');
+  await page.locator('#view').evaluate(el => {
+    el.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -20, clientX: 600, clientY: 400, cancelable: true }));
+    document.querySelector('button[aria-label="Close A.PcbDoc"]').click();
+  });
+  await settleView(page);
+  assert.equal(await activeName(page), 'B.PcbDoc');
+  assert.deepEqual(await currentViewBox(page), { x: 0, y: 0, w: 100, h: 80 });
+});
+
 test('preserves each board’s layers, zoom, pan, measurements, and units', async t => {
   const { page, requests } = await openPage(t);
   await page.locator('#file').setInputFiles(file('A.PcbDoc'));
   await loaded(page, 'A.PcbDoc');
   await page.locator('#layers input').first().uncheck();
-  await page.locator('#view').dispatchEvent('wheel', { deltaY: -250, clientX: 600, clientY: 400 });
+  await page.locator('#view').dispatchEvent('wheel', { ctrlKey: true, deltaY: -250, clientX: 600, clientY: 400 });
+  await settleView(page);
   await page.mouse.move(600, 400); await page.mouse.down();
   await page.mouse.move(630, 420); await page.mouse.up();
   const viewBox = await page.locator('#view > svg').getAttribute('viewBox');
@@ -891,7 +1068,8 @@ test('retains multiple measurements with labels and units, cancels previews and 
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#measure line').count(), 2);
   const before = await page.locator('.measure-label').first().getAttribute('style');
-  await page.locator('#view').dispatchEvent('wheel', { deltaY: -200, clientX: 600, clientY: 400 });
+  await page.locator('#view').dispatchEvent('wheel', { ctrlKey: true, deltaY: -200, clientX: 600, clientY: 400 });
+  await settleView(page);
   assert.notEqual(await page.locator('.measure-label').first().getAttribute('style'), before);
   await page.keyboard.press('Shift+C');
   assert.equal(await page.locator('#measure line').count(), 0);
