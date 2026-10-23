@@ -228,6 +228,31 @@ class KiCadSchematicTests(unittest.TestCase):
 
 
 class KiCadInputTests(unittest.TestCase):
+    def test_legacy_board_atoms_keep_lisp_punctuation_literal(self):
+        source = (FIXTURES / 'demo.kicad_pcb').read_text().replace('(footprint ', '(module ')
+        for name in ('K_[1', 'K_]1', "K_'1", "'quoted", 'R;1', r'R\1'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'old.kicad_pcb'
+                path.write_text(source.replace('reference "R1"', f'reference {name}'))
+                data = render_file(path)
+                self.assertEqual(data['layout_components'][0]['name'], name)
+                self.assertEqual(data['stats']['components'], 2)
+                self.assertTrue(data['scene3d']['board'])
+
+    def test_atom_normalization_preserves_quoted_strings_and_parentheses(self):
+        source = r'''(kicad_pcb (net 1 "Net-(K_[1-Pad4)") (gr_text "quoted \"[;']\" \\ path"))'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'quoted.kicad_pcb'; path.write_text(source)
+            root = load(path, 'kicad_pcb')
+            self.assertEqual(form(root, 'net')[2], 'Net-(K_[1-Pad4)')
+            self.assertEqual(form(root, 'gr_text')[1], 'quoted "[;\']" \\ path')
+
+    def test_comment_lines_are_not_mistaken_for_legacy_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'comments.kicad_pcb'
+            path.write_text('(kicad_pcb\n # comment [\n ;; comment ]\n (net 1 "#literal;name"))')
+            self.assertEqual(form(load(path, 'kicad_pcb'), 'net')[2], '#literal;name')
+
     def test_malformed_content_and_wrong_document_type_are_clear_errors(self):
         for content, message in [('(kicad_pcb (version 1)', 'Invalid KiCad'), ('(kicad_sch)', 'Expected a KiCad kicad_pcb')]:
             with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
@@ -249,3 +274,53 @@ class KiCadInputTests(unittest.TestCase):
                 path = Path(tmp) / ('board.' + extension.upper())
                 path.write_bytes(b'\xef\xbb\xbf' + (FIXTURES / f'demo.{extension}').read_bytes())
                 self.assertIn('<svg', render_file(path)['svg'])
+
+
+class LegacyKiCadSchematicTests(unittest.TestCase):
+    def test_fields_wires_labels_and_component_positions_without_library_guesses(self):
+        path = FIXTURES / 'legacy.sch'
+        original = path.read_bytes()
+        data = render_file(path)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(data['kind'], 'schematic')
+        self.assertEqual(data['stats'], {'components': 2, 'wires': 3, 'net_labels': 2})
+        self.assertIn('symbol graphics and pin connectivity are unavailable', data['warnings'][0])
+        self.assertIn('Open child .sch sheets individually', ' '.join(data['warnings']))
+        self.assertIn('bus-member connectivity is not expanded', ' '.join(data['warnings']))
+        root = ET.fromstring(data['svg'])
+        placeholders = root.findall('.//s:g[@data-symbol-preview="placeholder"]', NS)
+        self.assertEqual(len(placeholders), 2)
+        text = ''.join(root.itertext())
+        self.assertIn('R1', text)
+        self.assertIn('1k', text)
+        self.assertNotIn('Hidden footprint', text)
+        self.assertIn('Legacy <&> notesecond line', text)
+        self.assertTrue(root.findall('.//s:text[@transform="rotate(-90 81.28 50.8)"]', NS))
+        self.assertEqual(data['selection']['components'][0]['id'], '5AAB499C')
+        # Standard power anchors and equal labels join wires, but unknown symbol
+        # pins are never synthesized into the cross-probing terminal map.
+        net = next(net for net in data['selection']['nets'] if net['name'] == 'GND')
+        self.assertEqual(net['aliases'], ['RETURN'])
+        self.assertEqual(net['terminals'], [])
+
+    def test_legacy_units_are_mils_converted_to_mm(self):
+        data = render_file(FIXTURES / 'legacy.sch')
+        root = ET.fromstring(data['svg'])
+        wire = root.find('.//s:g[@id="kc-wire-5"]/s:path', NS)
+        self.assertEqual(wire.get('d'), 'M25.4 50.8 L50.8 50.8')
+
+    def test_other_sch_formats_and_truncated_legacy_sheets_are_clear_errors(self):
+        source = (FIXTURES / 'legacy.sch').read_text()
+        for content, error in [('not a KiCad sheet', 'Expected a KiCad legacy'),
+                               (source.replace('$EndSCHEMATC', ''), 'missing \\$EndSCHEMATC'),
+                               (source.replace('$EndComp', '', 1), 'expected \\$EndComp')]:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'bad.sch'; path.write_text(content)
+                with self.assertRaisesRegex(ValueError, error):
+                    render_file(path)
+
+    def test_legacy_uppercase_and_bom_are_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'legacy.SCH'
+            path.write_bytes(b'\xef\xbb\xbf' + (FIXTURES / 'legacy.sch').read_bytes())
+            self.assertEqual(render_file(path)['stats']['components'], 2)

@@ -113,6 +113,15 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(data["name"], f"KiCad board.{extension}")
                 self.assertIn("<svg", data["svg"])
 
+    def test_upload_renders_legacy_kicad_sheets_with_incomplete_preview_notice(self):
+        source = (ROOT / "tests" / "fixtures" / "kicad" / "legacy.sch").read_bytes()
+        status, _, body = self.request("POST", "/render", source, {"X-Filename": "legacy.sch"})
+        data = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["kind"], "schematic")
+        self.assertEqual(data["stats"]["components"], 2)
+        self.assertIn("pin connectivity are unavailable", data["warnings"][0])
+
     def test_malformed_kicad_upload_returns_an_error_and_keeps_serving(self):
         status, _, body = self.request("POST", "/render", b"(kicad_pcb", {"X-Filename": "broken.kicad_pcb"})
         self.assertEqual(status, 500)

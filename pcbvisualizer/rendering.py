@@ -109,6 +109,9 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
     if path.suffix.lower() == ".kicad_sch":
         from .kicad_schematic import render_schematic
         return render_schematic(path)
+    if path.suffix.lower() == ".sch":
+        from .kicad_legacy import render_legacy_schematic
+        return render_legacy_schematic(path)
     if path.suffix.lower() == ".schdoc":
         schematic = AltiumSchDoc(path)
         return {
@@ -124,7 +127,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
             },
         }
     if path.suffix.lower() != ".pcbdoc":
-        raise ValueError("Open an Altium .PcbDoc or .SchDoc, or a KiCad .kicad_pcb or .kicad_sch file.")
+        raise ValueError("Open an Altium .PcbDoc or .SchDoc, or a KiCad .kicad_pcb, .kicad_sch, or legacy .sch file.")
     pcb = AltiumPcbDoc.from_file(path)
     warnings = prepare_embedded_fonts(pcb)
     resolve_polygon_nets(pcb)

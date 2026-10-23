@@ -580,7 +580,7 @@ test('layout probes require selection and an explicit sheet among multiple targe
     name.endsWith('.SchDoc') ? probingSchematicData(name) : probingLayoutData(name)) });
   await page.locator('#file').setInputFiles(file('Layout.PcbDoc')); await loaded(page, 'Layout.PcbDoc');
   assert.equal(await page.locator('#probe-schematic-btn').isDisabled(), true);
-  assert.match(await page.locator('#probe-schematic-status').textContent(), /Open a schematic \(\.SchDoc or \.kicad_sch\)/);
+  assert.match(await page.locator('#probe-schematic-status').textContent(), /Open a schematic \(\.SchDoc, \.kicad_sch, or \.sch\)/);
   await page.locator('#file').setInputFiles([file('First.SchDoc'), file('Second.SchDoc')]); await loaded(page, 'Second.SchDoc');
   await page.getByRole('tab', { name: 'Layout.PcbDoc', exact: true }).click();
   await page.locator('#component-query').fill('R99');
@@ -2485,4 +2485,58 @@ test('KiCad and Altium tabs coexist and a malformed KiCad upload preserves the o
   assert.equal(await page.getByRole('tab').count(), 3);
   await page.getByRole('tab', { name: 'Altium.PcbDoc', exact: true }).click();
   assert.equal(await activeName(page), 'Altium.PcbDoc');
+});
+
+test('legacy KiCad sheets open with explicit placeholder warnings, wire selection and component probing', async t => {
+  const { page } = await openPage(t);
+  await page.unroute('**/render');
+  const pcb = readFileSync(kicadFixture('kicad_pcb'), 'utf8').replace('00000000-0000-0000-0000-000000000101', '5AAB499C');
+  await page.locator('#file').setInputFiles({ name: 'legacy.kicad_pcb', mimeType: 'application/octet-stream', buffer: Buffer.from(pcb) });
+  await loadedDocument(page, 'legacy.kicad_pcb');
+  await page.locator('#file').setInputFiles(resolve(__dirname, 'fixtures/kicad/legacy.sch'));
+  await loadedDocument(page, 'legacy.sch');
+  assert.match(await page.locator('#file').getAttribute('accept'), /,\.sch$/);
+  assert.match(await page.locator('#warnings').textContent(), /symbol graphics and pin connectivity are unavailable/);
+  assert.equal(await page.locator('#scene [data-symbol-preview="placeholder"]').count(), 2);
+  assert.match(await page.locator('#stats').textContent(), /2 components, 3 wires, 2 net labels/);
+  assert.equal(await page.locator('#mode-3d').isVisible(), false);
+  await clickSchematicGraphic(page, page.locator('[data-symbol-preview="placeholder"]').first());
+  assert.equal(await schematicStatus(page), 'Components: R1');
+  await page.locator('#probe-layout-btn').click();
+  await loadedDocument(page, 'legacy.kicad_pcb');
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  await page.getByRole('tab', { name: 'legacy.sch', exact: true }).click();
+  await page.locator('#schematic-clear').click();
+  await page.locator('#view-fit').click(); await settleView(page);
+  await clickSchematicGraphic(page, page.locator('[id^="kc-wire-"] .sch-hit').first());
+  assert.equal(await schematicStatus(page), 'Nets: GND');
+});
+
+test('opens the reported co60 legacy files through the real server', {
+  skip: !process.env.KICAD_TEST_PCB || !process.env.KICAD_TEST_SCH,
+}, async t => {
+  const { page } = await openPage(t);
+  await page.unroute('**/render');
+  await page.locator('#file').setInputFiles(process.env.KICAD_TEST_PCB);
+  await loadedDocument(page, 'co60.kicad_pcb');
+  await page.locator('#file').setInputFiles(process.env.KICAD_TEST_SCH);
+  await loadedDocument(page, 'co60.sch');
+  await settleView(page);
+  assert.match(await page.locator('#stats').textContent(), /52 components, 158 wires, 42 net labels/);
+  assert.match(await page.locator('#warnings').textContent(), /Legacy \.sch preview/);
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-schematic.png') });
+  // The legacy GND field overlaps the centre of C2's placeholder at overview
+  // scale. Its upper corner remains a real, unobscured component hit target.
+  await page.locator('#kc-component-1 .sch-component-hit').click({ position: { x: 1, y: 1 } });
+  assert.equal(await schematicStatus(page), 'Components: C2');
+  await page.locator('#probe-layout-btn').click();
+  await loadedDocument(page, 'co60.kicad_pcb');
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+  await page.locator('#component-clear').click();
+  await page.locator('#view-fit').click(); await settleView(page);
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-pcb.png') });
+  await page.locator('#component-query').fill('K_[1');
+  assert.match(await page.locator('#component-status').textContent(), /1 component highlighted/);
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-3d.png') });
 });

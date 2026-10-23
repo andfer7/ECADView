@@ -42,7 +42,7 @@ def open_in_browser(url: str, browser: str = "chrome") -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Standalone Altium and KiCad PCB and schematic viewer")
-    ap.add_argument("pcbdoc", nargs="?", type=Path, help="optional .PcbDoc, .SchDoc, .kicad_pcb, or .kicad_sch to load at startup")
+    ap.add_argument("pcbdoc", nargs="?", type=Path, help="optional .PcbDoc, .SchDoc, .kicad_pcb, .kicad_sch, or .sch to load at startup")
     ap.add_argument("--port", type=int, default=0, help="port to listen on (default: random free port)")
     ap.add_argument("--browser", default="chrome", help="chrome (default), firefox, safari, default, ...")
     ap.add_argument("--no-open", action="store_true", help="don't open a browser, just print the URL")

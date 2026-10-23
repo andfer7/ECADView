@@ -1,9 +1,20 @@
 """Read KiCad's S-expression files and draw safe, millimetre-based SVG."""
 
 import math
+import re
 import xml.etree.ElementTree as ET
 
 import sexpdata
+
+
+_TOKENS = re.compile(r'(?P<string>"(?:\\.|[^"\\])*")|(?P<comment>^[ \t]*[#;][^\r\n]*)|(?P<atom>[^\s()"]+)', re.MULTILINE)
+
+
+def _normalize_atom(match):
+    if match.lastgroup == "comment":
+        return ""
+    atom = match[0]
+    return sexpdata.dumps(atom) if match.lastgroup == "atom" and any(c in atom for c in "[]';\\") else atom
 
 
 def forms(node, key):
@@ -52,7 +63,13 @@ def rotate(point_, degrees):
 
 def load(path, expected):
     try:
-        root = sexpdata.loads(path.read_text(encoding="utf-8-sig"), nil=None, true=None, false=None)
+        source = path.read_text(encoding="utf-8-sig")
+        # KiCad 5 writes some strings as bare atoms. Lisp brackets, apostrophes,
+        # semicolons and backslashes are literal characters there, not syntax.
+        # Quote only those atoms before handing the expression to the Lisp reader;
+        # already-quoted strings and structural parentheses stay untouched.
+        source = _TOKENS.sub(_normalize_atom, source)
+        root = sexpdata.loads(source, nil=None, true=None, false=None)
     except (ValueError, TypeError, AssertionError, RecursionError, sexpdata.ExpectClosingBracket,
             sexpdata.ExpectNothing, sexpdata.ExpectSExp) as exc:
         raise ValueError(f"Invalid KiCad S-expression file: {exc}") from exc

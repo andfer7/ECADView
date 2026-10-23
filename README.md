@@ -1,7 +1,7 @@
 # PCBVisualizer
 
 A local Altium and KiCad PCB and schematic viewer. Open `.PcbDoc`, `.SchDoc`,
-`.kicad_pcb`, and `.kicad_sch` files in separate tabs, inspect layers and polygon pours, find components and nets,
+`.kicad_pcb`, `.kicad_sch`, and legacy KiCad `.sch` files in separate tabs, inspect layers and polygon pours, find components and nets,
 cross-probe between documents, and measure PCB geometry. Files are parsed on
 your machine and the browser displays the rendered SVG.
 
@@ -53,6 +53,7 @@ python pcb_viewer_gui.py board.PcbDoc
 python pcb_viewer_gui.py sheet.SchDoc --browser default
 python pcb_viewer_gui.py board.kicad_pcb
 python pcb_viewer_gui.py sheet.kicad_sch
+python pcb_viewer_gui.py legacy.sch
 python pcb_viewer_gui.py --no-open --port 8000
 ```
 
@@ -64,10 +65,10 @@ environment. No Node.js installation or frontend build is needed to run the app.
 
 ## KiCad support
 
-Modern KiCad files (KiCad 6 and newer) open directly, without installing KiCad or
-resolving external symbol libraries. Use Open files or drag files into the viewer;
-KiCad and Altium documents can share the same session. The legacy schematic
-`.sch` format is not supported.
+KiCad `.kicad_pcb` boards (including KiCad 5) and modern `.kicad_sch` schematics
+open directly, without installing KiCad or resolving external symbol libraries.
+Use Open files or drag files into the viewer; KiCad and Altium documents can
+share the same session.
 
 PCB previews include footprints, pads and drills, tracks and arcs, vias, saved
 zone fills, and board/footprint graphics. Layer controls, polygon visibility,
@@ -86,6 +87,17 @@ decorations and text use simplified drawing and browser fonts; images, text
 boxes, tables, and PCB dimensions are omitted. Applicable omissions appear in
 the sidebar.
 
+Legacy Eeschema `.sch` files (versions 1–4) have a limited preview: wires, labels,
+junctions, notes, sheet boxes, visible fields, and dashed markers at component
+positions. Components can be selected and probed into a matching PCB using
+their saved timestamps. Standard power anchors and named wire labels contribute
+to net selection; ordinary symbol pins are unavailable. Legacy files store
+their symbol graphics and pins in external `.lib`/cache libraries, which this
+viewer does not load. The sidebar explicitly marks the preview as incomplete.
+For complete symbols and pin connectivity, open the original project with its
+cache library in KiCad and save the sheet as `.kicad_sch`. Open child sheets
+individually; uploading a parent sheet does not load its project files.
+
 KiCad 3D previews show closed Edge.Cuts board profiles, cutouts, through drills,
 slots, and the saved board thickness. Tiny outline endpoint gaps up to 0.002 mm
 are joined when constructing the profile. External STEP/VRML component models
@@ -102,6 +114,7 @@ pcbvisualizer/
   cli.py                  Arguments, startup, and browser launching
   rendering.py            Format dispatch, Altium rendering and selection metadata
   kicad_common.py         KiCad S-expression and SVG helpers
+  kicad_legacy.py         Limited legacy Eeschema preview with explicit placeholders
   kicad_pcb.py            KiCad board geometry, layers, and metadata
   kicad_schematic.py      Embedded symbols and sheet-local connectivity
   scene3d.py              Board and simple-body solid geometry in millimetres

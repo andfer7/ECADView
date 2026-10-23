@@ -30,6 +30,14 @@ Python tests additionally verify rotated and mirrored geometry, board cutouts
 and slots, sheet-local connectivity and crossings, saved zone metadata, escaped
 text, source preservation, and CLI startup loading.
 
+`fixtures/kicad/legacy.sch` checks legacy fields, mil-to-mm coordinates, wire and
+power-label connectivity, missing-library placeholders, source timestamps,
+sheet boxes, and clear errors for malformed or unrelated `.sch` files. KiCad 5
+PCB tests retain unquoted brackets, apostrophes, semicolons and backslashes in
+names. To reproduce the reported co60 pair through Chrome, set `KICAD_TEST_PCB`
+and `KICAD_TEST_SCH` to their local paths; these files stay outside the repository.
+Set `KICAD_SCREENSHOT_DIR` to an existing directory to save previews from that test.
+
 Font validation, rendering, HTTP endpoints, and launch-command tests use the
 project's Python environment:
 
