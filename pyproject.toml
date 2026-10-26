@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "altium-monkey>=2026.9.22",
     "freetype-py>=2.5.1",
+    "sexpdata>=1.0.2,<2",
     "shapely>=2.1,<3",
 ]
 

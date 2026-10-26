@@ -21,6 +21,23 @@ nets in both views, including selections from searches and cross-probing.
 They also check Shift selections, shared schematic graphics, remaining exact
 matches across tabs, and preservation of selections during pans and measurements.
 
+The checked-in `fixtures/kicad/demo.kicad_pcb` and `demo.kicad_sch` exercise real
+KiCad parsing through the HTTP server and browser, without a KiCad installation.
+They cover mixed Altium/KiCad tabs, uploads and drag-and-drop, component/net
+cross-probing, wire selection, layers, zone visibility, pin captions,
+millimetre measurements, board-only WebGL output, and malformed-upload recovery.
+Python tests additionally verify rotated and mirrored geometry, board cutouts
+and slots, sheet-local connectivity and crossings, saved zone metadata, escaped
+text, source preservation, and CLI startup loading.
+
+`fixtures/kicad/legacy.sch` checks legacy fields, mil-to-mm coordinates, wire and
+power-label connectivity, missing-library placeholders, source timestamps,
+sheet boxes, and clear errors for malformed or unrelated `.sch` files. KiCad 5
+PCB tests retain unquoted brackets, apostrophes, semicolons and backslashes in
+names. To reproduce the reported co60 pair through Chrome, set `KICAD_TEST_PCB`
+and `KICAD_TEST_SCH` to their local paths; these files stay outside the repository.
+Set `KICAD_SCREENSHOT_DIR` to an existing directory to save previews from that test.
+
 Font validation, rendering, HTTP endpoints, and launch-command tests use the
 project's Python environment:
 

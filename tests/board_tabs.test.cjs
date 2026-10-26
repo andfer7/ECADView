@@ -6,6 +6,7 @@ const { resolve } = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { once } = require('node:events');
 const { chromium } = require('playwright');
+const { readFileSync } = require('node:fs');
 
 let browser, server, origin;
 
@@ -467,7 +468,7 @@ test('cross-probing requires an open layout and a selection, and lets users choo
     name.endsWith('.SchDoc') ? probingSchematicData(name) : probingLayoutData(name)) });
   await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
   assert.equal(await page.locator('#probe-layout-btn').isDisabled(), true);
-  assert.match(await page.locator('#probe-status').textContent(), /Open a .PcbDoc/);
+  assert.match(await page.locator('#probe-status').textContent(), /Open a PCB layout \(\.PcbDoc or \.kicad_pcb\)/);
   await page.locator('#file').setInputFiles([file('First.PcbDoc'), file('Second.PcbDoc')]); await loaded(page, 'Second.PcbDoc');
   await page.getByRole('tab', { name: 'Sheet.SchDoc', exact: true }).click();
   assert.equal(await page.locator('#probe-layout-btn').isDisabled(), true);
@@ -579,7 +580,7 @@ test('layout probes require selection and an explicit sheet among multiple targe
     name.endsWith('.SchDoc') ? probingSchematicData(name) : probingLayoutData(name)) });
   await page.locator('#file').setInputFiles(file('Layout.PcbDoc')); await loaded(page, 'Layout.PcbDoc');
   assert.equal(await page.locator('#probe-schematic-btn').isDisabled(), true);
-  assert.match(await page.locator('#probe-schematic-status').textContent(), /Open a .SchDoc/);
+  assert.match(await page.locator('#probe-schematic-status').textContent(), /Open a schematic \(\.SchDoc, \.kicad_sch, or \.sch\)/);
   await page.locator('#file').setInputFiles([file('First.SchDoc'), file('Second.SchDoc')]); await loaded(page, 'Second.SchDoc');
   await page.getByRole('tab', { name: 'Layout.PcbDoc', exact: true }).click();
   await page.locator('#component-query').fill('R99');
@@ -2398,4 +2399,144 @@ test('3D supports multiple bodies, Delete and Backspace, per-tab deletions, and 
   await page.locator('#three-undo').click();
   assert.equal(await page.locator('#three-body-list option').count(), 3);
   assert.equal(requests.length, 2, 'deletion and undo do not write or re-upload source files');
+});
+
+const kicadFixture = extension => resolve(__dirname, `fixtures/kicad/demo.${extension}`);
+async function loadedDocument(page, name) {
+  await page.waitForFunction(name => document.getElementById('filename').textContent === name &&
+    document.getElementById('busy').style.display === 'none', name);
+}
+
+test('opens real KiCad PCB and schematic files, cross-probes, searches pins and nets, measures, and shows the 3D board', async t => {
+  const { page } = await openPage(t);
+  await page.unroute('**/render');
+  assert.match(await page.locator('#file').getAttribute('accept'), /\.kicad_pcb/);
+  assert.match(await page.locator('#file').getAttribute('accept'), /\.kicad_sch/);
+  await page.locator('#file').setInputFiles([kicadFixture('kicad_pcb'), kicadFixture('kicad_sch')]);
+  await loadedDocument(page, 'demo.kicad_sch');
+  assert.equal(await page.getByRole('tab').count(), 2);
+  assert.match(await page.locator('#stats').textContent(), /2 components, 2 wires, 2 net labels/);
+  assert.equal(await page.locator('#view-mode').isVisible(), false);
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'schematic.png') });
+  await clickSchematicGraphic(page, page.locator('[id^="kc-body-"] path').first());
+  assert.equal(await schematicStatus(page), 'Components: R1');
+  await page.locator('#probe-layout-btn').click();
+  await loadedDocument(page, 'demo.kicad_pcb');
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.ok(await page.locator('#scene [data-component="R1"].component-match').count() > 0);
+  await page.locator('#component-clear').click();
+  await page.locator('#net-query').fill('SIGNAL');
+  assert.ok(await page.locator('#scene .net-match').count() > 0);
+  await page.locator('#probe-schematic-btn').click();
+  await loadedDocument(page, 'demo.kicad_sch');
+  assert.equal(await schematicStatus(page), 'Nets: SIGNAL');
+  await page.locator('#schematic-clear').click();
+  await page.locator('#view-fit').click();
+  await settleView(page);
+  await clickSchematicGraphic(page, page.locator('[id^="kc-wire-"] .sch-hit').first());
+  assert.equal(await schematicStatus(page), 'Nets: GND');
+  await page.getByRole('tab', { name: 'demo.kicad_pcb', exact: true }).click();
+  await page.locator('#net-clear').click();
+  const layerNames = await page.locator('#layers label').allTextContents();
+  assert.ok(layerNames.some(name => name.includes('Front copper')));
+  assert.ok(layerNames.some(name => name.includes('Back copper')));
+  assert.equal(await page.locator('#scene [data-layer-token="TOP"]').evaluate(el => el.style.display), '');
+  await page.locator('#polygons-toggle').click();
+  assert.equal(await page.locator('#scene [data-primitive="region"]').isVisible(), false);
+  await page.locator('#polygons-toggle').click();
+  await page.locator('#component-query').fill('R2');
+  await page.locator('#component-fit').click();
+  await settleView(page);
+  assert.ok((await page.locator('.pin-label').allTextContents()).includes('A2'));
+  await page.locator('#component-clear').click();
+  await page.locator('#view-fit').click();
+  await page.locator('#measure-btn').click();
+  for (const point of [[5, 5], [15, 5]]) {
+    const screen = await pointOnScreen(page, ...point); await page.mouse.click(screen.clientX, screen.clientY);
+  }
+  const measured = (await page.locator('#readout').textContent()).match(/dist ([\d.]+) mm/);
+  assert.ok(measured && Math.abs(Number(measured[1]) - 10) < 0.05, '10 mm distance within mouse pixel rounding');
+  await page.keyboard.press('Escape');
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'pcb.png') });
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  assert.match(await page.locator('#three-status').textContent(), /external STEP\/VRML/);
+  assert.equal(await page.locator('#three-body-list option').count(), 0);
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'board-3d.png') });
+  await page.locator('#mode-2d').click();
+  assert.equal(await page.locator('#measure line').count(), 1);
+});
+
+test('KiCad and Altium tabs coexist and a malformed KiCad upload preserves the open documents', async t => {
+  const { page } = await openPage(t, { render: (route, name) => name.toLowerCase().endsWith('.pcbdoc') ? reply(route, boardData(name)) : route.continue() });
+  await page.locator('#file').setInputFiles(file('Altium.PcbDoc'));
+  await loaded(page, 'Altium.PcbDoc');
+  await page.locator('#file').setInputFiles(kicadFixture('kicad_pcb'));
+  await loadedDocument(page, 'demo.kicad_pcb');
+  const source = readFileSync(kicadFixture('kicad_sch')).toString('base64');
+  await page.locator('#view').evaluate((view, source) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([Uint8Array.from(atob(source), c => c.charCodeAt(0))], 'dropped.kicad_sch'));
+    view.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  }, source);
+  await loadedDocument(page, 'dropped.kicad_sch');
+  assert.equal(await page.getByRole('tab').count(), 3);
+  await page.locator('#file').setInputFiles({ name: 'broken.kicad_pcb', mimeType: 'application/octet-stream', buffer: Buffer.from('(kicad_pcb') });
+  await page.waitForFunction(() => document.getElementById('toast').textContent.includes('Invalid KiCad'));
+  assert.equal(await page.getByRole('tab').count(), 3);
+  await page.getByRole('tab', { name: 'Altium.PcbDoc', exact: true }).click();
+  assert.equal(await activeName(page), 'Altium.PcbDoc');
+});
+
+test('legacy KiCad sheets open with explicit placeholder warnings, wire selection and component probing', async t => {
+  const { page } = await openPage(t);
+  await page.unroute('**/render');
+  const pcb = readFileSync(kicadFixture('kicad_pcb'), 'utf8').replace('00000000-0000-0000-0000-000000000101', '5AAB499C');
+  await page.locator('#file').setInputFiles({ name: 'legacy.kicad_pcb', mimeType: 'application/octet-stream', buffer: Buffer.from(pcb) });
+  await loadedDocument(page, 'legacy.kicad_pcb');
+  await page.locator('#file').setInputFiles(resolve(__dirname, 'fixtures/kicad/legacy.sch'));
+  await loadedDocument(page, 'legacy.sch');
+  assert.match(await page.locator('#file').getAttribute('accept'), /,\.sch$/);
+  assert.match(await page.locator('#warnings').textContent(), /symbol graphics and pin connectivity are unavailable/);
+  assert.equal(await page.locator('#scene [data-symbol-preview="placeholder"]').count(), 2);
+  assert.match(await page.locator('#stats').textContent(), /2 components, 3 wires, 2 net labels/);
+  assert.equal(await page.locator('#mode-3d').isVisible(), false);
+  await clickSchematicGraphic(page, page.locator('[data-symbol-preview="placeholder"]').first());
+  assert.equal(await schematicStatus(page), 'Components: R1');
+  await page.locator('#probe-layout-btn').click();
+  await loadedDocument(page, 'legacy.kicad_pcb');
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  await page.getByRole('tab', { name: 'legacy.sch', exact: true }).click();
+  await page.locator('#schematic-clear').click();
+  await page.locator('#view-fit').click(); await settleView(page);
+  await clickSchematicGraphic(page, page.locator('[id^="kc-wire-"] .sch-hit').first());
+  assert.equal(await schematicStatus(page), 'Nets: GND');
+});
+
+test('opens the reported co60 legacy files through the real server', {
+  skip: !process.env.KICAD_TEST_PCB || !process.env.KICAD_TEST_SCH,
+}, async t => {
+  const { page } = await openPage(t);
+  await page.unroute('**/render');
+  await page.locator('#file').setInputFiles(process.env.KICAD_TEST_PCB);
+  await loadedDocument(page, 'co60.kicad_pcb');
+  await page.locator('#file').setInputFiles(process.env.KICAD_TEST_SCH);
+  await loadedDocument(page, 'co60.sch');
+  await settleView(page);
+  assert.match(await page.locator('#stats').textContent(), /52 components, 158 wires, 42 net labels/);
+  assert.match(await page.locator('#warnings').textContent(), /Legacy \.sch preview/);
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-schematic.png') });
+  // The legacy GND field overlaps the centre of C2's placeholder at overview
+  // scale. Its upper corner remains a real, unobscured component hit target.
+  await page.locator('#kc-component-1 .sch-component-hit').click({ position: { x: 1, y: 1 } });
+  assert.equal(await schematicStatus(page), 'Components: C2');
+  await page.locator('#probe-layout-btn').click();
+  await loadedDocument(page, 'co60.kicad_pcb');
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+  await page.locator('#component-clear').click();
+  await page.locator('#view-fit').click(); await settleView(page);
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-pcb.png') });
+  await page.locator('#component-query').fill('K_[1');
+  assert.match(await page.locator('#component-status').textContent(), /1 component highlighted/);
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-3d.png') });
 });
