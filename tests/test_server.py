@@ -191,7 +191,7 @@ class LaunchTests(unittest.TestCase):
             path.write_bytes(data)
             commands = (
                 ([sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py")], tmp),
-                ([sys.executable, "-B", "-u", "-m", "pcbvisualizer"], ROOT),
+                ([sys.executable, "-B", "-u", "-m", "pcbvisualizer", "--web"], ROOT),
             )
             for command, cwd in commands:
                 with self.subTest(command=command):
