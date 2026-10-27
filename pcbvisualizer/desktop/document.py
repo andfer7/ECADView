@@ -30,9 +30,11 @@ GRAPHICS = {
     "use",
 }
 SELECTION_CONTEXT = 0.15
+SCHEMATIC_COMPONENT_CONTEXT = 0.55
+SCHEMATIC_COMPONENT_COLOR = "#1565c0"
 
 
-def faded_paint(value, background):
+def faded_paint(value, background, contrast=SELECTION_CONTEXT):
     """Keep geometry opaque while reducing its contrast against the canvas.
 
     Fading colors instead of object opacity preserves drill cutouts, overlapping
@@ -42,7 +44,7 @@ def faded_paint(value, background):
     if not color.isValid() or color.alpha() == 0:
         return value
     channels = [
-        round(bg + (fg - bg) * SELECTION_CONTEXT)
+        round(bg + (fg - bg) * contrast)
         for fg, bg in zip(color.getRgb()[:3], background.getRgb()[:3], strict=True)
     ]
     if color.alpha() < 255:
@@ -317,6 +319,13 @@ class NativeDocument:
                     elements[identifier].set("display", "none")
         selected = {}
         schematic_components = set()
+        schematic = self.data.get("kind") == "schematic"
+        component_color = SCHEMATIC_COMPONENT_COLOR if schematic else "#ffe066"
+        context_contrast = (
+            SCHEMATIC_COMPONENT_CONTEXT
+            if schematic and selected_components
+            else SELECTION_CONTEXT
+        )
         holes = {p.id for p in self.primitives if p.hole}
         for p in self.primitives:
             if p.hole:
@@ -329,8 +338,8 @@ class NativeDocument:
                 or p.net in selected_nets
                 or set(p.schematic_nets).intersection(selected_nets)
             ):
-                selected[p.id] = "#ffe066" if component_selected else "#39e0f3"
-                if component_selected and self.data.get("kind") == "schematic":
+                selected[p.id] = component_color if component_selected else "#39e0f3"
+                if component_selected and schematic:
                     schematic_components.add(p.id)
         if selected_components or selected_nets:
             background = QColor(
@@ -355,7 +364,9 @@ class NativeDocument:
                     elif identifier in selected:
                         overrides[name] = selected[identifier]
                     else:
-                        overrides[name] = faded_paint(value, background)
+                        overrides[name] = faded_paint(
+                            value, background, context_contrast
+                        )
                 if (
                     contour_only
                     and paint["stroke"] == "none"

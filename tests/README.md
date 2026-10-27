@@ -7,7 +7,7 @@ pins and legacy junctions, including deselection and inherited paint styles;
 drill holes and open paths remain unfilled. Selection tests verify fading of other
 geometry while preserving paper backgrounds, picking, multiselection, layer
 visibility and routes at layer crossings. Schematic component tests verify
-highlighted contours, preserved interior fills and readable text while PCB
+blue contours, gentler context fading, preserved interior fills and readable text while PCB
 component fills retain their highlighting. Navigation tests check a
 fixed cache pixel bound and coalescing hundreds of navigation events while a
 renderer is busy. 3D tests check constrained triangle areas, board occlusion,

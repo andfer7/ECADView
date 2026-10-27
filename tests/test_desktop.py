@@ -84,7 +84,7 @@ class NativeRenderingTests(unittest.TestCase):
             if kind == "schematic":
                 for point in [(4, 2), (10, 2)]:
                     self.assertEqual(
-                        paint_at(document, *point, components={"U1"}), "#ffe066"
+                        paint_at(document, *point, components={"U1"}), "#1565c0"
                     )
             # Native text is made of filled paths. It must remain bright and
             # legible rather than being treated as a filled symbol body.
@@ -99,7 +99,8 @@ class NativeRenderingTests(unittest.TestCase):
             )["image"]
             self.assertGreater(
                 sum(
-                    image.pixelColor(x, y).name() == "#ffe066"
+                    image.pixelColor(x, y).name()
+                    == ("#1565c0" if kind == "schematic" else "#ffe066")
                     for y in range(200)
                     for x in range(300)
                 ),
@@ -127,7 +128,7 @@ class NativeRenderingTests(unittest.TestCase):
         )
         self.assertEqual(paint_at(document, 5, 5), "#0000ff")
 
-    def assert_faded(self, original, faded, background):
+    def assert_faded(self, original, faded, background, retained_contrast=0.15):
         def contrast(value):
             return max(
                 abs(a - b)
@@ -139,7 +140,9 @@ class NativeRenderingTests(unittest.TestCase):
             )
 
         self.assertGreater(contrast(faded), 0, "unselected geometry stays visible")
-        self.assertLess(contrast(faded), contrast(original) * 0.25)
+        self.assertAlmostEqual(
+            contrast(faded) / contrast(original), retained_contrast, delta=0.05
+        )
 
     def test_layout_selection_fades_other_components_pours_and_board_graphics(self):
         document = board_document()
@@ -185,7 +188,9 @@ class NativeRenderingTests(unittest.TestCase):
                 with self.subTest(point=point, nets=nets, components=components):
                     original = paint_at(document, *point)
                     faded = paint_at(document, *point, nets, components)
-                    self.assert_faded(original, faded, "#fffcf8")
+                    self.assert_faded(
+                        original, faded, "#fffcf8", 0.55 if components else 0.15
+                    )
                     self.assertEqual(paint_at(document, *point), original)
             self.assertEqual(paint_at(document, 30, 30, nets, components), "#fffcf8")
             self.assertTrue(document.pick(QPointF(40, 50), 0.03, set(), True)["nets"])
@@ -193,7 +198,7 @@ class NativeRenderingTests(unittest.TestCase):
             paint_at(document, 50, 50, components={component}),
             paint_at(document, 50, 50),
         )
-        self.assertEqual(paint_at(document, 50, 49, components={component}), "#ffe066")
+        self.assertEqual(paint_at(document, 50, 49, components={component}), "#1565c0")
         other = next(
             key for key, row in document.net_rows.items() if row["name"] == "GND"
         )
