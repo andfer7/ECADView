@@ -1,5 +1,6 @@
 """Worker-owned SVG painting and spatial indexes for native document views."""
 
+import re
 import time
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -32,6 +33,7 @@ GRAPHICS = {
 SELECTION_CONTEXT = 0.15
 SCHEMATIC_SELECTION_CONTEXT = 0.45
 SCHEMATIC_SELECTION_COLOR = "#008a3b"
+SCHEMATIC_NET_WIDTH_SCALE = 1.5
 
 
 def faded_paint(value, background, contrast=SELECTION_CONTEXT):
@@ -165,6 +167,7 @@ class NativeDocument:
         )
         self.body_bounds = []
         self.paints = {}
+        self.stroke_widths = {}
         for node in self.root.iter():
             if tag(node) not in GRAPHICS:
                 continue
@@ -195,13 +198,17 @@ class NativeDocument:
             # Resolve inherited paint before selection so open paths stay open
             # and filled pads/text do not acquire an extra outline.
             paint = {"fill": "black", "stroke": "none"}
+            stroke_width = "1"
             for ancestor in reversed(ancestors):
                 declarations = properties(ancestor, {})
+                if declarations.get("stroke-width", "inherit") != "inherit":
+                    stroke_width = declarations["stroke-width"]
                 for name in paint:
                     value = declarations.get(name, "inherit")
                     if value != "inherit":
                         paint[name] = value
             self.paints[identifier] = paint
+            self.stroke_widths[identifier] = stroke_width
             if not (component or net or cs or ns or hole):
                 continue
             bounds = self.bounds(identifier)
@@ -319,6 +326,7 @@ class NativeDocument:
                     elements[identifier].set("display", "none")
         selected = {}
         schematic_components = set()
+        schematic_nets = set()
         schematic = self.data.get("kind") == "schematic"
         component_color = SCHEMATIC_SELECTION_COLOR if schematic else "#ffe066"
         net_color = SCHEMATIC_SELECTION_COLOR if schematic else "#39e0f3"
@@ -332,14 +340,15 @@ class NativeDocument:
             component_selected = p.component in selected_components or set(
                 p.schematic_components
             ).intersection(selected_components)
-            if (
-                component_selected
-                or p.net in selected_nets
-                or set(p.schematic_nets).intersection(selected_nets)
-            ):
+            net_selected = p.net in selected_nets or set(p.schematic_nets).intersection(
+                selected_nets
+            )
+            if component_selected or net_selected:
                 selected[p.id] = component_color if component_selected else net_color
                 if component_selected and schematic:
                     schematic_components.add(p.id)
+                if net_selected and schematic:
+                    schematic_nets.add(p.id)
         if selected_components or selected_nets:
             background = QColor(
                 "#fffcf8" if self.data.get("kind") == "schematic" else "#1b1d21"
@@ -375,6 +384,17 @@ class NativeDocument:
                     # Filled-only symbol shapes still need a visible contour;
                     # use their inherited SVG stroke width (default one unit).
                     overrides["stroke"] = selected[identifier]
+                if identifier in schematic_nets and paint["stroke"] != "none":
+                    # Scale the original width once, retaining SVG units and
+                    # inherited/inline widths. Text and filled junctions stay intact.
+                    width = re.fullmatch(
+                        r"\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([a-zA-Z%]*)\s*",
+                        self.stroke_widths[identifier],
+                    )
+                    if width:
+                        overrides["stroke-width"] = (
+                            f"{float(width[1]) * SCHEMATIC_NET_WIDTH_SCALE:g}{width[2]}"
+                        )
                 set_paint(node, overrides)
 
             # Draw the selection above faded layers so an unselected crossing

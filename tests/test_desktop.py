@@ -61,6 +61,57 @@ def paint_at(document, x, y, nets=(), components=(), visible=None):
 
 
 class NativeRenderingTests(unittest.TestCase):
+    def test_only_selected_schematic_net_strokes_thicken_and_restore(self):
+        for kind in ("schematic", "pcb"):
+            for group_width, path_style in [
+                ('stroke-width=".2"', ""),
+                ('style="stroke-width:.2px"', ""),
+                ('stroke-width=".1"', 'style="stroke-width:.3px"'),
+            ]:
+                with self.subTest(kind=kind, group=group_width, path=path_style):
+                    document = NativeDocument(
+                        {
+                            "name": "wire",
+                            "kind": kind,
+                            "svg": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+                            f'<g id="scene"><g id="layer-top" {group_width}>'
+                            f'<path data-net="N1" data-component="C1" d="M1 5H9" stroke="red" fill="none" {path_style}/>'
+                            "</g></g></svg>",
+                        }
+                    )
+
+                    def stroke_pixels(nets=(), components=(), document=document):
+                        image = document.raster(
+                            {
+                                "style": (
+                                    {"layer-top"},
+                                    True,
+                                    set(components),
+                                    set(nets),
+                                ),
+                                "token": 1,
+                                "rect": QRectF(2, 4, 2, 2),
+                                "width": 200,
+                                "height": 400,
+                            }
+                        )["image"]
+                        return sum(
+                            image.pixelColor(100, y).name() != "#1b1d21"
+                            for y in range(400)
+                        )
+
+                    normal = stroke_pixels()
+                    highlighted = stroke_pixels({"N1"})
+                    self.assertAlmostEqual(
+                        highlighted,
+                        normal * (1.5 if kind == "schematic" else 1),
+                        delta=2,
+                    )
+                    self.assertEqual(stroke_pixels({"N1"}, {"C1"}), highlighted)
+                    self.assertEqual(stroke_pixels(components={"C1"}), normal)
+                    self.assertEqual(stroke_pixels({"N1"}), highlighted)
+                    self.assertEqual(stroke_pixels(), normal)
+
     def test_schematic_component_contours_preserve_fills_but_layout_still_tints_them(
         self,
     ):
