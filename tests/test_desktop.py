@@ -84,7 +84,7 @@ class NativeRenderingTests(unittest.TestCase):
             if kind == "schematic":
                 for point in [(4, 2), (10, 2)]:
                     self.assertEqual(
-                        paint_at(document, *point, components={"U1"}), "#1565c0"
+                        paint_at(document, *point, components={"U1"}), "#008a3b"
                     )
             # Native text is made of filled paths. It must remain bright and
             # legible rather than being treated as a filled symbol body.
@@ -100,7 +100,7 @@ class NativeRenderingTests(unittest.TestCase):
             self.assertGreater(
                 sum(
                     image.pixelColor(x, y).name()
-                    == ("#1565c0" if kind == "schematic" else "#ffe066")
+                    == ("#008a3b" if kind == "schematic" else "#ffe066")
                     for y in range(200)
                     for x in range(300)
                 ),
@@ -188,7 +188,7 @@ class NativeRenderingTests(unittest.TestCase):
                 with self.subTest(point=point, nets=nets, components=components):
                     original = paint_at(document, *point)
                     faded = paint_at(document, *point, nets, components)
-                    self.assert_faded(original, faded, "#fffcf8", 0.50)
+                    self.assert_faded(original, faded, "#fffcf8", 0.45)
                     self.assertEqual(paint_at(document, *point), original)
             self.assertEqual(paint_at(document, 30, 30, nets, components), "#fffcf8")
             self.assertTrue(document.pick(QPointF(40, 50), 0.03, set(), True)["nets"])
@@ -196,12 +196,12 @@ class NativeRenderingTests(unittest.TestCase):
             paint_at(document, 50, 50, components={component}),
             paint_at(document, 50, 50),
         )
-        self.assertEqual(paint_at(document, 50, 49, components={component}), "#1565c0")
+        self.assertEqual(paint_at(document, 50, 49, components={component}), "#008a3b")
         other = next(
             key for key, row in document.net_rows.items() if row["name"] == "GND"
         )
-        self.assertEqual(paint_at(document, 40, 50, {net, other}), "#1565c0")
-        self.assertEqual(paint_at(document, 60, 50, {net, other}), "#1565c0")
+        self.assertEqual(paint_at(document, 40, 50, {net, other}), "#008a3b")
+        self.assertEqual(paint_at(document, 60, 50, {net, other}), "#008a3b")
 
     def test_selected_layout_net_colors_tracks_arcs_pads_and_vias(self):
         document = board_document()
@@ -226,14 +226,14 @@ class NativeRenderingTests(unittest.TestCase):
         for x, y in [(60, 50), (70, 50), (53.5, 50), (76.5, 50)]:
             with self.subTest(point=(x, y)):
                 original = paint_at(document, x, y)
-                self.assertNotEqual(original, "#1565c0")
-                self.assertEqual(paint_at(document, x, y, {net}), "#1565c0")
+                self.assertNotEqual(original, "#008a3b")
+                self.assertEqual(paint_at(document, x, y, {net}), "#008a3b")
                 self.assertEqual(paint_at(document, x, y), original)
         self.assert_faded(
             paint_at(document, 40, 50),
             paint_at(document, 40, 50, {net}),
             "#fffcf8",
-            0.50,
+            0.45,
         )
 
     def test_selected_legacy_net_colors_entire_wires_and_junctions(self):
@@ -244,8 +244,8 @@ class NativeRenderingTests(unittest.TestCase):
         for x, y in [(38.1, 50.8), (50.8, 57.15), (50.8, 50.8), (133.35, 50.8)]:
             with self.subTest(point=(x, y)):
                 original = paint_at(document, x, y)
-                self.assertNotEqual(original, "#1565c0")
-                self.assertEqual(paint_at(document, x, y, {net}), "#1565c0")
+                self.assertNotEqual(original, "#008a3b")
+                self.assertEqual(paint_at(document, x, y, {net}), "#008a3b")
                 self.assertEqual(paint_at(document, x, y), original)
 
     def test_selection_preserves_inherited_no_fill_and_inline_stroke_styles(self):
@@ -262,7 +262,7 @@ class NativeRenderingTests(unittest.TestCase):
             }
         )
         for x, y in [(3, 1), (3, 7), (8, 8)]:
-            self.assertEqual(paint_at(document, x, y, {"SIGNAL"}), "#1565c0")
+            self.assertEqual(paint_at(document, x, y, {"SIGNAL"}), "#008a3b")
         # Selection must not fill the open elbow or expand a strokeless circle.
         for x, y in [(4, 2), (8.7, 8)]:
             self.assertEqual(paint_at(document, x, y, {"SIGNAL"}), "#1b1d21")
