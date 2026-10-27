@@ -316,6 +316,7 @@ class NativeDocument:
                 if identifier in elements:
                     elements[identifier].set("display", "none")
         selected = {}
+        schematic_components = set()
         holes = {p.id for p in self.primitives if p.hole}
         for p in self.primitives:
             if p.hole:
@@ -329,6 +330,8 @@ class NativeDocument:
                 or set(p.schematic_nets).intersection(selected_nets)
             ):
                 selected[p.id] = "#ffe066" if component_selected else "#39e0f3"
+                if component_selected and self.data.get("kind") == "schematic":
+                    schematic_components.add(p.id)
         if selected_components or selected_nets:
             background = QColor(
                 "#fffcf8" if self.data.get("kind") == "schematic" else "#1b1d21"
@@ -336,15 +339,33 @@ class NativeDocument:
             for identifier, paint in self.paints.items():
                 if identifier in holes:
                     continue
+                node = elements[identifier]
+                contour_only = (
+                    identifier in schematic_components
+                    and node.get("data-native-text") != "true"
+                )
                 overrides = {}
                 for name, value in paint.items():
-                    if value == "none" or QColor(value).alpha() == 0:
+                    if contour_only and name == "fill":
+                        # A schematic symbol's interior is not a selection wash.
+                        # Glyphs remain filled so references/values stay legible.
+                        overrides[name] = value
+                    elif value == "none" or QColor(value).alpha() == 0:
                         overrides[name] = value
                     elif identifier in selected:
                         overrides[name] = selected[identifier]
                     else:
                         overrides[name] = faded_paint(value, background)
-                set_paint(elements[identifier], overrides)
+                if (
+                    contour_only
+                    and paint["stroke"] == "none"
+                    and paint["fill"] != "none"
+                    and QColor(paint["fill"]).alpha() != 0
+                ):
+                    # Filled-only symbol shapes still need a visible contour;
+                    # use their inherited SVG stroke width (default one unit).
+                    overrides["stroke"] = selected[identifier]
+                set_paint(node, overrides)
 
             # Draw the selection above faded layers so an unselected crossing
             # cannot hide a route. Keep ancestor transforms/clips and drill paint.

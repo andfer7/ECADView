@@ -61,6 +61,51 @@ def paint_at(document, x, y, nets=(), components=(), visible=None):
 
 
 class NativeRenderingTests(unittest.TestCase):
+    def test_schematic_component_contours_preserve_fills_but_layout_still_tints_them(
+        self,
+    ):
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 12">'
+            '<g id="scene"><g id="layer-top" data-component="U1" stroke-width=".2">'
+            '<rect x="2" y="2" width="4" height="4" fill="#ffffcc" stroke="green"/>'
+            '<path d="M8 2H12V6H8Z" fill="#eeeeee" stroke="none"/>'
+            '<text x="2" y="10" font-size="2" fill="green" stroke="none">U1</text>'
+            "</g></g></svg>"
+        )
+        for kind in ("schematic", "pcb"):
+            document = NativeDocument({"name": "component", "kind": kind, "svg": svg})
+            for point, interior in [((4, 4), "#ffffcc"), ((10, 4), "#eeeeee")]:
+                with self.subTest(kind=kind, point=point):
+                    self.assertEqual(
+                        paint_at(document, *point, components={"U1"}),
+                        interior if kind == "schematic" else "#ffe066",
+                    )
+                    self.assertEqual(paint_at(document, *point), interior)
+            if kind == "schematic":
+                for point in [(4, 2), (10, 2)]:
+                    self.assertEqual(
+                        paint_at(document, *point, components={"U1"}), "#ffe066"
+                    )
+            # Native text is made of filled paths. It must remain bright and
+            # legible rather than being treated as a filled symbol body.
+            image = document.raster(
+                {
+                    "style": ({"layer-top"}, True, {"U1"}, set()),
+                    "token": 1,
+                    "rect": QRectF(1, 7, 6, 4),
+                    "width": 300,
+                    "height": 200,
+                }
+            )["image"]
+            self.assertGreater(
+                sum(
+                    image.pixelColor(x, y).name() == "#ffe066"
+                    for y in range(200)
+                    for x in range(300)
+                ),
+                100,
+            )
+
     def test_selected_route_remains_visible_at_faded_layer_crossings(self):
         document = NativeDocument(
             {
@@ -144,7 +189,11 @@ class NativeRenderingTests(unittest.TestCase):
                     self.assertEqual(paint_at(document, *point), original)
             self.assertEqual(paint_at(document, 30, 30, nets, components), "#fffcf8")
             self.assertTrue(document.pick(QPointF(40, 50), 0.03, set(), True)["nets"])
-        self.assertEqual(paint_at(document, 50, 50, components={component}), "#ffe066")
+        self.assertEqual(
+            paint_at(document, 50, 50, components={component}),
+            paint_at(document, 50, 50),
+        )
+        self.assertEqual(paint_at(document, 50, 49, components={component}), "#ffe066")
         other = next(
             key for key, row in document.net_rows.items() if row["name"] == "GND"
         )

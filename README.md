@@ -65,6 +65,8 @@ Selecting a component or net in either 2D view keeps it bright and fades the
 remaining geometry to 15% contrast. Selected routes remain visible across other
 layers, and zoomed pad captions focus on the selection. Clear selection or press
 Escape to restore normal visibility; faded items remain clickable.
+Schematic component selection colors symbol contours while preserving their
+interior fills; reference and value text stays highlighted.
 The 2D view and each document's measurements, selections and 3D edits survive tab
 and mode changes. You can also launch with `python -m pcbvisualizer`, or use the
 `pcbvisualizer` command after installing

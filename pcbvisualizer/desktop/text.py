@@ -103,6 +103,7 @@ def outline_text(root):
                 "d": svg_path(transform.map(path)),
                 "stroke": "none",
                 "fill": row.get("fill", "black"),
+                "data-native-text": "true",
             }
             paths.append(attrs)
             x += advance * scale
