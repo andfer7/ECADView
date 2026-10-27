@@ -336,7 +336,6 @@ class MainWindow(QMainWindow):
             self.selection,
             self.probe_button,
             self.probe_status,
-            self.polygons,
             self.layers,
             *self.two_d_buttons,
         ):
@@ -351,6 +350,7 @@ class MainWindow(QMainWindow):
         self.component.setEnabled(bool(info))
         self.net.setEnabled(bool(info))
         self.polygons.setEnabled(bool(info and info["kind"] == "pcb"))
+        self.polygons.setVisible(bool(info and info["kind"] == "pcb" and not solid))
         self.warning.setText(
             document.error_message
             if document and document.error_message
