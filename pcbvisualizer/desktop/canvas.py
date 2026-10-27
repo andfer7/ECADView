@@ -209,13 +209,13 @@ class BoardCanvas(QWidget):
             return
         painter.setFont(QFont("Sans Serif", 9))
         occupied = []
-        for bounds, pin, net, layer, polygon in self.info["captions"]:
+        for bounds, pin, net, layer, polygon, component in self.info["captions"]:
             if layer not in self.visible or polygon and not self.polygons:
                 continue
-            if self.components and not any(
-                bounds.intersects(self.info["component_bounds"][c])
-                for c in self.components
-                if c in self.info["component_bounds"]
+            if (
+                (self.components or self.nets)
+                and component not in self.components
+                and net not in self.nets
             ):
                 continue
             rect = QRectF(

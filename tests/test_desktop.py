@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QImage, QVector3D
+from PySide6.QtGui import QColor, QImage, QPainter, QVector3D
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from shapely.geometry import Polygon
@@ -61,6 +61,96 @@ def paint_at(document, x, y, nets=(), components=(), visible=None):
 
 
 class NativeRenderingTests(unittest.TestCase):
+    def test_selected_route_remains_visible_at_faded_layer_crossings(self):
+        document = NativeDocument(
+            {
+                "name": "crossing",
+                "kind": "pcb",
+                "svg": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+                '<g id="scene" transform="translate(1 1)">'
+                '<g id="layer-top"><path data-net="SIGNAL" d="M0 4H8" fill="none" stroke="red" stroke-width=".5"/></g>'
+                '<g id="layer-bottom"><path data-net="OTHER" d="M4 0V8" fill="none" stroke="blue" stroke-width=".5"/></g>'
+                '<g id="layer-drills"><circle data-hole-owner="via" cx="6" cy="4" r=".2" fill="#1b1d21"/></g>'
+                "</g></svg>",
+            }
+        )
+        self.assertEqual(paint_at(document, 5, 5), "#0000ff")
+        self.assertEqual(paint_at(document, 5, 5, {"SIGNAL"}), "#39e0f3")
+        self.assertEqual(paint_at(document, 7, 5, {"SIGNAL"}), "#1b1d21")
+        self.assertEqual(
+            paint_at(document, 3, 5, {"SIGNAL"}, visible={"layer-bottom"}), "#1b1d21"
+        )
+        self.assertEqual(paint_at(document, 5, 5), "#0000ff")
+
+    def assert_faded(self, original, faded, background):
+        def contrast(value):
+            return max(
+                abs(a - b)
+                for a, b in zip(
+                    QColor(value).getRgb()[:3],
+                    QColor(background).getRgb()[:3],
+                    strict=True,
+                )
+            )
+
+        self.assertGreater(contrast(faded), 0, "unselected geometry stays visible")
+        self.assertLess(contrast(faded), contrast(original) * 0.25)
+
+    def test_layout_selection_fades_other_components_pours_and_board_graphics(self):
+        document = board_document()
+        # Include a component pad with no net, poured copper, and a nonselectable
+        # board outline: fading must cover more than indexed net primitives.
+        for point in [(32, 20), (5, 20), (0, 15)]:
+            for nets, components in [
+                ({"SIGNAL"}, set()),
+                (set(), {"R1"}),
+                ({"SIGNAL"}, {"R1"}),
+            ]:
+                with self.subTest(point=point, nets=nets, components=components):
+                    original = paint_at(document, *point)
+                    faded = paint_at(document, *point, nets, components)
+                    self.assert_faded(original, faded, "#1b1d21")
+                    self.assertEqual(paint_at(document, *point), original)
+        self.assert_faded(
+            paint_at(document, 15, 8),
+            paint_at(document, 15, 8, components={"R1"}),
+            "#1b1d21",
+        )
+        visible = {layer["id"] for layer in document.layers if layer["visible"]}
+        # A faded item remains a valid next click, including after multiselection.
+        self.assertEqual(
+            document.pick(QPointF(15, 8), 0.03, visible, True)["nets"], ["SIGNAL"]
+        )
+        self.assertIsNone(document.pick(QPointF(10, 12), 0.03, visible, True))
+
+    def test_schematic_selection_fades_context_and_preserves_paper_and_clicks(self):
+        document = NativeDocument(render_file(FIXTURES / "demo.kicad_sch"))
+        net = next(
+            key for key, row in document.net_rows.items() if row["name"] == "SIGNAL"
+        )
+        component = next(
+            key for key, row in document.component_rows.items() if row["name"] == "R1"
+        )
+        for nets, components in [
+            ({net}, set()),
+            (set(), {component}),
+            ({net}, {component}),
+        ]:
+            for point in [(40, 50), (80, 50)]:
+                with self.subTest(point=point, nets=nets, components=components):
+                    original = paint_at(document, *point)
+                    faded = paint_at(document, *point, nets, components)
+                    self.assert_faded(original, faded, "#fffcf8")
+                    self.assertEqual(paint_at(document, *point), original)
+            self.assertEqual(paint_at(document, 30, 30, nets, components), "#fffcf8")
+            self.assertTrue(document.pick(QPointF(40, 50), 0.03, set(), True)["nets"])
+        self.assertEqual(paint_at(document, 50, 50, components={component}), "#ffe066")
+        other = next(
+            key for key, row in document.net_rows.items() if row["name"] == "GND"
+        )
+        self.assertEqual(paint_at(document, 40, 50, {net, other}), "#39e0f3")
+        self.assertEqual(paint_at(document, 60, 50, {net, other}), "#39e0f3")
+
     def test_selected_layout_net_colors_tracks_arcs_pads_and_vias(self):
         document = board_document()
         for x, y in [(15, 8), (22, 10), (10.8, 8), (20.5, 12), (28, 20)]:
@@ -87,7 +177,9 @@ class NativeRenderingTests(unittest.TestCase):
                 self.assertNotEqual(original, "#39e0f3")
                 self.assertEqual(paint_at(document, x, y, {net}), "#39e0f3")
                 self.assertEqual(paint_at(document, x, y), original)
-        self.assertEqual(paint_at(document, 40, 50, {net}), paint_at(document, 40, 50))
+        self.assert_faded(
+            paint_at(document, 40, 50), paint_at(document, 40, 50, {net}), "#fffcf8"
+        )
 
     def test_selected_legacy_net_colors_entire_wires_and_junctions(self):
         document = NativeDocument(render_file(FIXTURES / "legacy.sch"))
@@ -249,6 +341,43 @@ class NativeNavigationTests(unittest.TestCase):
     def tearDown(self):
         self.canvas.timer.stop()
         self.canvas.close()
+
+    def test_pad_captions_follow_the_union_of_selected_components_and_nets(self):
+        canvas = self.canvas
+        canvas.camera, canvas.scale = QPointF(), 40
+        canvas.info["home"] = QRectF(-50, -50, 100, 100)
+        canvas.visible = {"layer-top"}
+        canvas.info["captions"] = [
+            (QRectF(x - 1, -1, 2, 2), pin, net, "layer-top", False, component)
+            for x, pin, net, component in [
+                (-5, "1", "N1", "R1"),
+                (0, "2", "N2", "R2"),
+                (5, "3", "N3", "R3"),
+            ]
+        ]
+        image = QImage(800, 600, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(QColor("gray"))
+        canvas.frame = {"image": image, "rect": QRectF(-10, -7.5, 20, 15)}
+        labels = []
+
+        class CaptionPainter(QPainter):
+            def drawText(self, *args):
+                labels.append(args[-1])
+                return super().drawText(*args)
+
+        for components, nets, expected in [
+            ({"R1"}, set(), {"1\nN1"}),
+            (set(), {"N2"}, {"2\nN2"}),
+            ({"R1"}, {"N2"}, {"1\nN1", "2\nN2"}),
+            (set(), set(), {"1\nN1", "2\nN2", "3\nN3"}),
+        ]:
+            canvas.components, canvas.nets = components, nets
+            labels.clear()
+            target = image.copy()
+            painter = CaptionPainter(target)
+            canvas.paint_captions(painter)
+            painter.end()
+            self.assertEqual(set(labels), expected)
 
     def test_zoom_stays_cursor_anchored_and_measurements_remain_in_mm(self):
         point = QPointF(200, 100)

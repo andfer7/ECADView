@@ -29,6 +29,40 @@ GRAPHICS = {
     "text",
     "use",
 }
+SELECTION_CONTEXT = 0.15
+
+
+def faded_paint(value, background):
+    """Keep geometry opaque while reducing its contrast against the canvas.
+
+    Fading colors instead of object opacity preserves drill cutouts, overlapping
+    copper and the hit-test alpha of thin, unselected wires.
+    """
+    color = QColor(value)
+    if not color.isValid() or color.alpha() == 0:
+        return value
+    channels = [
+        round(bg + (fg - bg) * SELECTION_CONTEXT)
+        for fg, bg in zip(color.getRgb()[:3], background.getRgb()[:3], strict=True)
+    ]
+    if color.alpha() < 255:
+        return f"rgba({channels[0]},{channels[1]},{channels[2]},{color.alphaF()})"
+    return QColor(*channels).name()
+
+
+def set_paint(node, overrides):
+    # Qt ignores inline styles beginning with an empty declaration. Replace
+    # existing declarations as well as attributes so both use the same paint.
+    inline = {
+        key.strip(): value.strip()
+        for declaration in node.get("style", "").split(";")
+        if ":" in declaration
+        for key, value in [declaration.split(":", 1)]
+    }
+    inline.update(overrides)
+    node.set("style", ";".join(f"{key}:{value}" for key, value in inline.items()))
+    for name, value in overrides.items():
+        node.set(name, value)
 
 
 def tag(node):
@@ -128,6 +162,7 @@ class NativeDocument:
             defaultdict(list),
         )
         self.body_bounds = []
+        self.paints = {}
         for node in self.root.iter():
             if tag(node) not in GRAPHICS:
                 continue
@@ -154,12 +189,7 @@ class NativeDocument:
             hole = bool(attr("data-hole-owner")) or attr("data-primitive").endswith(
                 "-hole"
             )
-            if not (component or net or cs or ns or hole):
-                continue
             identifier = node.get("id")
-            bounds = self.bounds(identifier)
-            if bounds.isEmpty():
-                bounds = bounds.adjusted(-0.01, -0.01, 0.01, 0.01)
             # Resolve inherited paint before selection so open paths stay open
             # and filled pads/text do not acquire an extra outline.
             paint = {"fill": "black", "stroke": "none"}
@@ -169,6 +199,12 @@ class NativeDocument:
                     value = declarations.get(name, "inherit")
                     if value != "inherit":
                         paint[name] = value
+            self.paints[identifier] = paint
+            if not (component or net or cs or ns or hole):
+                continue
+            bounds = self.bounds(identifier)
+            if bounds.isEmpty():
+                bounds = bounds.adjusted(-0.01, -0.01, 0.01, 0.01)
             primitive = Primitive(
                 identifier,
                 bounds,
@@ -251,7 +287,7 @@ class NativeDocument:
             "layout_components": self.data.get("layout_components", []),
             "terminals": dict(self.terminals),
             "captions": [
-                (p.bounds, p.pin, p.net, p.layer, p.polygon)
+                (p.bounds, p.pin, p.net, p.layer, p.polygon, p.component)
                 for p in self.primitives
                 if p.pin and not p.hole
             ],
@@ -279,6 +315,8 @@ class NativeDocument:
             for identifier in self.polygon_ids:
                 if identifier in elements:
                     elements[identifier].set("display", "none")
+        selected = {}
+        holes = {p.id for p in self.primitives if p.hole}
         for p in self.primitives:
             if p.hole:
                 continue
@@ -290,25 +328,49 @@ class NativeDocument:
                 or p.net in selected_nets
                 or set(p.schematic_nets).intersection(selected_nets)
             ):
-                node = elements[p.id]
-                color = "#ffe066" if component_selected else "#39e0f3"
-                # Qt ignores inline styles beginning with an empty declaration
-                # (";stroke:..."). Normalize the style and replace paint values
-                # so existing inline declarations cannot override selection.
+                selected[p.id] = "#ffe066" if component_selected else "#39e0f3"
+        if selected_components or selected_nets:
+            background = QColor(
+                "#fffcf8" if self.data.get("kind") == "schematic" else "#1b1d21"
+            )
+            for identifier, paint in self.paints.items():
+                if identifier in holes:
+                    continue
                 overrides = {}
-                for name, painted in (("fill", p.fill), ("stroke", p.stroke)):
-                    overrides[name] = color if painted else "none"
-                    node.set(name, overrides[name])
-                inline = {
-                    key.strip(): value.strip()
-                    for declaration in node.get("style", "").split(";")
-                    if ":" in declaration
-                    for key, value in [declaration.split(":", 1)]
-                }
-                inline.update(overrides)
-                node.set(
-                    "style", ";".join(f"{key}:{value}" for key, value in inline.items())
-                )
+                for name, value in paint.items():
+                    if value == "none" or QColor(value).alpha() == 0:
+                        overrides[name] = value
+                    elif identifier in selected:
+                        overrides[name] = selected[identifier]
+                    else:
+                        overrides[name] = faded_paint(value, background)
+                set_paint(elements[identifier], overrides)
+
+            # Draw the selection above faded layers so an unselected crossing
+            # cannot hide a route. Keep ancestor transforms/clips and drill paint.
+            def selection_branch(node):
+                if tag(node) in GRAPHICS:
+                    return (
+                        deepcopy(node)
+                        if node.get("id") in selected or node.get("id") in holes
+                        else None
+                    )
+                branch = ET.Element(node.tag, node.attrib)
+                for child in node:
+                    copy = selection_branch(child)
+                    if copy is not None:
+                        branch.append(copy)
+                return branch if len(branch) else None
+
+            if selected:
+                overlay = selection_branch(root)
+                # The outer SVG already supplies its viewport and inherited
+                # properties; the overlay is only another paint group within it.
+                overlay.tag = f"{{{SVG}}}g"
+                overlay.attrib.clear()
+                for node in overlay.iter():
+                    node.attrib.pop("id", None)
+                root.append(overlay)
         self.renderer.load(QByteArray(ET.tostring(root)))
         self.renderer.setAnimationEnabled(False)
         self.renderer.setAspectRatioMode(Qt.AspectRatioMode.IgnoreAspectRatio)

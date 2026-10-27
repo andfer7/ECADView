@@ -4,7 +4,9 @@ cursor-anchored zoom, millimetre measurements, repeated selections, asynchronous
 tabs and errors, closing during a load, and worker shutdown. They also verify a
 selected net's rendered colors on tracks, arcs, pads, vias, schematic wires,
 pins and legacy junctions, including deselection and inherited paint styles;
-drill holes and open paths remain unfilled. Navigation tests verify a
+drill holes and open paths remain unfilled. Selection tests verify fading of other
+geometry while preserving paper backgrounds, picking, multiselection, layer
+visibility and routes at layer crossings. Navigation tests check a
 fixed cache pixel bound and coalescing hundreds of navigation events while a
 renderer is busy. 3D tests check constrained triangle areas, board occlusion,
 hole/side ray intersections and body deletion/undo without a GL context.
