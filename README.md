@@ -62,11 +62,11 @@ Use Open or drag files into the native window. Drag or two-finger scroll to pan,
 Ctrl/Command-wheel or pinch to zoom, and F or double-click to fit. The inspector
 provides searches, layer controls, polygon visibility, cross-probing and units.
 Selecting a component or net in either 2D view keeps it bright and fades the
-remaining geometry to 15% contrast, or 55% when selecting schematic components.
+remaining geometry to 15% contrast in layouts and 50% in schematics.
 Selected routes remain visible across other
 layers, and zoomed pad captions focus on the selection. Clear selection or press
 Escape to restore normal visibility; faded items remain clickable.
-Schematic component selection colors symbol contours blue while preserving their
+Schematic nets and component contours highlight in blue. Component selection preserves
 interior fills; reference and value text stays highlighted. The gentler fade keeps
 surrounding symbols and wires readable.
 The 2D view and each document's measurements, selections and 3D edits survive tab

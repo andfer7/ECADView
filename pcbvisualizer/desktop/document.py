@@ -30,8 +30,8 @@ GRAPHICS = {
     "use",
 }
 SELECTION_CONTEXT = 0.15
-SCHEMATIC_COMPONENT_CONTEXT = 0.55
-SCHEMATIC_COMPONENT_COLOR = "#1565c0"
+SCHEMATIC_SELECTION_CONTEXT = 0.50
+SCHEMATIC_SELECTION_COLOR = "#1565c0"
 
 
 def faded_paint(value, background, contrast=SELECTION_CONTEXT):
@@ -320,11 +320,10 @@ class NativeDocument:
         selected = {}
         schematic_components = set()
         schematic = self.data.get("kind") == "schematic"
-        component_color = SCHEMATIC_COMPONENT_COLOR if schematic else "#ffe066"
+        component_color = SCHEMATIC_SELECTION_COLOR if schematic else "#ffe066"
+        net_color = SCHEMATIC_SELECTION_COLOR if schematic else "#39e0f3"
         context_contrast = (
-            SCHEMATIC_COMPONENT_CONTEXT
-            if schematic and selected_components
-            else SELECTION_CONTEXT
+            SCHEMATIC_SELECTION_CONTEXT if schematic else SELECTION_CONTEXT
         )
         holes = {p.id for p in self.primitives if p.hole}
         for p in self.primitives:
@@ -338,7 +337,7 @@ class NativeDocument:
                 or p.net in selected_nets
                 or set(p.schematic_nets).intersection(selected_nets)
             ):
-                selected[p.id] = component_color if component_selected else "#39e0f3"
+                selected[p.id] = component_color if component_selected else net_color
                 if component_selected and schematic:
                     schematic_components.add(p.id)
         if selected_components or selected_nets:
