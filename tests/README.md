@@ -9,7 +9,7 @@ geometry while preserving paper backgrounds, picking, multiselection, layer
 visibility and routes at layer crossings. Schematic component tests verify
 green contours, shared 45% context contrast for component/net selections, preserved
 interior fills and readable text while PCB
-component fills retain their highlighting. Net stroke tests check 1.5× schematic
+component fills retain their highlighting. Net stroke tests check 1.75× schematic
 widths, inherited/inline units, deselection, and unchanged PCB/component widths.
 Navigation tests check a
 fixed cache pixel bound and coalescing hundreds of navigation events while a

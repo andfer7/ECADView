@@ -104,7 +104,7 @@ class NativeRenderingTests(unittest.TestCase):
                     highlighted = stroke_pixels({"N1"})
                     self.assertAlmostEqual(
                         highlighted,
-                        normal * (1.5 if kind == "schematic" else 1),
+                        normal * (1.75 if kind == "schematic" else 1),
                         delta=2,
                     )
                     self.assertEqual(stroke_pixels({"N1"}, {"C1"}), highlighted)
