@@ -69,7 +69,7 @@ Escape to restore normal visibility; faded items remain clickable.
 Schematic nets and component contours highlight in green. Component selection preserves
 interior fills; reference and value text stays highlighted. The gentler fade keeps
 surrounding symbols and wires readable.
-Selected schematic net lines are drawn at 1.75 times their normal width; clearing
+Selected schematic net lines are drawn at 3.5 times their normal width; clearing
 the selection restores the original widths.
 The 2D view and each document's measurements, selections and 3D edits survive tab
 and mode changes. You can also launch with `python -m pcbvisualizer`, or use the
