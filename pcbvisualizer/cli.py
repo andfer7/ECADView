@@ -1,4 +1,4 @@
-"""Command-line startup and browser launching."""
+"""Launch the native desktop app, or the explicitly requested web viewer."""
 
 import argparse
 import base64
@@ -42,25 +42,33 @@ def open_in_browser(url: str, browser: str = "chrome") -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Standalone Altium and KiCad PCB and schematic viewer")
-    ap.add_argument("pcbdoc", nargs="?", type=Path, help="optional .PcbDoc, .SchDoc, .kicad_pcb, .kicad_sch, or .sch to load at startup")
-    ap.add_argument("--port", type=int, default=0, help="port to listen on (default: random free port)")
-    ap.add_argument("--browser", default="chrome", help="chrome (default), firefox, safari, default, ...")
-    ap.add_argument("--no-open", action="store_true", help="don't open a browser, just print the URL")
+    ap.add_argument("documents", nargs="*", type=Path, help="Altium or KiCad documents to open in native tabs")
+    ap.add_argument("--web", action="store_true", help="run the optional browser viewer instead of the native application")
+    ap.add_argument("--port", type=int, default=None, help="web server port (implies --web; default: random free port)")
+    ap.add_argument("--browser", default=None, help="web browser to use (implies --web): chrome, firefox, safari, default, ...")
+    ap.add_argument("--no-open", action="store_true", help="run the web server without opening a browser (implies --web)")
     args = ap.parse_args()
 
-    if args.pcbdoc:
-        if not args.pcbdoc.is_file():
-            sys.exit(f"File not found: {args.pcbdoc}")
-        print(f"Loading {args.pcbdoc.name} ...")
-        Handler.initial = {**render_file(args.pcbdoc),
-                           "source": base64.b64encode(args.pcbdoc.read_bytes()).decode("ascii")}
+    for path in args.documents:
+        if not path.is_file():
+            ap.error(f"File not found: {path}")
+    if not (args.web or args.no_open or args.browser is not None or args.port is not None):
+        from .desktop.app import run
+        sys.exit(run(args.documents))
+    if len(args.documents) > 1:
+        ap.error("Web mode accepts one startup document. Use the native application for multiple startup files.")
+    Handler.initial = None
+    if args.documents:
+        path = args.documents[0]
+        print(f"Loading {path.name} ...")
+        Handler.initial = {**render_file(path), "source": base64.b64encode(path.read_bytes()).decode("ascii")}
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port or 0), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"PCB viewer running at {url}   (Ctrl+C to stop)")
 
     if not args.no_open:
-        threading.Timer(0.3, open_in_browser, args=(url, args.browser)).start()
+        threading.Timer(0.3, open_in_browser, args=(url, args.browser or "chrome")).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

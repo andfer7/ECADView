@@ -1,4 +1,26 @@
-The browser regression tests launch the real Python server and load its HTML,
+Native desktop tests exercise Qt rasterization and exact picking, holes and
+polygon/layer visibility, Altium and KiCad documents, source/pin cross-probing,
+cursor-anchored zoom, millimetre measurements, repeated selections, asynchronous
+tabs and errors, closing during a load, and worker shutdown. They also verify a
+selected net's rendered colors on tracks, arcs, pads, vias, schematic wires,
+pins and legacy junctions, including deselection and inherited paint styles;
+drill holes and open paths remain unfilled. Navigation tests verify a
+fixed cache pixel bound and coalescing hundreds of navigation events while a
+renderer is busy. 3D tests check constrained triangle areas, board occlusion,
+hole/side ray intersections and body deletion/undo without a GL context.
+
+```sh
+QT_QPA_PLATFORM=offscreen uv run python -B -m unittest discover -s tests -v
+uv run python scripts/benchmark_native.py /path/to/board.kicad_pcb
+```
+
+The benchmark reports file parsing/indexing time, initial vector-raster time,
+median/p95 cached paint times, and the number of vector renders during its
+navigation loop. It measures cached painting, not file loading or the asynchronous
+refinement rate. Real OpenGL output and the standalone macOS bundle also require
+a live desktop smoke check; the offscreen Qt plugin cannot create a GL context.
+
+The optional browser regression tests launch the real Python server and load its HTML,
 CSS, and JavaScript, with small SVG fixtures in place of the Altium renderer.
 They require the project's Python environment, Node.js 20 or newer, and Playwright. Install
 the locked test dependencies from the project root:

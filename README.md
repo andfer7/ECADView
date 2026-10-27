@@ -1,16 +1,18 @@
 # PCBVisualizer
 
-A local Altium and KiCad PCB and schematic viewer. Open `.PcbDoc`, `.SchDoc`,
-`.kicad_pcb`, `.kicad_sch`, and legacy KiCad `.sch` files in separate tabs, inspect layers and polygon pours, find components and nets,
-cross-probe between documents, and measure PCB geometry. Files are parsed on
-your machine and the browser displays the rendered SVG.
+A native desktop Altium and KiCad PCB and schematic viewer. Open `.PcbDoc`,
+`.SchDoc`, `.kicad_pcb`, `.kicad_sch`, and legacy KiCad `.sch` files in separate
+tabs, inspect layers and polygon pours, find components and nets, cross-probe
+between documents, and measure PCB geometry. The default application uses Qt
+painting and native OpenGL. It starts no web server and opens no browser.
 
-Zoom into a PCB to see net names directly over visible pads, vias, and routes when
-the text fits. Labels remain readable while navigating and respect layer and polygon
-visibility. Via captions fit on the copper ring around the drill hole.
-Component pads also show their pin numbers, including alphanumeric and
-unconnected pins. Pin numbers appear above net names when both fit; on cramped
-pads the pin number takes priority.
+Zoom into a PCB to see pin numbers and net names over visible component pads
+when the captions fit. Navigation uses a bounded image cache, while parsing,
+spatial indexing and vector refinements run in a worker thread per document.
+Repeated pan and zoom input coalesces into one pending refinement instead of
+queuing redraws for thousands of individual graphics. Small text uses native
+glyph outlines from installed fonts, so it remains visible below a pixel in
+document coordinates. Font appearance can differ from embedded browser fonts.
 
 PCB tabs also offer a **2D / 3D** toggle. The 3D preview shows the board profile,
 curved edges, cutouts, through holes, slots, and simple extruded component bodies
@@ -30,7 +32,7 @@ and its 2D geometry remain unchanged.
 
 The preview uses the first physical layer stack's thickness, or an explicitly
 reported 1.6 mm fallback when thickness is unavailable. It requires a board
-outline and browser WebGL support. Components without usable body geometry are
+outline and native OpenGL 3.2 support. Components without usable body geometry are
 omitted, and detailed STEP models use simplified outlines. Copper, silkscreen,
 blind/buried via bores, and rigid-flex folding are not represented in this first
 3D version. The sidebar reports applicable approximations. Parsing, geometry,
@@ -50,18 +52,51 @@ The existing launch command continues to work from an activated environment:
 ```sh
 python pcb_viewer_gui.py
 python pcb_viewer_gui.py board.PcbDoc
-python pcb_viewer_gui.py sheet.SchDoc --browser default
+python pcb_viewer_gui.py board.PcbDoc sheet.SchDoc
 python pcb_viewer_gui.py board.kicad_pcb
 python pcb_viewer_gui.py sheet.kicad_sch
 python pcb_viewer_gui.py legacy.sch
-python pcb_viewer_gui.py --no-open --port 8000
 ```
 
-The default browser is Chrome, and the server listens on `127.0.0.1` with a random
-free port unless `--port` is supplied. Stop it with Ctrl+C. You can also launch
-with `python -m pcbvisualizer`, or use the `pcbvisualizer` command after installing
+Use Open or drag files into the native window. Drag or two-finger scroll to pan,
+Ctrl/Command-wheel or pinch to zoom, and F or double-click to fit. The inspector
+provides searches, layer controls, polygon visibility, cross-probing and units.
+The 2D view and each document's measurements, selections and 3D edits survive tab
+and mode changes. You can also launch with `python -m pcbvisualizer`, or use the
+`pcbvisualizer` command after installing
 the package. Without uv, install it with `python -m pip install .` in your Python
 environment. No Node.js installation or frontend build is needed to run the app.
+
+## Standalone application
+
+Build an application for the current operating system:
+
+```sh
+uv run --group build python scripts/build_app.py
+```
+
+On macOS, open `dist/PCBVisualizer.app`; it can be copied to Applications and
+launched without Python, uv, a terminal or a browser. Finder's Open With supports
+the document formats listed above. Windows/Linux builds produce the executable
+and its supporting files under `dist/PCBVisualizer/`; keep that folder together.
+Build on each target operating system. The macOS bundle has a local ad-hoc
+signature; release signing/notarization is a separate distribution step.
+Qt Essentials/Addons supply the native widgets, SVG painter and OpenGL view;
+Qt WebEngine and Chromium are neither dependencies nor bundled runtimes.
+
+## Optional web viewer
+
+The previous web interface remains available explicitly:
+
+```sh
+python pcb_viewer_gui.py --web board.PcbDoc
+python pcb_viewer_gui.py --web sheet.SchDoc --browser default
+python pcb_viewer_gui.py --web --no-open --port 8000
+```
+
+For existing scripts, `--no-open`, `--browser` and `--port` also imply web mode.
+The server listens on `127.0.0.1`; stop it with Ctrl+C. Web-only route/via caption
+placement and browser gestures remain available in this mode.
 
 ## KiCad support
 
@@ -83,7 +118,7 @@ components and wires or pins to select connected nets, then cross-probe into an
 open PCB. Connectivity is derived for the individual sheet, including named
 labels and power symbols. Open child sheets individually: the viewer does not
 compile hierarchical projects or expand bus-member connectivity. Symbol and pin
-decorations and text use simplified drawing and browser fonts; images, text
+decorations and text use simplified drawing and installed fonts; images, text
 boxes, tables, and PCB dimensions are omitted. Applicable omissions appear in
 the sidebar.
 
@@ -111,7 +146,14 @@ pcb_viewer_gui.py          Compatibility launcher
 pcbvisualizer/
   __init__.py             Package identity
   __main__.py             python -m pcbvisualizer entry point
-  cli.py                  Arguments, startup, and browser launching
+  cli.py                  Native startup and explicit web-mode compatibility
+  desktop/
+    app.py                Native windows, tabs, inspector and worker lifecycle
+    canvas.py             Cached viewport, gestures and measurements
+    document.py           Worker-owned rasterizer and spatial picking
+    text.py               Native glyph outlines for small text
+    probing.py            Source/pin/name cross-probing
+    solid.py              OpenGL meshes, camera, picking and body edits
   rendering.py            Format dispatch, Altium rendering and selection metadata
   kicad_common.py         KiCad S-expression and SVG helpers
   kicad_legacy.py         Limited legacy Eeschema preview with explicit placeholders
@@ -126,16 +168,21 @@ pcbvisualizer/
     net-labels.js         Net and component pin captions for zoomed PCB views
     viewer-3d.js          Local WebGL scene, controls, and camera management
 tests/
+  test_desktop.py         Native rendering, tabs, navigation and picking tests
   test_rendering.py       Rendering regression tests
   test_kicad.py           KiCad geometry, connectivity, and input tests
   test_server.py          HTTP and launch-command integration tests
   board_tabs.test.cjs     Browser regression tests
   fixtures/kicad/         Small native-format PCB and schematic examples
+scripts/
+  build_app.py            Standalone application build
+  PCBVisualizer.spec      Native Qt modules, data and file associations
+  benchmark_native.py     Native load, raster and cached paint timings
 ```
 
 The server serves frontend resources explicitly. They are included in
 the installed Python package, so launching does not depend on the current working
-directory. The frontend uses plain JavaScript and requires no build step.
+directory. The optional web frontend uses plain JavaScript and requires no build step.
 Three.js 0.180.0 and its OrbitControls module are bundled under the MIT license
 in `pcbvisualizer/static/THREE-LICENSE.txt`. The upstream minified module and
 core are unchanged; OrbitControls only changes its import to the local module.
