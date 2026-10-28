@@ -31,6 +31,7 @@ class BoardCanvas(QWidget):
         self.layer_order, self.active_layer = [], None
         self.polygons, self.measuring, self.unit = True, False, "mm"
         self.measurements, self.points = [], []
+        self.selected_measurement = None
         self.measure_pointer = None
         self.measure_snapping = False
         self.snap_points, self.snap_x = [], []
@@ -271,12 +272,18 @@ class BoardCanvas(QWidget):
             painter.drawLine(point - QPointF(8, 0), point + QPointF(8, 0))
             painter.drawLine(point - QPointF(0, 8), point + QPointF(0, 8))
 
-        for a, b in self.measurements:
+        for index, (a, b) in enumerate(self.measurements):
+            pen.setWidthF(2.5 if index == self.selected_measurement else 1.5)
+            painter.setPen(pen)
             p, q = self.to_screen(a), self.to_screen(b)
             painter.drawLine(p, q)
             painter.drawText((p + q) / 2 + QPointF(5, -5), self.distance(a, b))
+            if index == self.selected_measurement:
+                self.paint_measurement_axes(painter, a, b)
             marker(p)
             marker(q)
+        pen.setWidthF(1.5)
+        painter.setPen(pen)
         if self.measuring:
             target, _snapped = (
                 self.measurement_position(self.measure_pointer, self.measure_snapping)
@@ -300,6 +307,45 @@ class BoardCanvas(QWidget):
             if target is not None:
                 marker(self.to_screen(target))
         painter.restore()
+
+    def paint_measurement_axes(self, painter, a, b):
+        painter.save()
+        painter.setPen(QPen(QColor("#82dce8"), 1.5, Qt.PenStyle.DashLine))
+        corner = QPointF(b.x(), a.y())
+        p, q, c = self.to_screen(a), self.to_screen(b), self.to_screen(corner)
+        painter.drawLine(p, c)
+        painter.drawLine(c, q)
+        metrics = painter.fontMetrics()
+        x_label = f"X: {self.distance(a, corner)}"
+        y_label = f"Y: {self.distance(corner, b)}"
+        # Put component labels outside the triangle, keeping axis-aligned
+        # measurements legible when a dashed leg coincides with the total.
+        x_offset = -8 if q.y() > p.y() else metrics.height() + 4
+        y_offset = 12 if q.x() > p.x() else -metrics.horizontalAdvance(y_label) - 12
+        painter.drawText(
+            (p + c) / 2 + QPointF(-metrics.horizontalAdvance(x_label) / 2, x_offset),
+            x_label,
+        )
+        painter.drawText((c + q) / 2 + QPointF(y_offset, metrics.height() / 3), y_label)
+        painter.restore()
+
+    def measurement_at(self, position):
+        closest, distance = None, 6 * 6
+        for index in reversed(range(len(self.measurements))):
+            a, b = (self.to_screen(point) for point in self.measurements[index])
+            line = b - a
+            length = line.x() ** 2 + line.y() ** 2
+            offset = position - a
+            fraction = (
+                max(0, min(1, (offset.x() * line.x() + offset.y() * line.y()) / length))
+                if length
+                else 0
+            )
+            delta = position - (a + line * fraction)
+            squared = delta.x() ** 2 + delta.y() ** 2
+            if squared < distance:
+                closest, distance = index, squared
+        return closest
 
     def measurement_position(self, position, snap):
         point = self.to_world(position)
@@ -509,6 +555,23 @@ class BoardCanvas(QWidget):
             and event.button() == Qt.MouseButton.LeftButton
             and self.info
         ):
+            if not self.measuring or (
+                not self.points and not event.modifiers() & SNAP_MODIFIER
+            ):
+                measurement = self.measurement_at(event.position())
+                if measurement is not None:
+                    self.selected_measurement = (
+                        None
+                        if measurement == self.selected_measurement
+                        else measurement
+                    )
+                    if self.measuring:
+                        self.measure_pointer = event.position()
+                        self.measure_snapping = False
+                    self.press = self.previous = None
+                    self.update()
+                    return
+            self.selected_measurement = None
             point = self.to_world(event.position())
             if self.measuring:
                 point, _snapped = self.measurement_position(
@@ -545,6 +608,7 @@ class BoardCanvas(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
+            self.selected_measurement = None
             self.set_measuring(False)
             self.components.clear()
             self.nets.clear()

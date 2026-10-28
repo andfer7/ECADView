@@ -83,6 +83,10 @@ both completed measurements and the preview.
 Hold Command (⌘) near a visible pad or via to snap either measurement endpoint to
 its centre. The preview marks the snap target before
 you click. Release the key to return to free placement.
+Click a completed measurement line to show its X and Y distances as dashed
+horizontal and vertical segments alongside the total distance. Click it again,
+click elsewhere, or press Escape to hide the X/Y details. These values follow
+the selected measurement units.
 Selecting a component or net in either 2D view keeps it bright and fades the
 remaining geometry to 15% contrast in layouts and 45% in schematics.
 Selected routes remain visible across other
