@@ -264,26 +264,27 @@ class BoardCanvas(QWidget):
     def paint_measurements(self, painter):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#35c2d8"), 1.5)
+        painter.setFont(QFont("Sans Serif", 14, QFont.Weight.DemiBold))
+        pen = QPen(QColor("#ffffff"), 3)
         painter.setPen(pen)
         painter.setBrush(QColor("#1b1d21"))
 
         def marker(point):
-            painter.drawEllipse(point, 5, 5)
-            painter.drawLine(point - QPointF(8, 0), point + QPointF(8, 0))
-            painter.drawLine(point - QPointF(0, 8), point + QPointF(0, 8))
+            painter.drawEllipse(point, 6, 6)
+            painter.drawLine(point - QPointF(10, 0), point + QPointF(10, 0))
+            painter.drawLine(point - QPointF(0, 10), point + QPointF(0, 10))
 
         for index, (a, b) in enumerate(self.measurements):
-            pen.setWidthF(2.5 if index == self.selected_measurement else 1.5)
+            pen.setWidthF(4 if index == self.selected_measurement else 3)
             painter.setPen(pen)
             p, q = self.to_screen(a), self.to_screen(b)
             painter.drawLine(p, q)
-            painter.drawText((p + q) / 2 + QPointF(5, -5), self.distance(a, b))
+            self.paint_distance_label(painter, p, q, self.distance(a, b))
             if index == self.selected_measurement:
                 self.paint_measurement_axes(painter, a, b)
             marker(p)
             marker(q)
-        pen.setWidthF(1.5)
+        pen.setWidthF(3)
         painter.setPen(pen)
         if self.measuring:
             target, _snapped = (
@@ -299,9 +300,7 @@ class BoardCanvas(QWidget):
                     pen.setStyle(Qt.PenStyle.DashLine)
                     painter.setPen(pen)
                     painter.drawLine(p, q)
-                    painter.drawText(
-                        (p + q) / 2 + QPointF(5, -5), self.distance(a, target)
-                    )
+                    self.paint_distance_label(painter, p, q, self.distance(a, target))
                     pen.setStyle(Qt.PenStyle.SolidLine)
                     painter.setPen(pen)
                 marker(p)
@@ -309,9 +308,34 @@ class BoardCanvas(QWidget):
                 marker(self.to_screen(target))
         painter.restore()
 
+    def paint_distance_label(self, painter, p, q, text):
+        delta = q - p
+        length = math.hypot(delta.x(), delta.y())
+        normal = (
+            QPointF(delta.y() / length, -delta.x() / length)
+            if length
+            else QPointF(0, -1)
+        )
+        midpoint = (p + q) / 2
+        corner = QPointF(q.x(), p.y()) - midpoint
+        side = corner.x() * normal.x() + corner.y() * normal.y()
+        # Place the total outside the X/Y triangle, also avoiding its dashed legs.
+        if side > 0 or (
+            side == 0 and (normal.y() > 0 or normal.y() == 0 and normal.x() < 0)
+        ):
+            normal = -normal
+        bounds = QRectF(painter.fontMetrics().boundingRect(text))
+        # Clear the entire text rectangle, rather than just its baseline. The
+        # extra gap includes the stroke and endpoint markers on short segments.
+        extent = (
+            abs(normal.x()) * bounds.width() + abs(normal.y()) * bounds.height()
+        ) / 2
+        center = midpoint + normal * (extent + 14 + painter.pen().widthF() / 2)
+        painter.drawText(center - bounds.center(), text)
+
     def paint_measurement_axes(self, painter, a, b):
         painter.save()
-        painter.setPen(QPen(QColor("#82dce8"), 1.5, Qt.PenStyle.DashLine))
+        painter.setPen(QPen(QColor("#ffffff"), 3, Qt.PenStyle.DashLine))
         corner = QPointF(b.x(), a.y())
         p, q, c = self.to_screen(a), self.to_screen(b), self.to_screen(corner)
         painter.drawLine(p, c)
@@ -321,8 +345,8 @@ class BoardCanvas(QWidget):
         y_label = f"Y: {self.distance(corner, b)}"
         # Put component labels outside the triangle, keeping axis-aligned
         # measurements legible when a dashed leg coincides with the total.
-        x_offset = -8 if q.y() > p.y() else metrics.height() + 4
-        y_offset = 12 if q.x() > p.x() else -metrics.horizontalAdvance(y_label) - 12
+        x_offset = -18 if q.y() > p.y() else metrics.height() + 10
+        y_offset = 16 if q.x() > p.x() else -metrics.horizontalAdvance(y_label) - 16
         painter.drawText(
             (p + c) / 2 + QPointF(-metrics.horizontalAdvance(x_label) / 2, x_offset),
             x_label,

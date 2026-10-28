@@ -11,7 +11,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QCursor, QImage, QMouseEvent, QPainter, QVector3D
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPainterPathStroker,
+    QVector3D,
+)
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from shapely.geometry import Polygon
@@ -522,6 +531,64 @@ class NativeNavigationTests(unittest.TestCase):
     def tearDown(self):
         self.canvas.timer.stop()
         self.canvas.close()
+
+    def test_distance_label_bounds_clear_segments_markers_and_xy_legs_at_any_angle(
+        self,
+    ):
+        canvas = self.canvas
+        image = QImage(800, 600, QImage.Format.Format_ARGB32)
+        labels, strokes = [], []
+
+        class Painter(QPainter):
+            def drawText(self, position, text):
+                labels.append(
+                    QRectF(self.fontMetrics().boundingRect(text)).translated(position)
+                )
+                return super().drawText(position, text)
+
+            def drawLine(self, a, b):
+                path = QPainterPath(a)
+                path.lineTo(b)
+                stroker = QPainterPathStroker()
+                stroker.setWidth(self.pen().widthF() + 4)
+                strokes.append(stroker.createStroke(path))
+                return super().drawLine(a, b)
+
+        for mode in ("completed", "selected", "preview"):
+            for dx, dy in [
+                (240, 180),
+                (240, -180),
+                (-240, 180),
+                (-240, -180),
+                (240, 0),
+                (-240, 0),
+                (0, 180),
+                (0, -180),
+                (1, 1),
+                (0, 0),
+            ]:
+                with self.subTest(mode=mode, dx=dx, dy=dy):
+                    p = QPointF(400, 300)
+                    q = p + QPointF(dx, dy)
+                    a, b = canvas.to_world(p), canvas.to_world(q)
+                    canvas.unit = "mil" if dy < 0 else "mm"
+                    canvas.measurements = [] if mode == "preview" else [(a, b)]
+                    canvas.selected_measurement = 0 if mode == "selected" else None
+                    canvas.measuring = mode == "preview"
+                    canvas.points = [a] if canvas.measuring else []
+                    canvas.measure_pointer = q
+                    labels.clear()
+                    strokes.clear()
+                    painter = Painter(image)
+                    canvas.paint_measurements(painter)
+                    painter.end()
+                    self.assertEqual(len(labels), 3 if mode == "selected" else 1)
+                    label = QPainterPath()
+                    label.addRect(labels[0])
+                    self.assertFalse(
+                        any(stroke.intersects(label) for stroke in strokes),
+                        "the full distance text must clear every measurement stroke",
+                    )
 
     def test_selected_measurement_adds_dashed_xy_components_in_current_units(self):
         canvas = self.canvas
