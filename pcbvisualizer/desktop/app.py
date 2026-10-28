@@ -199,15 +199,17 @@ class MainWindow(QMainWindow):
         self.polygons.setChecked(True)
         self.polygons.toggled.connect(self.toggle_polygons)
         self.sidebar_layout.addWidget(self.polygons)
+        self.layer_controls = QWidget()
+        layer_layout = QVBoxLayout(self.layer_controls)
+        layer_layout.setContentsMargins(0, 0, 0, 0)
         self.layers = QListWidget()
         self.layers.itemChanged.connect(self.layer_changed)
-        self.sidebar_layout.addWidget(self.layers, 1)
+        layer_layout.addWidget(self.layers, 1)
         row = QHBoxLayout()
-        self.sidebar_layout.addLayout(row)
-        self.two_d_buttons += [
-            self.button(row, "Show all", lambda: self.all_layers(True)),
-            self.button(row, "Hide all", lambda: self.all_layers(False)),
-        ]
+        layer_layout.addLayout(row)
+        self.button(row, "Show all", lambda: self.all_layers(True))
+        self.button(row, "Hide all", lambda: self.all_layers(False))
+        self.sidebar_layout.addWidget(self.layer_controls, 1)
         self.unit = QComboBox()
         self.unit.addItems(["mm", "mil", "in"])
         self.unit.currentTextChanged.connect(self.set_unit)
@@ -336,7 +338,6 @@ class MainWindow(QMainWindow):
             self.selection,
             self.probe_button,
             self.probe_status,
-            self.layers,
             *self.two_d_buttons,
         ):
             widget.setVisible(not solid)
@@ -351,6 +352,7 @@ class MainWindow(QMainWindow):
         self.net.setEnabled(bool(info))
         self.polygons.setEnabled(bool(info and info["kind"] == "pcb"))
         self.polygons.setVisible(bool(info and info["kind"] == "pcb" and not solid))
+        self.layer_controls.setVisible(bool(info and info["kind"] == "pcb" and not solid))
         self.warning.setText(
             document.error_message
             if document and document.error_message
