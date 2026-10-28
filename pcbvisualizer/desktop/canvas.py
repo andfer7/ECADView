@@ -27,6 +27,7 @@ class BoardCanvas(QWidget):
         self.layer_order, self.active_layer = [], None
         self.polygons, self.measuring, self.unit = True, False, "mm"
         self.measurements, self.points = [], []
+        self.measure_pointer = None
         self.press = self.previous = None
         self.inflight, self.dirty, self.serial = False, False, 0
         self.paint_count = self.render_count = 0
@@ -245,15 +246,47 @@ class BoardCanvas(QWidget):
             )
         if self.info:
             self.paint_captions(painter)
+        self.paint_measurements(painter)
+        painter.end()
+
+    def paint_measurements(self, painter):
+        painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor("#35c2d8"), 1.5))
+        pen = QPen(QColor("#35c2d8"), 1.5)
+        painter.setPen(pen)
+        painter.setBrush(QColor("#1b1d21"))
+
+        def marker(point):
+            painter.drawEllipse(point, 5, 5)
+            painter.drawLine(point - QPointF(8, 0), point + QPointF(8, 0))
+            painter.drawLine(point - QPointF(0, 8), point + QPointF(0, 8))
+
         for a, b in self.measurements:
             p, q = self.to_screen(a), self.to_screen(b)
             painter.drawLine(p, q)
             painter.drawText((p + q) / 2 + QPointF(5, -5), self.distance(a, b))
-        for p in self.points:
-            painter.drawEllipse(self.to_screen(p), 4, 4)
-        painter.end()
+            marker(p)
+            marker(q)
+        if self.measuring and self.points:
+            a = self.points[0]
+            p = self.to_screen(a)
+            if self.measure_pointer is not None:
+                q = self.measure_pointer
+                pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                painter.drawLine(p, q)
+                painter.drawText(
+                    (p + q) / 2 + QPointF(5, -5), self.distance(a, self.to_world(q))
+                )
+                pen.setStyle(Qt.PenStyle.SolidLine)
+                painter.setPen(pen)
+            marker(p)
+        painter.restore()
+
+    def cancel_measurement(self):
+        self.points.clear()
+        self.measure_pointer = None
+        self.update()
 
     def paint_captions(self, painter):
         if (
@@ -406,6 +439,9 @@ class BoardCanvas(QWidget):
             if self.dragged:
                 self.camera -= delta / self.scale
                 self.schedule(navigation=True)
+        if self.measuring and self.points:
+            self.measure_pointer = event.position()
+            self.update()
 
     def mouseReleaseEvent(self, event):
         if (
@@ -417,10 +453,11 @@ class BoardCanvas(QWidget):
             point = self.to_world(event.position())
             if self.measuring:
                 self.points.append(point)
+                self.measure_pointer = event.position()
                 if len(self.points) == 2:
                     a, b = self.points
                     self.measurements.append((a, b))
-                    self.points = []
+                    self.cancel_measurement()
                     self.measurement_changed.emit(self.distance(a, b))
                 self.update()
             else:
@@ -445,7 +482,7 @@ class BoardCanvas(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            self.points = []
+            self.cancel_measurement()
             self.measuring = False
             self.components.clear()
             self.nets.clear()
