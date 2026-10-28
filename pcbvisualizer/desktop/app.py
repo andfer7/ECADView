@@ -494,6 +494,7 @@ class MainWindow(QMainWindow):
         if document:
             document.canvas.components.clear()
             document.canvas.nets.clear()
+            document.canvas.selected_measurement = None
             document.canvas.set_measuring(False)
             document.canvas.schedule()
             if document.solid:
@@ -556,6 +557,7 @@ class MainWindow(QMainWindow):
             canvas = self.current().canvas
             canvas.cancel_measurement()
             canvas.measurements.clear()
+            canvas.selected_measurement = None
             canvas.update()
 
     def set_unit(self, unit):

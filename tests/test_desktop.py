@@ -523,6 +523,70 @@ class NativeNavigationTests(unittest.TestCase):
         self.canvas.timer.stop()
         self.canvas.close()
 
+    def test_selected_measurement_adds_dashed_xy_components_in_current_units(self):
+        canvas = self.canvas
+        canvas.measurements = [(QPointF(13, 15), QPointF(10, 11))]
+        image = QImage(800, 600, QImage.Format.Format_ARGB32)
+        labels, lines = [], []
+
+        class Painter(QPainter):
+            def drawText(self, *args):
+                labels.append(args[-1])
+                return super().drawText(*args)
+
+            def drawLine(self, a, b):
+                lines.append((QPointF(a), QPointF(b), self.pen().style()))
+                return super().drawLine(a, b)
+
+        def paint():
+            labels.clear()
+            lines.clear()
+            painter = Painter(image)
+            canvas.paint_measurements(painter)
+            painter.end()
+
+        paint()
+        self.assertEqual(labels, ["5.000 mm"])
+        self.assertFalse(any(style == Qt.DashLine for a, b, style in lines))
+        canvas.selected_measurement = 0
+        for unit, expected in [
+            ("mm", ["5.000 mm", "X: 3.000 mm", "Y: 4.000 mm"]),
+            ("mil", ["196.9 mil", "X: 118.1 mil", "Y: 157.5 mil"]),
+            ("in", ["0.1969 in", "X: 0.1181 in", "Y: 0.1575 in"]),
+        ]:
+            canvas.unit = unit
+            paint()
+            self.assertEqual(labels, expected)
+            dashed = [(a, b) for a, b, style in lines if style == Qt.DashLine]
+            self.assertEqual(len(dashed), 2)
+            self.assertEqual(dashed[0][0].y(), dashed[0][1].y())
+            self.assertEqual(dashed[1][0].x(), dashed[1][1].x())
+            self.assertEqual(dashed[0][1], dashed[1][0])
+        canvas.unit = "mm"
+        for end, expected in [
+            (QPointF(16, 15), ["3.000 mm", "X: 3.000 mm", "Y: 0.000 mm"]),
+            (QPointF(13, 11), ["4.000 mm", "X: 0.000 mm", "Y: 4.000 mm"]),
+            (QPointF(13, 15), ["0.000 mm", "X: 0.000 mm", "Y: 0.000 mm"]),
+        ]:
+            canvas.measurements = [(QPointF(13, 15), end)]
+            paint()
+            self.assertEqual(labels, expected)
+
+    def test_measurement_hit_radius_is_in_pixels_and_clamps_to_segment_ends(self):
+        canvas = self.canvas
+        a, b = QPointF(5, 5), QPointF(15, 5)
+        canvas.measurements = [(a, b)]
+        for scale in (5, 50, 500):
+            canvas.scale = scale
+            midpoint = canvas.to_screen((a + b) / 2)
+            self.assertEqual(canvas.measurement_at(midpoint + QPointF(0, 4)), 0)
+            self.assertIsNone(canvas.measurement_at(midpoint + QPointF(0, 9)))
+            self.assertIsNone(
+                canvas.measurement_at(canvas.to_screen(b) + QPointF(9, 0))
+            )
+        canvas.measurements = [(a, a)]
+        self.assertEqual(canvas.measurement_at(canvas.to_screen(a) + QPointF(2, 2)), 0)
+
     def test_measurement_snap_radius_stays_in_pixels_and_ignores_hidden_layers(self):
         canvas = self.canvas
         center = QPointF(10, 12)
@@ -973,8 +1037,52 @@ class NativeWindowTests(unittest.TestCase):
         self.assertEqual(canvas.distance(*canvas.measurements[0]), "10.000 mm")
         self.assertEqual(canvas.measure_pointer, QPointF(near_end))
         QTest.keyRelease(canvas, Qt.Key.Key_Control)
-        QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=near_start)
-        self.assertEqual(canvas.points, [canvas.to_world(QPointF(near_start))])
+        free_position = near_start + QPoint(0, 20)
+        QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=free_position)
+        self.assertEqual(canvas.points, [canvas.to_world(QPointF(free_position))])
+
+    def test_clicking_completed_measurements_selects_xy_without_starting_a_new_one(
+        self,
+    ):
+        self.window.open_files([FIXTURES / "demo.kicad_pcb"])
+        wait_for(lambda: self.window.current().canvas.frame)
+        canvas = self.window.current().canvas
+        first = (QPointF(5, 5), QPointF(15, 10))
+        second = (QPointF(5, 17), QPointF(15, 23))
+        canvas.measurements = [first, second]
+        picks = []
+        canvas.pick_requested.connect(picks.append)
+        click = lambda point: QTest.mouseClick(
+            canvas, Qt.LeftButton, pos=canvas.to_screen(point).toPoint()
+        )
+        click((first[0] + first[1]) / 2)
+        self.assertEqual(canvas.selected_measurement, 0)
+        self.assertFalse(picks)
+        self.window.toggle_measure(True)
+        click((second[0] + second[1]) / 2)
+        self.assertEqual(canvas.selected_measurement, 1)
+        self.assertFalse(canvas.points)
+        self.assertEqual(len(canvas.measurements), 2)
+        click((second[0] + second[1]) / 2)
+        self.assertIsNone(canvas.selected_measurement)
+        click(QPointF(30, 5))
+        self.assertEqual(len(canvas.points), 1)
+        click((first[0] + first[1]) / 2)
+        self.assertEqual(
+            len(canvas.measurements),
+            3,
+            "a pending second point still completes its measurement",
+        )
+        self.assertIsNone(canvas.selected_measurement)
+        click((first[0] + first[1]) / 2)
+        self.assertIsNotNone(canvas.selected_measurement)
+        QTest.keyClick(canvas, Qt.Key_Escape)
+        self.assertIsNone(canvas.selected_measurement)
+        self.assertEqual(len(canvas.measurements), 3)
+        click((second[0] + second[1]) / 2)
+        self.window.clear_measurements()
+        self.assertIsNone(canvas.selected_measurement)
+        self.assertFalse(canvas.measurements)
 
     def test_physical_control_does_not_snap_or_place_right_click_measurements(self):
         self.window.open_files([FIXTURES / "demo.kicad_pcb"])
