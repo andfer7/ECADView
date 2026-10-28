@@ -279,7 +279,7 @@ class BoardCanvas(QWidget):
             painter.setPen(pen)
             p, q = self.to_screen(a), self.to_screen(b)
             painter.drawLine(p, q)
-            painter.drawText((p + q) / 2 + QPointF(5, -5), self.distance(a, b))
+            self.paint_distance_label(painter, p, q, self.distance(a, b))
             if index == self.selected_measurement:
                 self.paint_measurement_axes(painter, a, b)
             marker(p)
@@ -300,15 +300,38 @@ class BoardCanvas(QWidget):
                     pen.setStyle(Qt.PenStyle.DashLine)
                     painter.setPen(pen)
                     painter.drawLine(p, q)
-                    painter.drawText(
-                        (p + q) / 2 + QPointF(5, -5), self.distance(a, target)
-                    )
+                    self.paint_distance_label(painter, p, q, self.distance(a, target))
                     pen.setStyle(Qt.PenStyle.SolidLine)
                     painter.setPen(pen)
                 marker(p)
             if target is not None:
                 marker(self.to_screen(target))
         painter.restore()
+
+    def paint_distance_label(self, painter, p, q, text):
+        delta = q - p
+        length = math.hypot(delta.x(), delta.y())
+        normal = (
+            QPointF(delta.y() / length, -delta.x() / length)
+            if length
+            else QPointF(0, -1)
+        )
+        midpoint = (p + q) / 2
+        corner = QPointF(q.x(), p.y()) - midpoint
+        side = corner.x() * normal.x() + corner.y() * normal.y()
+        # Place the total outside the X/Y triangle, also avoiding its dashed legs.
+        if side > 0 or (
+            side == 0 and (normal.y() > 0 or normal.y() == 0 and normal.x() < 0)
+        ):
+            normal = -normal
+        bounds = QRectF(painter.fontMetrics().boundingRect(text))
+        # Clear the entire text rectangle, rather than just its baseline. The
+        # extra gap includes the stroke and endpoint markers on short segments.
+        extent = (
+            abs(normal.x()) * bounds.width() + abs(normal.y()) * bounds.height()
+        ) / 2
+        center = midpoint + normal * (extent + 14 + painter.pen().widthF() / 2)
+        painter.drawText(center - bounds.center(), text)
 
     def paint_measurement_axes(self, painter, a, b):
         painter.save()
