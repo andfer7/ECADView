@@ -74,6 +74,11 @@ python pcb_viewer_gui.py legacy.sch
 Use Open or drag files into the native window. Drag or two-finger scroll to pan,
 Ctrl/Command-wheel or pinch to zoom, and F or double-click to fit. The inspector
 provides searches, layer controls, polygon visibility, cross-probing and units.
+In layout mode, enable **Measure** and click to mark the starting point. Move the
+pointer to preview a dashed line and its live distance, then click again to fix
+the endpoint. Completed measurements retain both endpoint markers. Escape or
+turning Measure off cancels the unfinished preview; **Clear measurements** removes
+both completed measurements and the preview.
 Selecting a component or net in either 2D view keeps it bright and fades the
 remaining geometry to 15% contrast in layouts and 45% in schematics.
 Selected routes remain visible across other

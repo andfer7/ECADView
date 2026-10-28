@@ -769,11 +769,59 @@ class NativeWindowTests(unittest.TestCase):
         wait_for(lambda: self.window.current().canvas.frame)
         canvas = self.window.current().canvas
         self.window.toggle_measure(True)
-        for point in (QPointF(5, 5), QPointF(15, 5)):
-            QTest.mouseClick(
-                canvas, Qt.MouseButton.LeftButton, pos=canvas.to_screen(point).toPoint()
-            )
+        start = canvas.to_screen(QPointF(5, 5)).toPoint()
+        end = canvas.to_screen(QPointF(15, 5)).toPoint()
+        QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=start)
+        self.assertEqual(len(canvas.points), 1)
+        QTest.mouseMove(canvas, end)
+        self.assertEqual(canvas.measure_pointer, QPointF(end))
+        self.assertFalse(canvas.measurements)
+
+        def overlay():
+            image = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+            image.fill(QColor("#1b1d21"))
+            labels = []
+
+            class Painter(QPainter):
+                def drawText(self, *args):
+                    labels.append(args[-1])
+                    return super().drawText(*args)
+
+            painter = Painter(image)
+            canvas.paint_measurements(painter)
+            painter.end()
+            return image, labels
+
+        image, labels = overlay()
+        self.assertNotEqual(image.pixelColor(start).name(), "#1b1d21")
+        self.assertEqual(
+            labels, [canvas.distance(canvas.points[0], canvas.to_world(QPointF(end)))]
+        )
+        self.assertGreater(
+            sum(
+                image.pixelColor(x, start.y()).name() != "#1b1d21"
+                for x in range(start.x() + 10, end.x() - 10)
+            ),
+            10,
+        )
+        canvas.unit = "mil"
+        self.assertTrue(overlay()[1][0].endswith("mil"))
+        canvas.unit = "mm"
+        QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=end)
         self.assertEqual(len(canvas.measurements), 1)
+        self.assertFalse(canvas.points)
+        self.assertIsNone(canvas.measure_pointer)
+        completed, _ = overlay()
+        for point in (start, end):
+            self.assertNotEqual(
+                completed.pixelColor(point + QPoint(0, 6)).name(),
+                "#1b1d21",
+                "both endpoints retain a marker",
+            )
+        QTest.mouseMove(canvas, end + QPoint(40, 20))
+        self.assertEqual(
+            overlay()[0], completed, "the second click fixes the measurement"
+        )
         a, b = canvas.measurements[0]
         self.assertAlmostEqual(b.x() - a.x(), 10, delta=0.1)
         self.window.toggle_measure(False)
@@ -784,6 +832,24 @@ class NativeWindowTests(unittest.TestCase):
         )
         wait_for(lambda: bool(canvas.components))
         self.assertEqual(canvas.components, {"R1"})
+
+    def test_measurement_preview_cancels_when_disabled_cleared_or_escaped(self):
+        self.window.open_files([FIXTURES / "demo.kicad_pcb"])
+        wait_for(lambda: self.window.current().canvas.frame)
+        canvas = self.window.current().canvas
+        for cancel in (
+            lambda: self.window.toggle_measure(False),
+            self.window.clear_measurements,
+            lambda: QTest.keyClick(canvas, Qt.Key.Key_Escape),
+        ):
+            self.window.toggle_measure(True)
+            QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=QPoint(150, 150))
+            QTest.mouseMove(canvas, QPoint(250, 200))
+            self.assertTrue(canvas.points)
+            cancel()
+            self.assertFalse(canvas.points)
+            self.assertIsNone(canvas.measure_pointer)
+            self.assertFalse(canvas.measurements)
 
     def test_close_while_loading_joins_workers_without_destroying_running_threads(self):
         self.window.open_files([FIXTURES / "demo.kicad_pcb"])
