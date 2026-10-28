@@ -80,7 +80,7 @@ class NativeRenderingTests(unittest.TestCase):
                 layers = {layer["id"] for layer in info["layers"]}
                 component = next(iter(info["components"]))
                 net = next(iter(info["nets"]))
-                original = document.source
+                original = etree.tostring(document.root)
                 request = {
                     "token": 1,
                     "rect": info["home"],

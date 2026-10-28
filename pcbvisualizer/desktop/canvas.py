@@ -139,7 +139,7 @@ class BoardCanvas(QWidget):
             # Outside the cached area keep refreshing during a long pan too.
             covered = self.frame and self.frame["rect"].contains(self.viewport())
             if (navigation and covered) or not self.timer.isActive():
-                self.timer.start()
+                self.timer.start(90 if navigation else 0)
         self.update()
 
     def request_frame(self):
@@ -198,7 +198,7 @@ class BoardCanvas(QWidget):
             self.overview = frame
         self.update()
         if self.dirty:
-            self.timer.start()
+            self.timer.start(0 if self.style_key() != frame.get("style") else 90)
 
     @Slot(object)
     def accept_pick(self, message):

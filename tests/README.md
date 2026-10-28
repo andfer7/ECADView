@@ -25,19 +25,32 @@ uv run python scripts/benchmark_native.py /path/to/large.PcbDoc --dpr 2 --zoom 4
 The benchmark reports source rendering, native indexing and metadata time, time
 to the first frame, initial and unchanged-style vector-raster time,
 median/p95 cached paint times, and the number of vector renders during its
-navigation loop. `--styles` also measures layer reordering, net selection and
-restoration. `--snapshot` saves the final navigation image for visual comparison.
+navigation loop. `--styles` measures first selection, switching nets, revisiting
+a cached selection, clearing, and layer reordering separately. `--snapshot`
+saves the final navigation image for visual comparison.
 Navigation timings measure cached painting, not the asynchronous refinement rate
 or end-to-end input latency. Compare fresh processes with the same viewport,
 zoom, pixel density and filesystem-cache conditions.
 
 Altium optimization tests compare complete SVG output against the upstream
 renderer, including original IDs, V7 layers, clipping and multilayer pads/vias.
+Native rendering additionally batches stroke text into independent path
+segments, inherits shared metadata, and emits each physical drill once. Tests
+compare expanded geometry and effective relationships against upstream output;
+the source document and browser SVG output remain unchanged. Antialiasing at
+coincident drill edges or crossing glyph strokes can differ slightly after
+removing duplicated paint operations.
 Set `PERF_TEST_FILE` to a local large `.PcbDoc` (such as
 `LimeSDR-USB_1v4s.PcbDoc`) to run that exact-output comparison on a reference board
 and verify its source checksum. The file stays outside this repository.
 Native tests also check restoration of attributes, layer order and pixels after
 repeated selections, and caption-index culling without changing label priority.
+Large synthetic PCB tests require selection changes to avoid full SVG
+serialization, renderer reloads and full-board repaint. They check drill
+cutouts, selected crossings, layer and polygon visibility, camera invalidation,
+and direct native masks against Qt SVG. At a fixed view, the last two selected
+images are cached with a combined 64 MiB bound; camera/layer/polygon changes
+invalidate them. Schematic contour and selection styling uses its existing path.
 
 Real OpenGL output and the standalone macOS bundle also require
 a live desktop smoke check; the offscreen Qt plugin cannot create a GL context.

@@ -39,7 +39,7 @@ if __name__ == "__main__":
     app = QApplication([])
     started = time.perf_counter()
     load_started = started
-    data = render_file(args.document)
+    data = render_file(args.document, native=True)
     source_ready = time.perf_counter()
     document = NativeDocument(data)
     indexed = time.perf_counter()
@@ -76,15 +76,7 @@ if __name__ == "__main__":
         selected_net = (
             "GND" if "GND" in info["nets"] else next(iter(info["nets"]), None)
         )
-        styles = {
-            "reordered_layer": (
-                visible,
-                polygons,
-                components,
-                nets,
-                tuple(reversed(order)),
-            )
-        }
+        styles = {}
         if selected_net is not None:
             styles["selected_net"] = (
                 visible,
@@ -93,7 +85,27 @@ if __name__ == "__main__":
                 {selected_net},
                 order,
             )
+            other_net = next(
+                (name for name in info["nets"] if name != selected_net), None
+            )
+            if other_net is not None:
+                styles["switched_net"] = (
+                    visible,
+                    polygons,
+                    components,
+                    {other_net},
+                    order,
+                )
+            styles["repeated_net"] = styles["selected_net"]
         styles["restored_style"] = request["style"]
+        styles["reordered_layer"] = (
+            visible,
+            polygons,
+            components,
+            nets,
+            tuple(reversed(order)),
+        )
+        styles["restored_layers"] = request["style"]
         for name, style in styles.items():
             started = time.perf_counter()
             document.raster(dict(request, style=style))

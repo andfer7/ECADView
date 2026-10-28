@@ -3,7 +3,9 @@
 import hashlib
 import inspect
 import os
+import re
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -84,6 +86,170 @@ class IndexedAltiumRenderingTests(unittest.TestCase):
             svg = IndexedPcbSvgRenderer(pcb, PcbSvgRenderOptions()).render_board(pcb)
         self.assertIn('data-primitive="track"', svg)
         self.assertLess(signature.call_count, len(pcb.tracks))
+
+    def test_native_drill_batching_preserves_slots_plating_and_blind_vias(self):
+        pcb = self.board()
+        pcb.add_pad(
+            designator="SLOT",
+            position_mils=(1400, 500),
+            width_mils=200,
+            height_mils=400,
+            hole_size_mils=80,
+            slot_length_mils=300,
+            slot_rotation_degrees=45,
+            layer="MULTILAYER",
+            net="SIG",
+        )
+        pcb.add_pad(
+            designator="NPTH",
+            position_mils=(1400, 1000),
+            width_mils=150,
+            height_mils=150,
+            hole_size_mils=100,
+            plated=False,
+            layer="MULTILAYER",
+        )
+        pcb.add_via(
+            position_mils=(600, 900),
+            diameter_mils=40,
+            hole_size_mils=20,
+            layer_start="TOP",
+            layer_end="MID1",
+            net="BLIND",
+        )
+        pcb.add_via(
+            position_mils=(600, 1100),
+            diameter_mils=40,
+            hole_size_mils=20,
+            layer_start="MID1",
+            layer_end="MID2",
+            net="BURIED",
+        )
+
+        def physical_holes(svg):
+            root = ET.fromstring(svg)
+            drill = root.find(".//*[@id='layer-DRILLS']")
+            if drill is None:
+                return set(), 0
+            items = set()
+            count = 0
+
+            def visit(node, owner="", transforms=()):
+                nonlocal count
+                if match := re.match(r"pcb-(pad|via)-(\d+)-", node.get("id", "")):
+                    owner = match.groups()
+                if node.get("transform"):
+                    transforms = (*transforms, node.get("transform"))
+                if node.tag.rsplit("}", 1)[-1] in {
+                    "circle",
+                    "rect",
+                    "path",
+                    "line",
+                    "ellipse",
+                }:
+                    geometry = tuple(
+                        sorted(
+                            (name, value)
+                            for name, value in node.attrib.items()
+                            if name != "id" and not name.startswith("data-")
+                        )
+                    )
+                    items.add((owner, geometry, transforms))
+                    count += 1
+                for child in node:
+                    visit(child, owner, transforms)
+
+            visit(drill)
+            return items, count
+
+        for mode in ("knockout", "overlay", "none"):
+            with self.subTest(mode=mode):
+                options = PcbSvgRenderOptions(drill_hole_mode=mode)
+                expected, before = physical_holes(
+                    PcbSvgRenderer(options).render_board(pcb)
+                )
+                actual, after = physical_holes(
+                    IndexedPcbSvgRenderer(
+                        pcb, options, compact_metadata=True
+                    ).render_board(pcb)
+                )
+                self.assertEqual(actual, expected)
+                if mode == "knockout":
+                    self.assertGreater(len(actual), 4)
+                    self.assertLess(after, before)
+
+    def test_compact_native_svg_preserves_geometry_and_inherited_relationships(self):
+        pcb = self.board()
+
+        def graphics(svg):
+            items = []
+            holes = set()
+
+            def visit(element, inherited):
+                metadata = inherited | {
+                    name: value
+                    for name, value in element.attrib.items()
+                    if name.startswith("data-") and name != "data-primitive-count"
+                }
+                kind = element.tag.rsplit("}", 1)[-1]
+                if kind in {
+                    "path",
+                    "line",
+                    "rect",
+                    "circle",
+                    "ellipse",
+                    "polygon",
+                    "polyline",
+                    "text",
+                }:
+                    geometry = {
+                        name: value
+                        for name, value in element.attrib.items()
+                        if not name.startswith("data-")
+                    }
+                    if metadata.get("data-primitive") in {"via-hole", "pad-hole"}:
+                        owner = re.sub(r"-L\d+-hole$", "", geometry.get("id", ""))
+                        if owner in holes:
+                            return
+                        holes.add(owner)
+                    if (
+                        kind == "path"
+                        and metadata.get("data-primitive") == "text"
+                        and geometry.get("fill") == "none"
+                    ):
+                        path = geometry.get("d", "")
+                        segments = re.findall(r"M (\S+) (\S+) L (\S+) (\S+)", path)
+                        self.assertTrue(segments)
+                        style = {
+                            name: value
+                            for name, value in geometry.items()
+                            if name != "d"
+                        }
+                        for x1, y1, x2, y2 in segments:
+                            items.append(
+                                (
+                                    "line",
+                                    {"x1": x1, "y1": y1, "x2": x2, "y2": y2, **style},
+                                    metadata,
+                                )
+                            )
+                        return
+                    items.append((kind, geometry, metadata))
+                for child in element:
+                    visit(child, metadata)
+
+            visit(ET.fromstring(svg), {})
+            return items
+
+        for clip in (False, True):
+            with self.subTest(clip=clip):
+                options = PcbSvgRenderOptions(clip_copper_to_board_outline=clip)
+                expected = PcbSvgRenderer(options).render_board(pcb)
+                compact = IndexedPcbSvgRenderer(
+                    pcb, options, compact_metadata=True
+                ).render_board(pcb)
+                self.assertEqual(graphics(compact), graphics(expected))
+                self.assertLess(len(compact), len(expected) * 0.7)
 
     @unittest.skipUnless(
         os.environ.get("PERF_TEST_FILE"),
