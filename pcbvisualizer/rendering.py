@@ -1,16 +1,23 @@
 """Render supported EDA documents and build selection metadata for the viewer."""
 
+import re
+import zlib
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
-import re
-import zlib
 
 import freetype
-from altium_monkey import AltiumDesign, AltiumPcbDoc, AltiumSchDoc, PcbSvgRenderOptions, SchSvgRenderOptions
+from altium_monkey import (
+    AltiumDesign,
+    AltiumPcbDoc,
+    AltiumSchDoc,
+    PcbSvgRenderOptions,
+    SchSvgRenderOptions,
+)
 from altium_monkey.altium_pcb_surface import PCB_SurfaceSide
 from altium_monkey.altium_ttf_metrics import get_font_path_with_style
 
+from .altium_rendering import IndexedPcbSvgRenderer
 from .scene3d import build_scene
 
 
@@ -143,11 +150,11 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
     elif side == "bottom":
         svg = pcb.to_surface_svg(PCB_SurfaceSide.BOTTOM, options=options)
     else:
-        svg = pcb.to_svg(options=options)
+        svg = IndexedPcbSvgRenderer(pcb, options).render_board(pcb)
     # An unsupported 3D record must not prevent opening the existing 2D view.
     try:
         scene = build_scene(pcb)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve 2D when optional 3D geometry is unsupported
         scene = {"board": [], "notes": [f"3D is unavailable for this document: {type(exc).__name__}: {exc}"]}
     return {
         "svg": svg,

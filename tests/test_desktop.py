@@ -70,6 +70,37 @@ def paint_at(document, x, y, nets=(), components=(), visible=None, layer_order=(
 
 
 class NativeRenderingTests(unittest.TestCase):
+    def test_repeated_style_changes_restore_original_attributes_order_and_pixels(self):
+        import xml.etree.ElementTree as etree
+
+        for name in ("demo.kicad_pcb", "demo.kicad_sch"):
+            with self.subTest(name=name):
+                document = NativeDocument(render_file(FIXTURES / name))
+                info = document.info()
+                layers = {layer["id"] for layer in info["layers"]}
+                component = next(iter(info["components"]))
+                net = next(iter(info["nets"]))
+                original = document.source
+                request = {
+                    "token": 1,
+                    "rect": info["home"],
+                    "width": 400,
+                    "height": 300,
+                }
+                baseline = (layers, True, set(), set(), ())
+                expected = document.raster(dict(request, style=baseline))["image"]
+                styles = [
+                    (set(), False, {component}, set(), tuple(sorted(layers))),
+                    (layers, True, set(), {net}, tuple(sorted(layers, reverse=True))),
+                    (layers, False, {component}, {net}, ()),
+                ]
+                for style in styles * 3:
+                    document.raster(dict(request, style=style))
+                    actual = document.raster(dict(request, style=baseline))["image"]
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(etree.tostring(document.root), original)
+                    self.assertIsNone(document.selection_overlay)
+
     def test_measurement_centres_include_unconnected_copper_and_transform_exact_origins(
         self,
     ):
@@ -532,6 +563,41 @@ class NativeNavigationTests(unittest.TestCase):
         self.canvas.timer.stop()
         self.canvas.close()
 
+    def test_caption_index_culls_offscreen_rows_without_changing_priority_or_edges(
+        self,
+    ):
+        import random
+
+        rng = random.Random(43)
+        rows = [
+            (QRectF(x, y, 1, 1), str(index), "N", "layer-top", False, "U1")
+            for index, (x, y) in enumerate(
+                (rng.uniform(-100, 100), rng.uniform(-100, 100)) for _ in range(4000)
+            )
+        ]
+        rows += [
+            (QRectF(-100, -100, 200, 200), "SPAN", "N", "layer-top", False, "U1"),
+            (QRectF(-1, -1, 2, 2), "EDGE", "N", "layer-top", False, "U1"),
+        ]
+        info = dict(self.canvas.info, home=QRectF(-100, -100, 200, 200), captions=rows)
+        self.canvas.set_document(info)
+        for viewport in (
+            QRectF(-1, -1, 4, 4),
+            QRectF(0, 0, 20, 20),
+            QRectF(800, 800, 10, 10),
+            QRectF(-1000, -1000, 2000, 2000),
+        ):
+            candidates = list(self.canvas.caption_candidates(viewport))
+            self.assertEqual(
+                [row for row in candidates if row[0].intersects(viewport)],
+                [row for row in rows if row[0].intersects(viewport)],
+            )
+        self.assertLess(
+            len(list(self.canvas.caption_candidates(QRectF(-1, -1, 4, 4)))), 100
+        )
+        self.canvas.set_document(dict(info, captions=[]))
+        self.assertEqual(list(self.canvas.caption_candidates(QRectF(-1, -1, 4, 4))), [])
+
     def test_distance_label_bounds_clear_segments_markers_and_xy_legs_at_any_angle(
         self,
     ):
@@ -764,9 +830,7 @@ class NativeNavigationTests(unittest.TestCase):
 
     def test_offscreen_and_tiny_captions_do_not_measure_text(self):
         canvas = self.canvas
-        canvas.camera, canvas.scale = QPointF(), 40
         canvas.info["home"] = QRectF(-50, -50, 100, 100)
-        canvas.visible = {"layer-top"}
         canvas.info["captions"] = [
             (bounds, pin, "NET", "layer-top", False, "R1")
             for bounds, pin in [
@@ -775,6 +839,9 @@ class NativeNavigationTests(unittest.TestCase):
                 (QRectF(-1, -1, 2, 2), "VISIBLE"),
             ]
         ]
+        canvas.set_document(canvas.info)
+        canvas.camera, canvas.scale = QPointF(), 40
+        canvas.visible = {"layer-top"}
         image = QImage(800, 600, QImage.Format.Format_ARGB32)
         image.fill(QColor("gray"))
         canvas.frame = {"image": image, "rect": canvas.viewport()}
@@ -786,9 +853,7 @@ class NativeNavigationTests(unittest.TestCase):
 
     def test_pad_captions_follow_the_union_of_selected_components_and_nets(self):
         canvas = self.canvas
-        canvas.camera, canvas.scale = QPointF(), 40
         canvas.info["home"] = QRectF(-50, -50, 100, 100)
-        canvas.visible = {"layer-top"}
         canvas.info["captions"] = [
             (QRectF(x - 1, -1, 2, 2), pin, net, "layer-top", False, component)
             for x, pin, net, component in [
@@ -797,6 +862,9 @@ class NativeNavigationTests(unittest.TestCase):
                 (5, "3", "N3", "R3"),
             ]
         ]
+        canvas.set_document(canvas.info)
+        canvas.camera, canvas.scale = QPointF(), 40
+        canvas.visible = {"layer-top"}
         image = QImage(800, 600, QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(QColor("gray"))
         canvas.frame = {"image": image, "rect": QRectF(-10, -7.5, 20, 15)}

@@ -27,6 +27,7 @@ class BoardCanvas(QWidget):
         self.frame = None
         self.overview = None
         self.caption_sizes, self.caption_font_key = {}, None
+        self.caption_grid, self.caption_spanning, self.caption_cell = {}, [], 1
         self.visible, self.components, self.nets = set(), set(), set()
         self.layer_order, self.active_layer = [], None
         self.polygons, self.measuring, self.unit = True, False, "mm"
@@ -48,6 +49,17 @@ class BoardCanvas(QWidget):
         self.info = info
         self.frame = self.overview = None
         self.caption_sizes.clear()
+        self.caption_grid, self.caption_spanning = {}, []
+        self.caption_cell = max(info["home"].width(), info["home"].height(), 1) / 32
+        for index, (bounds, *_) in enumerate(info.get("captions", [])):
+            x0, x1, y0, y1 = self.caption_cells(bounds)
+            # Keep unusually large bounds out of the grid to bound index memory.
+            if (x1 - x0 + 1) * (y1 - y0 + 1) > 64:
+                self.caption_spanning.append(index)
+                continue
+            for x in range(x0, x1 + 1):
+                for y in range(y0, y1 + 1):
+                    self.caption_grid.setdefault((x, y), []).append(index)
         self.snap_points = sorted(
             info.get("snap_points", []), key=lambda row: row[0].x()
         )
@@ -408,6 +420,24 @@ class BoardCanvas(QWidget):
         )
         self.update()
 
+    def caption_cells(self, bounds):
+        return tuple(
+            math.floor(value / self.caption_cell)
+            for value in (bounds.left(), bounds.right(), bounds.top(), bounds.bottom())
+        )
+
+    def caption_candidates(self, viewport):
+        rows = self.info["captions"]
+        x0, x1, y0, y1 = self.caption_cells(viewport)
+        if (x1 - x0 + 1) * (y1 - y0 + 1) > 4096:
+            return rows
+        indices = set(self.caption_spanning)
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                indices.update(self.caption_grid.get((x, y), ()))
+        # Preserve drawing/collision priority when a pad belongs to several cells.
+        return (rows[index] for index in sorted(indices))
+
     def paint_captions(self, painter):
         if (
             self.info["kind"] != "pcb"
@@ -426,7 +456,9 @@ class BoardCanvas(QWidget):
             self.caption_sizes.clear()
         viewport = self.viewport()
         occupied = []
-        for bounds, pin, net, layer, polygon, component in self.info["captions"]:
+        for bounds, pin, net, layer, polygon, component in self.caption_candidates(
+            viewport
+        ):
             if layer not in self.visible or polygon and not self.polygons:
                 continue
             # Cull in world space before transforming or measuring any text.

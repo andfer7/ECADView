@@ -19,12 +19,27 @@ hole/side ray intersections and body deletion/undo without a GL context.
 ```sh
 QT_QPA_PLATFORM=offscreen uv run python -B -m unittest discover -s tests -v
 uv run python scripts/benchmark_native.py /path/to/board.kicad_pcb
+uv run python scripts/benchmark_native.py /path/to/large.PcbDoc --dpr 2 --zoom 4 --motion zoom --styles --snapshot /tmp/board.png
 ```
 
-The benchmark reports file parsing/indexing time, initial vector-raster time,
+The benchmark reports source rendering, native indexing and metadata time, time
+to the first frame, initial and unchanged-style vector-raster time,
 median/p95 cached paint times, and the number of vector renders during its
-navigation loop. It measures cached painting, not file loading or the asynchronous
-refinement rate. Real OpenGL output and the standalone macOS bundle also require
+navigation loop. `--styles` also measures layer reordering, net selection and
+restoration. `--snapshot` saves the final navigation image for visual comparison.
+Navigation timings measure cached painting, not the asynchronous refinement rate
+or end-to-end input latency. Compare fresh processes with the same viewport,
+zoom, pixel density and filesystem-cache conditions.
+
+Altium optimization tests compare complete SVG output against the upstream
+renderer, including original IDs, V7 layers, clipping and multilayer pads/vias.
+Set `PERF_TEST_FILE` to a local large `.PcbDoc` (such as
+`LimeSDR-USB_1v4s.PcbDoc`) to run that exact-output comparison on a reference board
+and verify its source checksum. The file stays outside this repository.
+Native tests also check restoration of attributes, layer order and pixels after
+repeated selections, and caption-index culling without changing label priority.
+
+Real OpenGL output and the standalone macOS bundle also require
 a live desktop smoke check; the offscreen Qt plugin cannot create a GL context.
 
 The optional browser regression tests launch the real Python server and load its HTML,

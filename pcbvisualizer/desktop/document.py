@@ -10,12 +10,11 @@ from dataclasses import dataclass
 from PySide6.QtCore import QByteArray, QObject, QPointF, QRectF, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
+from shapely import box as boxes
 from shapely.geometry import box
 from shapely.strtree import STRtree
 
 from pcbvisualizer.rendering import render_file
-
-from .text import properties
 
 SVG = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG)
@@ -186,6 +185,32 @@ class NativeDocument:
         self.body_bounds = []
         self.paints = {}
         self.stroke_widths = {}
+        group_paints = {None: ({"fill": "black", "stroke": "none"}, "1")}
+
+        def paint_for(node):
+            if node in group_paints:
+                return group_paints[node]
+            paint, width = paint_for(self.parents.get(node))
+            paint = dict(paint)
+            declarations = {
+                name: node.get(name) for name in ("fill", "stroke", "stroke-width")
+            }
+            if inline := node.get("style"):
+                declarations.update(
+                    (name, value.strip())
+                    for name, value in re.findall(r"([\w-]+)\s*:\s*([^;]+)", inline)
+                )
+            for name in paint:
+                value = declarations.get(name)
+                if value and value != "inherit":
+                    paint[name] = value
+            if declarations.get("stroke-width") not in (None, "", "inherit"):
+                width = declarations["stroke-width"]
+            result = paint, width
+            if tag(node) not in GRAPHICS:
+                group_paints[node] = result
+            return result
+
         for node in self.root.iter():
             if tag(node) not in GRAPHICS:
                 continue
@@ -204,10 +229,24 @@ class NativeDocument:
             layer = next(
                 (p.get("id") for p in ancestors if p.get("id") in self.layer_ids), ""
             )
-            cs = tuple(
-                dict.fromkeys(c for p in ancestors for c in components[p.get("id")])
+            cs = (
+                tuple(
+                    dict.fromkeys(
+                        c for p in ancestors for c in components.get(p.get("id"), ())
+                    )
+                )
+                if components
+                else ()
             )
-            ns = tuple(dict.fromkeys(n for p in ancestors for n in nets[p.get("id")]))
+            ns = (
+                tuple(
+                    dict.fromkeys(
+                        n for p in ancestors for n in nets.get(p.get("id"), ())
+                    )
+                )
+                if nets
+                else ()
+            )
             component, net = attr("data-component"), attr("data-net")
             hole = bool(attr("data-hole-owner")) or attr("data-primitive").endswith(
                 "-hole"
@@ -215,16 +254,7 @@ class NativeDocument:
             identifier = node.get("id")
             # Resolve inherited paint before selection so open paths stay open
             # and filled pads/text do not acquire an extra outline.
-            paint = {"fill": "black", "stroke": "none"}
-            stroke_width = "1"
-            for ancestor in reversed(ancestors):
-                declarations = properties(ancestor, {})
-                if declarations.get("stroke-width", "inherit") != "inherit":
-                    stroke_width = declarations["stroke-width"]
-                for name in paint:
-                    value = declarations.get(name, "inherit")
-                    if value != "inherit":
-                        paint[name] = value
+            paint, stroke_width = paint_for(node)
             self.paints[identifier] = paint
             self.stroke_widths[identifier] = stroke_width
             snap = (
@@ -280,12 +310,12 @@ class NativeDocument:
                 if identifier in self.elements:
                     self.body_bounds.append((cid, self.bounds(identifier)))
         self.tree = STRtree(
-            [
-                box(
-                    p.bounds.left(), p.bounds.top(), p.bounds.right(), p.bounds.bottom()
-                )
-                for p in self.primitives
-            ]
+            boxes(
+                [p.bounds.left() for p in self.primitives],
+                [p.bounds.top() for p in self.primitives],
+                [p.bounds.right() for p in self.primitives],
+                [p.bounds.bottom() for p in self.primitives],
+            )
         )
         self.component_layers, self.net_layers, self.terminals = (
             defaultdict(set),
@@ -302,6 +332,9 @@ class NativeDocument:
             for name in p.schematic_nets or ([p.net] if p.net else []):
                 self.net_layers[name].add(p.layer)
         self.style = None
+        self.style_changes = {}
+        self.selection_overlay = None
+        self.scene_children = list(self.scene)
         self.render_count = 0
 
     def bounds(self, identifier):
@@ -368,24 +401,46 @@ class NativeDocument:
         if style == self.style:
             return
         self.style = style
-        root = deepcopy(self.root)
-        elements = {el.get("id"): el for el in root.iter() if el.get("id")}
-        if layer_order and self.layer_ids:
-            scene = elements.get(self.scene.get("id"), root)
+        root, elements = self.root, self.elements
+        # Restore only attributes touched by the previous style. The worker owns
+        # this tree; reusing it avoids copying a whole large board on every click.
+        for (identifier, name), value in self.style_changes.items():
+            node = elements[identifier]
+            if value is None:
+                node.attrib.pop(name, None)
+            else:
+                node.set(name, value)
+        self.style_changes.clear()
+        if self.selection_overlay is not None:
+            root.remove(self.selection_overlay)
+            self.selection_overlay = None
+
+        def remember(identifier, names):
+            node = elements[identifier]
+            for name in names:
+                self.style_changes.setdefault((identifier, name), node.get(name))
+
+        if self.layer_ids and layer_order:
             ordered = iter(
                 elements[identifier] for identifier in self.ordered_layers(layer_order)
             )
             # Replace only layer slots, preserving backgrounds and other scene nodes.
-            scene[:] = [
+            children = [
                 next(ordered) if child.get("id") in self.layer_ids else child
-                for child in scene
+                for child in self.scene_children
             ]
+        else:
+            children = self.scene_children
+        if list(self.scene) != children:
+            self.scene[:] = children
         hidden = set(self.layer_ids) - set(visible)
         for identifier in hidden:
+            remember(identifier, ("display",))
             elements[identifier].set("display", "none")
         if not polygons:
             for identifier in self.polygon_ids:
                 if identifier in elements:
+                    remember(identifier, ("display",))
                     elements[identifier].set("display", "none")
         selected = {}
         schematic_components = set()
@@ -416,6 +471,7 @@ class NativeDocument:
             background = QColor(
                 "#fffcf8" if self.data.get("kind") == "schematic" else "#1b1d21"
             )
+            faded_colors = {}
             for identifier, paint in self.paints.items():
                 if identifier in holes:
                     continue
@@ -435,9 +491,11 @@ class NativeDocument:
                     elif identifier in selected:
                         overrides[name] = selected[identifier]
                     else:
-                        overrides[name] = faded_paint(
-                            value, background, context_contrast
-                        )
+                        if value not in faded_colors:
+                            faded_colors[value] = faded_paint(
+                                value, background, context_contrast
+                            )
+                        overrides[name] = faded_colors[value]
                 if (
                     contour_only
                     and paint["stroke"] == "none"
@@ -458,6 +516,7 @@ class NativeDocument:
                         overrides["stroke-width"] = (
                             f"{float(width[1]) * SCHEMATIC_NET_WIDTH_SCALE:g}{width[2]}"
                         )
+                remember(identifier, (*overrides, "style"))
                 set_paint(node, overrides)
 
             # Draw the selection above faded layers so an unselected crossing
@@ -485,6 +544,7 @@ class NativeDocument:
                 for node in overlay.iter():
                     node.attrib.pop("id", None)
                 root.append(overlay)
+                self.selection_overlay = overlay
         self.renderer.load(QByteArray(ET.tostring(root)))
         self.renderer.setAnimationEnabled(False)
         self.renderer.setAspectRatioMode(Qt.AspectRatioMode.IgnoreAspectRatio)
