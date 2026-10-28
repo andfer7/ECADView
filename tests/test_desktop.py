@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QVector3D
+from PySide6.QtGui import QColor, QCursor, QImage, QMouseEvent, QPainter, QVector3D
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from shapely.geometry import Polygon
@@ -61,6 +61,41 @@ def paint_at(document, x, y, nets=(), components=(), visible=None, layer_order=(
 
 
 class NativeRenderingTests(unittest.TestCase):
+    def test_measurement_centres_include_unconnected_copper_and_transform_exact_origins(
+        self,
+    ):
+        document = NativeDocument(
+            {
+                "name": "centres",
+                "kind": "pcb",
+                "svg": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">'
+                '<g id="scene" transform="translate(2 3)">'
+                '<g id="layer-top" data-layer-role="copper">'
+                '<rect data-primitive="pad" x="0" y="0" width="4" height="2" data-snap-x=".3" data-snap-y=".4"/>'
+                '<circle data-primitive="via" cx="5" cy="1" r=".5"/>'
+                '<path data-primitive="track" data-net="N" d="M0 7H9" stroke="red"/>'
+                '<circle data-primitive="via-hole" data-hole-owner="via" cx="5" cy="1" r=".2"/>'
+                '</g><g id="layer-mask" data-layer-role="mask"><circle data-primitive="pad" cx="9" cy="1" r="1"/></g>'
+                "</g></svg>",
+            }
+        )
+        centres = document.info()["snap_points"]
+        self.assertEqual(
+            [(point.x(), point.y()) for point, layers in centres], [(2.3, 3.4), (7, 4)]
+        )
+        self.assertTrue(all(layers == {"layer-top"} for point, layers in centres))
+        board = board_document()
+        self.assertEqual(
+            {(p.x(), p.y()) for p, layers in board.info()["snap_points"]},
+            {(10, 8), (10, 12), (20, 12), (28, 20), (32, 20)},
+        )
+        self.assertEqual(
+            NativeDocument(render_file(FIXTURES / "demo.kicad_sch")).info()[
+                "snap_points"
+            ],
+            [],
+        )
+
     def test_layer_order_changes_crossing_paint_and_pick_but_preserves_drills(self):
         document = NativeDocument(
             {
@@ -388,6 +423,9 @@ class NativeRenderingTests(unittest.TestCase):
             document = NativeDocument(render_file(path))
             self.assertIn("U1", document.info()["components"])
             self.assertEqual(document.info()["terminals"][("U1", "A1")], {"SIG"})
+            self.assertTrue(
+                document.info()["snap_points"], "Altium pad centres are available"
+            )
             schematic = AltiumSchDoc()
             schematic.add_object(
                 make_sch_wire(
@@ -484,6 +522,34 @@ class NativeNavigationTests(unittest.TestCase):
     def tearDown(self):
         self.canvas.timer.stop()
         self.canvas.close()
+
+    def test_measurement_snap_radius_stays_in_pixels_and_ignores_hidden_layers(self):
+        canvas = self.canvas
+        center = QPointF(10, 12)
+        for scale in (5, 50, 500):
+            canvas.scale = scale
+            canvas.camera = center
+            position = canvas.to_screen(center) + QPointF(7, 3)
+            self.assertEqual(
+                canvas.measurement_position(position, True), (center, True)
+            )
+            free, snapped = canvas.measurement_position(position, False)
+            self.assertFalse(snapped)
+            self.assertEqual(free, canvas.to_world(position))
+            _far, snapped = canvas.measurement_position(
+                canvas.to_screen(center) + QPointF(13, 0), True
+            )
+            self.assertFalse(snapped)
+        canvas.visible.clear()
+        self.assertFalse(canvas.measurement_position(position, True)[1])
+        # Either visible copper side of a through pad can supply the same centre.
+        layer = next(
+            iter(
+                next(layers for point, layers in canvas.snap_points if point == center)
+            )
+        )
+        canvas.visible = {layer}
+        self.assertEqual(canvas.measurement_position(position, True), (center, True))
 
     def test_pan_reuses_overscan_but_zoom_and_style_changes_request_new_detail(self):
         canvas = self.canvas
@@ -810,7 +876,7 @@ class NativeWindowTests(unittest.TestCase):
         QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=end)
         self.assertEqual(len(canvas.measurements), 1)
         self.assertFalse(canvas.points)
-        self.assertIsNone(canvas.measure_pointer)
+        self.assertEqual(canvas.measure_pointer, QPointF(end))
         completed, _ = overlay()
         for point in (start, end):
             self.assertNotEqual(
@@ -819,9 +885,12 @@ class NativeWindowTests(unittest.TestCase):
                 "both endpoints retain a marker",
             )
         QTest.mouseMove(canvas, end + QPoint(40, 20))
-        self.assertEqual(
-            overlay()[0], completed, "the second click fixes the measurement"
-        )
+        self.assertEqual(len(canvas.measurements), 1)
+        moved, _ = overlay()
+        for point in (start, end, end + QPoint(40, 20)):
+            self.assertNotEqual(
+                moved.pixelColor(point + QPoint(0, 6)).name(), "#1b1d21"
+            )
         a, b = canvas.measurements[0]
         self.assertAlmostEqual(b.x() - a.x(), 10, delta=0.1)
         self.window.toggle_measure(False)
@@ -848,8 +917,112 @@ class NativeWindowTests(unittest.TestCase):
             self.assertTrue(canvas.points)
             cancel()
             self.assertFalse(canvas.points)
-            self.assertIsNone(canvas.measure_pointer)
+            self.assertEqual(canvas.measure_pointer is not None, canvas.measuring)
             self.assertFalse(canvas.measurements)
+
+    def test_command_snaps_first_click_live_preview_and_final_via_endpoint(self):
+        self.window.open_files([FIXTURES / "demo.kicad_pcb"])
+        wait_for(lambda: self.window.current().canvas.frame)
+        canvas = self.window.current().canvas
+        self.window.toggle_measure(True)
+        start, end = QPointF(10, 12), QPointF(20, 12)
+        near_start = canvas.to_screen(start).toPoint() + QPoint(6, 2)
+        near_end = canvas.to_screen(end).toPoint() + QPoint(7, 1)
+        QTest.mouseMove(canvas, near_start)
+        QTest.keyPress(canvas, Qt.Key.Key_Control)
+        self.assertTrue(
+            canvas.measure_snapping, "Command works without moving the pointer"
+        )
+        QTest.mouseClick(
+            canvas, Qt.MouseButton.LeftButton, Qt.ControlModifier, near_start
+        )
+        self.assertEqual(canvas.points, [start])
+        # Send the same modifier state a physical drag-free hover carries.
+        event = QMouseEvent(
+            QMouseEvent.Type.MouseMove,
+            QPointF(near_end),
+            QPointF(near_end),
+            Qt.NoButton,
+            Qt.NoButton,
+            Qt.ControlModifier,
+        )
+        APP.sendEvent(canvas, event)
+        self.assertEqual(
+            canvas.measurement_position(
+                canvas.measure_pointer, canvas.measure_snapping
+            ),
+            (end, True),
+        )
+        QTest.keyRelease(canvas, Qt.Key.Key_Control)
+        self.assertFalse(canvas.measure_snapping)
+        self.assertEqual(
+            canvas.measurement_position(canvas.measure_pointer, False),
+            (canvas.to_world(QPointF(near_end)), False),
+        )
+        QTest.keyPress(canvas, Qt.Key.Key_Control)
+        self.assertEqual(
+            canvas.measurement_position(
+                canvas.measure_pointer, canvas.measure_snapping
+            ),
+            (end, True),
+        )
+        QTest.mouseClick(
+            canvas, Qt.MouseButton.LeftButton, Qt.ControlModifier, near_end
+        )
+        self.assertEqual(canvas.measurements, [(start, end)])
+        self.assertEqual(canvas.distance(*canvas.measurements[0]), "10.000 mm")
+        self.assertEqual(canvas.measure_pointer, QPointF(near_end))
+        QTest.keyRelease(canvas, Qt.Key.Key_Control)
+        QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=near_start)
+        self.assertEqual(canvas.points, [canvas.to_world(QPointF(near_start))])
+
+    def test_physical_control_does_not_snap_or_place_right_click_measurements(self):
+        self.window.open_files([FIXTURES / "demo.kicad_pcb"])
+        wait_for(lambda: self.window.current().canvas.frame)
+        canvas = self.window.current().canvas
+        start = QPointF(10, 12)
+        near_start = canvas.to_screen(start).toPoint() + QPoint(6, 2)
+        self.window.toggle_measure(True)
+        QTest.mouseClick(canvas, Qt.RightButton, pos=near_start)
+        self.assertFalse(canvas.points, "ordinary right-click is not a measurement")
+        # Qt maps the physical macOS Control key to Meta, and Command to Control.
+        QTest.mouseMove(canvas, near_start)
+        QTest.keyPress(canvas, Qt.Key_Meta)
+        self.assertFalse(canvas.measure_snapping)
+        QTest.mouseClick(canvas, Qt.RightButton, Qt.MetaModifier, near_start)
+        self.assertFalse(canvas.measurements)
+        self.assertFalse(canvas.points)
+        QTest.keyRelease(canvas, Qt.Key_Meta)
+        QTest.mouseClick(canvas, Qt.LeftButton, Qt.MetaModifier, near_start)
+        self.assertEqual(canvas.points, [canvas.to_world(QPointF(near_start))])
+
+    def test_measurement_marker_is_visible_immediately_on_every_mode_entry(self):
+        self.window.open_files([FIXTURES / "demo.kicad_pcb"])
+        wait_for(lambda: self.window.current().canvas.frame)
+        canvas = self.window.current().canvas
+        for position in (QPoint(350, 250), QPoint(650, 400)):
+            with patch.object(
+                QCursor, "pos", return_value=canvas.mapToGlobal(position)
+            ):
+                self.window.measure_action.trigger()
+            self.assertTrue(canvas.measuring)
+            self.assertEqual(canvas.measure_pointer, QPointF(position))
+            self.assertEqual(canvas.cursor().shape(), Qt.CrossCursor)
+            self.assertFalse(canvas.points)
+            image = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+            image.fill(QColor("#1b1d21"))
+            painter = QPainter(image)
+            canvas.paint_measurements(painter)
+            painter.end()
+            self.assertNotEqual(
+                image.pixelColor(position).name(),
+                "#1b1d21",
+                "marker appears without moving or clicking",
+            )
+            self.window.measure_action.trigger()
+            self.assertFalse(canvas.measuring)
+            self.assertIsNone(canvas.measure_pointer)
+            self.assertNotEqual(canvas.cursor().shape(), Qt.CrossCursor)
 
     def test_close_while_loading_joins_workers_without_destroying_running_threads(self):
         self.window.open_files([FIXTURES / "demo.kicad_pcb"])

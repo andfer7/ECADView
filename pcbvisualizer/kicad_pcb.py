@@ -167,7 +167,8 @@ class PcbRenderer:
         expanded = {layer for pattern in layers for layer in self.layers if fnmatch.fnmatchcase(layer, pattern)}
         if "F&B.Cu" in layers:
             expanded.update(("F.Cu", "B.Cu"))
-        metadata = {**self.metadata(node, component, "pad"), "data_pad_number": str(node[1]), "data_pad_designator": str(node[1])}
+        metadata = {**self.metadata(node, component, "pad"), "data_pad_number": str(node[1]), "data_pad_designator": str(node[1]),
+                    "data_snap_x": position[0], "data_snap_y": position[1]}
         for layer in self.layers:
             if layer not in expanded:
                 continue
@@ -269,7 +270,8 @@ class PcbRenderer:
                 if len(endpoints) == 2 and all(layer in copper_layers for layer in endpoints):
                     a, b = sorted(copper_layers.index(layer) for layer in endpoints)
                     for layer in copper_layers[a:b+1]:
-                        self.shape(layer, via, self.metadata(node, primitive="via"))
+                        self.shape(layer, via, {**self.metadata(node, primitive="via"),
+                                               "data_snap_x": position[0], "data_snap_y": position[1]})
                 if set(endpoints) == {"F.Cu", "B.Cu"}:
                     self.drills.append(hole)
                 else:
