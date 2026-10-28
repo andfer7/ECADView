@@ -10,12 +10,11 @@ from dataclasses import dataclass
 from PySide6.QtCore import QByteArray, QObject, QPointF, QRectF, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
+from shapely import box as boxes
 from shapely.geometry import box
 from shapely.strtree import STRtree
 
 from pcbvisualizer.rendering import render_file
-
-from .text import properties
 
 SVG = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG)
@@ -120,13 +119,50 @@ class NativeDocument:
         self.scene = next(
             (el for el in self.root.iter() if el.get("id") == "scene"), self.root
         )
-        self.elements = {}
-        for index, el in enumerate(self.root.iter()):
-            if tag(el) in GRAPHICS and not el.get("id"):
-                el.set("id", f"native-{index}")
-            if el.get("id"):
-                self.elements[el.get("id")] = el
+        self.elements, self.parents, self.text_groups = {}, {}, set()
+        index = 0
+
+        def register(node, inside_text=False):
+            nonlocal index
+            index += 1
+            kind = tag(node)
+            text_group = (
+                data.get("kind", "pcb") == "pcb"
+                and kind == "g"
+                and node.get("data-primitive") == "text"
+            )
+            if (
+                (kind in GRAPHICS or text_group)
+                and not inside_text
+                and not node.get("id")
+            ):
+                node.set("id", f"native-{index}")
+            if identifier := node.get("id"):
+                self.elements[identifier] = node
+                if text_group and not inside_text:
+                    self.text_groups.add(identifier)
+            for child in node:
+                self.parents[child] = node
+                register(child, inside_text or text_group)
+
+        register(self.root)
+        # Interaction metadata belongs to the XML index, not Qt's paint tree.
+        # Large Altium boards repeat it on every primitive and glyph; omitting
+        # those attributes makes serialization and Qt's parser much cheaper.
+        metadata = []
+        for node in self.root.iter():
+            attributes = {
+                name: value
+                for name, value in node.attrib.items()
+                if name.startswith("data-")
+            }
+            if attributes:
+                metadata.append((node, attributes))
+                for name in attributes:
+                    del node.attrib[name]
         self.source = ET.tostring(self.root)
+        for node, attributes in metadata:
+            node.attrib.update(attributes)
         self.renderer = QSvgRenderer(QByteArray(self.source))
         self.renderer.setAnimationEnabled(False)
         if not self.renderer.isValid():
@@ -164,9 +200,6 @@ class NativeDocument:
             or node.get("data-layer-token", "").upper() == "DRILLS"
             or node.get("id", "").lower() == "layer-drills"
         }
-        self.parents = {
-            child: parent for parent in self.root.iter() for child in parent
-        }
         self.polygon_ids = set(data.get("polygon_elements", []))
         components, nets = defaultdict(list), defaultdict(list)
         self.component_rows, self.net_rows = {}, {}
@@ -186,91 +219,144 @@ class NativeDocument:
         self.body_bounds = []
         self.paints = {}
         self.stroke_widths = {}
-        for node in self.root.iter():
-            if tag(node) not in GRAPHICS:
-                continue
-            ancestors, parent = [], node
-            while parent is not None:
-                ancestors.append(parent)
-                parent = self.parents.get(parent)
-            if any(
-                tag(p) in ("defs", "clipPath", "mask", "pattern") for p in ancestors
-            ):
-                continue
+        metadata_names = (
+            "data-component",
+            "data-net",
+            "data-primitive",
+            "data-hole-owner",
+            "data-pad-number",
+            "data-pad-designator",
+            "data-snap-x",
+            "data-snap-y",
+        )
 
-            def attr(name, chain=ancestors):
-                return next((p.get(name) for p in chain if p.get(name)), "")
+        def visit(
+            node, inherited, paint, stroke_width, layer="", cs=(), ns=(), polygon=False
+        ):
+            kind = tag(node)
+            if kind in ("defs", "clipPath", "mask", "pattern"):
+                return
+            attributes = node.attrib
+            identifier = attributes.get("id")
+            if identifier in self.layer_ids:
+                layer = identifier
+            if own_components := components.get(identifier):
+                cs = tuple(dict.fromkeys((*own_components, *cs)))
+            if own_nets := nets.get(identifier):
+                ns = tuple(dict.fromkeys((*own_nets, *ns)))
+            polygon = (
+                polygon
+                or identifier in self.polygon_ids
+                or attributes.get("data-primitive")
+                in ("polygon-outline", "polygon-cutout")
+            )
+            declarations = attributes
+            if inline := attributes.get("style"):
+                declarations = dict(attributes)
+                declarations.update(
+                    (name, value.strip())
+                    for name, value in re.findall(r"([\w-]+)\s*:\s*([^;]+)", inline)
+                )
+            fill, stroke = declarations.get("fill"), declarations.get("stroke")
+            if fill and fill != "inherit" or stroke and stroke != "inherit":
+                paint = {
+                    "fill": fill if fill and fill != "inherit" else paint["fill"],
+                    "stroke": stroke
+                    if stroke and stroke != "inherit"
+                    else paint["stroke"],
+                }
+            if declarations.get("stroke-width") not in (None, "", "inherit"):
+                stroke_width = declarations["stroke-width"]
 
-            layer = next(
-                (p.get("id") for p in ancestors if p.get("id") in self.layer_ids), ""
-            )
-            cs = tuple(
-                dict.fromkeys(c for p in ancestors for c in components[p.get("id")])
-            )
-            ns = tuple(dict.fromkeys(n for p in ancestors for n in nets[p.get("id")]))
-            component, net = attr("data-component"), attr("data-net")
-            hole = bool(attr("data-hole-owner")) or attr("data-primitive").endswith(
-                "-hole"
-            )
-            identifier = node.get("id")
-            # Resolve inherited paint before selection so open paths stay open
-            # and filled pads/text do not acquire an extra outline.
-            paint = {"fill": "black", "stroke": "none"}
-            stroke_width = "1"
-            for ancestor in reversed(ancestors):
-                declarations = properties(ancestor, {})
-                if declarations.get("stroke-width", "inherit") != "inherit":
-                    stroke_width = declarations["stroke-width"]
-                for name in paint:
-                    value = declarations.get(name, "inherit")
-                    if value != "inherit":
-                        paint[name] = value
-            self.paints[identifier] = paint
-            self.stroke_widths[identifier] = stroke_width
-            snap = (
-                layer in copper_layers
-                and attr("data-primitive") in ("pad", "via")
-                and not hole
-            )
-            indexed = bool(component or net or cs or ns or hole)
-            if not (indexed or snap):
-                continue
-            bounds = self.bounds(identifier)
-            if snap:
-                if attr("data-snap-x") and attr("data-snap-y"):
-                    center = self.renderer.transformForElement(identifier).map(
-                        QPointF(float(attr("data-snap-x")), float(attr("data-snap-y")))
+            def attr(name):
+                return attributes.get(name) or inherited.get(name, "")
+
+            text_group = identifier in self.text_groups
+            if kind in GRAPHICS or text_group:
+                component, net = attr("data-component"), attr("data-net")
+                primitive_kind = attr("data-primitive")
+                hole = bool(attr("data-hole-owner")) or primitive_kind.endswith("-hole")
+                if text_group:
+                    # Text can contain thousands of independent glyph strokes.
+                    # Qt supplies exact painted group bounds and hit testing;
+                    # indexing each stroke adds no selection information.
+                    paint = {
+                        name: next(
+                            (
+                                child.get(name, paint[name])
+                                for child in node.iter()
+                                if tag(child) in GRAPHICS
+                                and child.get(name, paint[name])
+                                not in ("none", "inherit")
+                            ),
+                            "none",
+                        )
+                        for name in ("fill", "stroke")
+                    }
+                self.paints[identifier] = paint
+                self.stroke_widths[identifier] = stroke_width
+                snap = (
+                    layer in copper_layers
+                    and primitive_kind in ("pad", "via")
+                    and not hole
+                )
+                indexed = bool(component or net or cs or ns or hole)
+                if indexed or snap:
+                    bounds = self.bounds(identifier)
+                    if snap:
+                        snap_x, snap_y = attr("data-snap-x"), attr("data-snap-y")
+                        center = (
+                            self.renderer.transformForElement(identifier).map(
+                                QPointF(float(snap_x), float(snap_y))
+                            )
+                            if snap_x and snap_y
+                            else bounds.center()
+                        )
+                        snap_points[(center.x(), center.y())].add(layer)
+                    if indexed:
+                        if bounds.isEmpty():
+                            bounds = bounds.adjusted(-0.01, -0.01, 0.01, 0.01)
+                        primitive = Primitive(
+                            identifier,
+                            bounds,
+                            layer,
+                            polygon,
+                            component,
+                            net,
+                            attr("data-pad-number") or attr("data-pad-designator"),
+                            cs,
+                            ns,
+                            hole,
+                            paint["fill"] != "none",
+                            paint["stroke"] != "none",
+                        )
+                        self.primitives.append(primitive)
+                        for c in cs or ([component] if component else []):
+                            self.component_bounds[c].append(bounds)
+                        for n in ns or ([net] if net else []):
+                            self.net_bounds[n].append(bounds)
+            if len(node) and not text_group:
+                # Carry inherited values once per group, rather than walking
+                # every primitive's ancestors for each metadata field.
+                child_metadata = dict(inherited)
+                child_metadata.update(
+                    (name, attributes[name])
+                    for name in metadata_names
+                    if attributes.get(name)
+                )
+                for child in node:
+                    visit(
+                        child,
+                        child_metadata,
+                        paint,
+                        stroke_width,
+                        layer,
+                        cs,
+                        ns,
+                        polygon,
                     )
-                else:
-                    center = bounds.center()
-                snap_points[(center.x(), center.y())].add(layer)
-            if not indexed:
-                continue
-            if bounds.isEmpty():
-                bounds = bounds.adjusted(-0.01, -0.01, 0.01, 0.01)
-            primitive = Primitive(
-                identifier,
-                bounds,
-                layer,
-                any(
-                    p.get("id") in self.polygon_ids
-                    or p.get("data-primitive") in ("polygon-outline", "polygon-cutout")
-                    for p in ancestors
-                ),
-                component,
-                net,
-                attr("data-pad-number") or attr("data-pad-designator"),
-                cs,
-                ns,
-                hole,
-                paint["fill"] != "none",
-                paint["stroke"] != "none",
-            )
-            self.primitives.append(primitive)
-            for c in cs or ([component] if component else []):
-                self.component_bounds[c].append(bounds)
-            for n in ns or ([net] if net else []):
-                self.net_bounds[n].append(bounds)
+
+        visit(self.root, {}, {"fill": "black", "stroke": "none"}, "1")
         self.snap_points = [
             (QPointF(x, y), frozenset(layers))
             for (x, y), layers in sorted(snap_points.items())
@@ -280,12 +366,12 @@ class NativeDocument:
                 if identifier in self.elements:
                     self.body_bounds.append((cid, self.bounds(identifier)))
         self.tree = STRtree(
-            [
-                box(
-                    p.bounds.left(), p.bounds.top(), p.bounds.right(), p.bounds.bottom()
-                )
-                for p in self.primitives
-            ]
+            boxes(
+                [p.bounds.left() for p in self.primitives],
+                [p.bounds.top() for p in self.primitives],
+                [p.bounds.right() for p in self.primitives],
+                [p.bounds.bottom() for p in self.primitives],
+            )
         )
         self.component_layers, self.net_layers, self.terminals = (
             defaultdict(set),
@@ -302,6 +388,9 @@ class NativeDocument:
             for name in p.schematic_nets or ([p.net] if p.net else []):
                 self.net_layers[name].add(p.layer)
         self.style = None
+        self.style_changes = {}
+        self.selection_overlay = None
+        self.scene_children = list(self.scene)
         self.render_count = 0
 
     def bounds(self, identifier):
@@ -368,24 +457,46 @@ class NativeDocument:
         if style == self.style:
             return
         self.style = style
-        root = deepcopy(self.root)
-        elements = {el.get("id"): el for el in root.iter() if el.get("id")}
-        if layer_order and self.layer_ids:
-            scene = elements.get(self.scene.get("id"), root)
+        root, elements = self.root, self.elements
+        # Restore only attributes touched by the previous style. The worker owns
+        # this tree; reusing it avoids copying a whole large board on every click.
+        for (identifier, name), value in self.style_changes.items():
+            node = elements[identifier]
+            if value is None:
+                node.attrib.pop(name, None)
+            else:
+                node.set(name, value)
+        self.style_changes.clear()
+        if self.selection_overlay is not None:
+            root.remove(self.selection_overlay)
+            self.selection_overlay = None
+
+        def remember(identifier, names):
+            node = elements[identifier]
+            for name in names:
+                self.style_changes.setdefault((identifier, name), node.get(name))
+
+        if self.layer_ids and layer_order:
             ordered = iter(
                 elements[identifier] for identifier in self.ordered_layers(layer_order)
             )
             # Replace only layer slots, preserving backgrounds and other scene nodes.
-            scene[:] = [
+            children = [
                 next(ordered) if child.get("id") in self.layer_ids else child
-                for child in scene
+                for child in self.scene_children
             ]
+        else:
+            children = self.scene_children
+        if list(self.scene) != children:
+            self.scene[:] = children
         hidden = set(self.layer_ids) - set(visible)
         for identifier in hidden:
+            remember(identifier, ("display",))
             elements[identifier].set("display", "none")
         if not polygons:
             for identifier in self.polygon_ids:
                 if identifier in elements:
+                    remember(identifier, ("display",))
                     elements[identifier].set("display", "none")
         selected = {}
         schematic_components = set()
@@ -416,6 +527,7 @@ class NativeDocument:
             background = QColor(
                 "#fffcf8" if self.data.get("kind") == "schematic" else "#1b1d21"
             )
+            faded_colors = {}
             for identifier, paint in self.paints.items():
                 if identifier in holes:
                     continue
@@ -435,9 +547,11 @@ class NativeDocument:
                     elif identifier in selected:
                         overrides[name] = selected[identifier]
                     else:
-                        overrides[name] = faded_paint(
-                            value, background, context_contrast
-                        )
+                        if value not in faded_colors:
+                            faded_colors[value] = faded_paint(
+                                value, background, context_contrast
+                            )
+                        overrides[name] = faded_colors[value]
                 if (
                     contour_only
                     and paint["stroke"] == "none"
@@ -458,6 +572,7 @@ class NativeDocument:
                         overrides["stroke-width"] = (
                             f"{float(width[1]) * SCHEMATIC_NET_WIDTH_SCALE:g}{width[2]}"
                         )
+                remember(identifier, (*overrides, "style"))
                 set_paint(node, overrides)
 
             # Draw the selection above faded layers so an unselected crossing
@@ -485,11 +600,36 @@ class NativeDocument:
                 for node in overlay.iter():
                     node.attrib.pop("id", None)
                 root.append(overlay)
+                self.selection_overlay = overlay
         self.renderer.load(QByteArray(ET.tostring(root)))
         self.renderer.setAnimationEnabled(False)
         self.renderer.setAspectRatioMode(Qt.AspectRatioMode.IgnoreAspectRatio)
 
     def raster(self, request):
+        if self.data.get("kind", "pcb") == "pcb":
+            from .pcb_raster import PcbRaster
+
+            if not hasattr(self, "pcb_raster"):
+                self.pcb_raster = PcbRaster(self)
+            visible, polygons, components, nets, *order = request["style"]
+            style = (
+                frozenset(visible),
+                polygons,
+                frozenset(components),
+                frozenset(nets),
+                tuple(order[0]) if order else (),
+            )
+            image = self.pcb_raster.render(
+                request["rect"], request["width"], request["height"], style
+            )
+            self.render_count += 1
+            return {
+                "image": image,
+                "rect": request["rect"],
+                "token": request["token"],
+                "renders": self.render_count,
+                "style": style,
+            }
         self.apply_style(*request["style"])
         rect, width, height = request["rect"], request["width"], request["height"]
         image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
@@ -577,7 +717,7 @@ class DocumentWorker(QObject):
     def load(self):
         try:
             started = time.perf_counter()
-            self.document = NativeDocument(render_file(self.path))
+            self.document = NativeDocument(render_file(self.path, native=True))
             info = self.document.info()
             info["load_seconds"] = time.perf_counter() - started
             self.loaded.emit(info)

@@ -59,6 +59,12 @@ def svg_path(path):
 
 
 def outline_text(root):
+    namespace = root.tag.rsplit("}", 1)[0] + "}" if "}" in root.tag else ""
+    # Altium PCB text is already emitted as paths. Avoid copying inherited
+    # attributes for every copper primitive when there is no text to outline.
+    if next(root.iter(namespace + "text"), None) is None:
+        return
+
     def visit(node, inherited):
         props = properties(node, inherited)
         if node.tag.rsplit("}", 1)[-1] != "text":

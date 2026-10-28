@@ -179,6 +179,8 @@ class MainWindow(QMainWindow):
         self.search_timer.timeout.connect(self.search)
         self.component.editTextChanged.connect(lambda: self.search_timer.start())
         self.net.editTextChanged.connect(lambda: self.search_timer.start())
+        self.component.activated.connect(self.commit_search)
+        self.net.activated.connect(self.commit_search)
         row = QHBoxLayout()
         self.sidebar_layout.addLayout(row)
         self.two_d_buttons = [
@@ -435,6 +437,10 @@ class MainWindow(QMainWindow):
     def remember_target(self):
         if self.current():
             self.current().probe_target = self.target.currentData()
+
+    def commit_search(self):
+        self.search_timer.stop()
+        self.search()
 
     def search(self):
         document = self.current()

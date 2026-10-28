@@ -1,16 +1,23 @@
 """Render supported EDA documents and build selection metadata for the viewer."""
 
+import re
+import zlib
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
-import re
-import zlib
 
 import freetype
-from altium_monkey import AltiumDesign, AltiumPcbDoc, AltiumSchDoc, PcbSvgRenderOptions, SchSvgRenderOptions
+from altium_monkey import (
+    AltiumDesign,
+    AltiumPcbDoc,
+    AltiumSchDoc,
+    PcbSvgRenderOptions,
+    SchSvgRenderOptions,
+)
 from altium_monkey.altium_pcb_surface import PCB_SurfaceSide
 from altium_monkey.altium_ttf_metrics import get_font_path_with_style
 
+from .altium_rendering import IndexedPcbSvgRenderer
 from .scene3d import build_scene
 
 
@@ -97,12 +104,17 @@ def polygon_element_ids(pcb: AltiumPcbDoc, svg: str) -> list[str]:
             if (isinstance(polygon_index, int) and 0 <= polygon_index < len(pcb.polygons)
                     and polygon_index not in (0xFFFF, 0xFFFFFFFF)):
                 linked.add((kind, index))
-    pattern = r'\bid="(pcb-(shapebased-region|region|track|arc|fill)-(\d+)(?:-[^"]*)?)"'
-    return [element_id for element_id, kind, index in re.findall(pattern, svg) if (kind, int(index)) in linked]
+    # A literal prefix lets the regex engine skip geometry path data and text
+    # quickly, instead of testing a word boundary at every byte of a large SVG.
+    pattern = r'id="(pcb-(shapebased-region|region|track|arc|fill)-(\d+)(?:-[^"]*)?)"'
+    return [match[1] for match in re.finditer(pattern, svg)
+            if (not match.start() or not (svg[match.start() - 1].isalnum() or svg[match.start() - 1] == "_"))
+            and (match[2], int(match[3])) in linked]
 
 
 def render_file(path: Path, side: str = "all", clip: bool = False,
-                pour_color: str | None = None, polygon_outlines: bool = False) -> dict:
+                pour_color: str | None = None, polygon_outlines: bool = False,
+                *, native: bool = False) -> dict:
     if path.suffix.lower() == ".kicad_pcb":
         from .kicad_pcb import render_pcb
         return render_pcb(path, side, clip, pour_color, polygon_outlines)
@@ -143,11 +155,11 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
     elif side == "bottom":
         svg = pcb.to_surface_svg(PCB_SurfaceSide.BOTTOM, options=options)
     else:
-        svg = pcb.to_svg(options=options)
+        svg = IndexedPcbSvgRenderer(pcb, options, compact_metadata=native).render_board(pcb)
     # An unsupported 3D record must not prevent opening the existing 2D view.
     try:
         scene = build_scene(pcb)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve 2D when optional 3D geometry is unsupported
         scene = {"board": [], "notes": [f"3D is unavailable for this document: {type(exc).__name__}: {exc}"]}
     return {
         "svg": svg,

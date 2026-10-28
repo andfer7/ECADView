@@ -13,18 +13,51 @@ component fills retain their highlighting. Net stroke tests check 3.5× schemati
 widths, inherited/inline units, deselection, and unchanged PCB/component widths.
 Navigation tests check a
 fixed cache pixel bound and coalescing hundreds of navigation events while a
-renderer is busy. 3D tests check constrained triangle areas, board occlusion,
-hole/side ray intersections and body deletion/undo without a GL context.
+renderer is busy. Zoom-out waits for the gesture to pause even beyond overscan;
+long pans still refresh uncovered areas. Returning worker results preserve the
+latest input deadline and cannot restore an older selection. Pad captions reuse
+their recorded layout during movement and refresh at idle, with matching pixels
+across logical display resolutions. 3D tests check constrained triangle areas,
+board occlusion, hole/side ray intersections and body deletion/undo without a GL context.
 
 ```sh
 QT_QPA_PLATFORM=offscreen uv run python -B -m unittest discover -s tests -v
 uv run python scripts/benchmark_native.py /path/to/board.kicad_pcb
+uv run python scripts/benchmark_native.py /path/to/large.PcbDoc --dpr 2 --zoom 4 --motion zoom --styles --snapshot /tmp/board.png
 ```
 
-The benchmark reports file parsing/indexing time, initial vector-raster time,
+The benchmark reports source rendering, native indexing and metadata time, time
+to the first frame, initial and unchanged-style vector-raster time,
 median/p95 cached paint times, and the number of vector renders during its
-navigation loop. It measures cached painting, not file loading or the asynchronous
-refinement rate. Real OpenGL output and the standalone macOS bundle also require
+navigation loop. `--styles` measures first selection, switching nets, revisiting
+a cached selection, clearing, and layer reordering separately. `--snapshot`
+saves the final navigation image for visual comparison. The loop starts with a
+resting caption layout and measures replaying it during pan/zoom movement.
+Navigation timings measure cached painting, not the asynchronous refinement rate
+or end-to-end input latency. Compare fresh processes with the same viewport,
+zoom, pixel density and filesystem-cache conditions.
+
+Altium optimization tests compare complete SVG output against the upstream
+renderer, including original IDs, V7 layers, clipping and multilayer pads/vias.
+Native rendering additionally batches stroke text into independent path
+segments, inherits shared metadata, and emits each physical drill once. Tests
+compare expanded geometry and effective relationships against upstream output;
+the source document and browser SVG output remain unchanged. Antialiasing at
+coincident drill edges or crossing glyph strokes can differ slightly after
+removing duplicated paint operations.
+Set `PERF_TEST_FILE` to a local large `.PcbDoc` (such as
+`LimeSDR-USB_1v4s.PcbDoc`) to run that exact-output comparison on a reference board
+and verify its source checksum. The file stays outside this repository.
+Native tests also check restoration of attributes, layer order and pixels after
+repeated selections, and caption-index culling without changing label priority.
+Large synthetic PCB tests require selection changes to avoid full SVG
+serialization, renderer reloads and full-board repaint. They check drill
+cutouts, selected crossings, layer and polygon visibility, camera invalidation,
+and direct native masks against Qt SVG. At a fixed view, the last two selected
+images are cached with a combined 64 MiB bound; camera/layer/polygon changes
+invalidate them. Schematic contour and selection styling uses its existing path.
+
+Real OpenGL output and the standalone macOS bundle also require
 a live desktop smoke check; the offscreen Qt plugin cannot create a GL context.
 
 The optional browser regression tests launch the real Python server and load its HTML,

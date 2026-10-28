@@ -4,7 +4,7 @@ import math
 from bisect import bisect_left, bisect_right
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen, QPicture
 from PySide6.QtWidgets import QApplication, QWidget
 
 # Qt maps Command on macOS to ControlModifier / Key_Control.
@@ -27,6 +27,8 @@ class BoardCanvas(QWidget):
         self.frame = None
         self.overview = None
         self.caption_sizes, self.caption_font_key = {}, None
+        self.caption_grid, self.caption_spanning, self.caption_cell = {}, [], 1
+        self.caption_cache = None
         self.visible, self.components, self.nets = set(), set(), set()
         self.layer_order, self.active_layer = [], None
         self.polygons, self.measuring, self.unit = True, False, "mm"
@@ -38,16 +40,29 @@ class BoardCanvas(QWidget):
         self.snap_points, self.snap_x = [], []
         self.press = self.previous = None
         self.inflight, self.dirty, self.serial = False, False, 0
+        self.navigating = False
         self.paint_count = self.render_count = 0
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(90)
-        self.timer.timeout.connect(self.request_frame)
+        self.timer.timeout.connect(self.finish_navigation)
 
     def set_document(self, info):
         self.info = info
         self.frame = self.overview = None
+        self.caption_cache = None
         self.caption_sizes.clear()
+        self.caption_grid, self.caption_spanning = {}, []
+        self.caption_cell = max(info["home"].width(), info["home"].height(), 1) / 32
+        for index, (bounds, *_) in enumerate(info.get("captions", [])):
+            x0, x1, y0, y1 = self.caption_cells(bounds)
+            # Keep unusually large bounds out of the grid to bound index memory.
+            if (x1 - x0 + 1) * (y1 - y0 + 1) > 64:
+                self.caption_spanning.append(index)
+                continue
+            for x in range(x0, x1 + 1):
+                for y in range(y0, y1 + 1):
+                    self.caption_grid.setdefault((x, y), []).append(index)
         self.snap_points = sorted(
             info.get("snap_points", []), key=lambda row: row[0].x()
         )
@@ -102,7 +117,7 @@ class BoardCanvas(QWidget):
         before = self.to_world(point)
         self.scale = max(0.001, min(100000, self.scale * factor))
         self.camera += before - self.to_world(point)
-        self.schedule(navigation=True)
+        self.schedule(navigation=True, zoom=True)
 
     def viewport(self):
         return QRectF(
@@ -119,16 +134,22 @@ class BoardCanvas(QWidget):
             tuple(self.layer_order),
         )
 
-    def schedule(self, navigation=False):
+    def schedule(self, navigation=False, zoom=False):
         if self.info:
             self.serial += 1
             self.dirty = True
-            # Transform the cache immediately; refine after a gesture pauses.
-            # Outside the cached area keep refreshing during a long pan too.
+            self.navigating = navigation
+            # Zoom-out stays idle-only even outside the detail image. A long
+            # pan still refreshes uncovered areas during movement.
             covered = self.frame and self.frame["rect"].contains(self.viewport())
-            if (navigation and covered) or not self.timer.isActive():
-                self.timer.start()
+            if not navigation or zoom or covered or not self.timer.isActive():
+                self.timer.start(90 if navigation else 0)
         self.update()
+
+    def finish_navigation(self):
+        self.navigating = False
+        self.update()
+        self.request_frame()
 
     def request_frame(self):
         if (
@@ -177,16 +198,21 @@ class BoardCanvas(QWidget):
     def accept_frame(self, frame):
         self.inflight = False
         self.render_count = frame["renders"]
-        # A stale camera frame is still useful while navigating. A stale style
-        # will be replaced by the one coalesced request as soon as this returns.
-        self.frame = frame
-        if self.overview and self.overview.get("style") != frame.get("style"):
-            self.overview = None
-        if self.info and frame["rect"].contains(self.info["home"]):
-            self.overview = frame
-        self.update()
-        if self.dirty:
-            self.timer.start()
+        # Older camera detail is useful; older layers/highlights must not replace
+        # a frame after the user changes the selection while rendering.
+        style = self.style_key()
+        if frame.get("style", style) == style:
+            self.frame = frame
+            if self.overview and self.overview.get("style") != frame.get("style"):
+                self.overview = None
+            if self.info and frame["rect"].contains(self.info["home"]):
+                self.overview = frame
+            self.update()
+        # Preserve the deadline set by the latest input, including zoom-out.
+        if self.dirty and not self.timer.isActive():
+            self.timer.start(
+                0 if not self.navigating or style != frame.get("style") else 90
+            )
 
     @Slot(object)
     def accept_pick(self, message):
@@ -257,7 +283,7 @@ class BoardCanvas(QWidget):
                 "Rendering…" if self.info else "Open or drop an Altium or KiCad file",
             )
         if self.info:
-            self.paint_captions(painter)
+            self.paint_cached_captions(painter)
         self.paint_measurements(painter)
         painter.end()
 
@@ -408,14 +434,80 @@ class BoardCanvas(QWidget):
         )
         self.update()
 
-    def paint_captions(self, painter):
+    def caption_cells(self, bounds):
+        return tuple(
+            math.floor(value / self.caption_cell)
+            for value in (bounds.left(), bounds.right(), bounds.top(), bounds.bottom())
+        )
+
+    def caption_candidates(self, viewport):
+        rows = self.info["captions"]
+        x0, x1, y0, y1 = self.caption_cells(viewport)
+        if (x1 - x0 + 1) * (y1 - y0 + 1) > 4096:
+            return rows
+        indices = set(self.caption_spanning)
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                indices.update(self.caption_grid.get((x, y), ()))
+        # Preserve drawing/collision priority when a pad belongs to several cells.
+        return (rows[index] for index in sorted(indices))
+
+    def paint_cached_captions(self, painter):
+        """Move the last label layout with the board until navigation pauses."""
+        if self.info["kind"] != "pcb":
+            return
+        style = self.style_key()
+        key = (
+            self.frame["image"].cacheKey() if self.frame else None,
+            self.camera.x(),
+            self.camera.y(),
+            self.scale,
+            self.width(),
+            self.height(),
+            painter.device().logicalDpiX(),
+            painter.device().logicalDpiY(),
+            style,
+        )
+        if not self.navigating and (
+            self.caption_cache is None or self.caption_cache["key"] != key
+        ):
+            picture = QPicture()
+            recorder = QPainter(picture)
+            # Match the widget's logical resolution when recording point fonts.
+            recorder.scale(
+                picture.logicalDpiX() / painter.device().logicalDpiX(),
+                picture.logicalDpiY() / painter.device().logicalDpiY(),
+            )
+            self.paint_captions(recorder, painter.device().logicalDpiY())
+            recorder.end()
+            self.caption_cache = {
+                "key": key,
+                "picture": picture,
+                "origin": self.to_world(QPointF()),
+                "scale": self.scale,
+                "style": style,
+            }
+        cache = self.caption_cache
+        if cache is not None and cache["style"] == style:
+            painter.save()
+            painter.translate(self.to_screen(cache["origin"]))
+            ratio = self.scale / cache["scale"]
+            painter.scale(ratio, ratio)
+            painter.drawPicture(QPointF(), cache["picture"])
+            painter.restore()
+
+    def paint_captions(self, painter, logical_dpi=None):
         if (
             self.info["kind"] != "pcb"
             or self.scale * self.info["home"].width() / max(1, self.width()) < 2
         ):
             return
-        painter.setFont(QFont("Sans Serif", 9))
+        font = QFont("Sans Serif", 9)
+        if logical_dpi is not None:
+            font.setPointSizeF(9 * logical_dpi / painter.device().logicalDpiY())
+        painter.setFont(font)
         metrics = painter.fontMetrics()
+        line_height = metrics.height()
         font_key = (
             painter.font().key(),
             painter.device().logicalDpiX(),
@@ -426,13 +518,15 @@ class BoardCanvas(QWidget):
             self.caption_sizes.clear()
         viewport = self.viewport()
         occupied = []
-        for bounds, pin, net, layer, polygon, component in self.info["captions"]:
+        for bounds, pin, net, layer, polygon, component in self.caption_candidates(
+            viewport
+        ):
             if layer not in self.visible or polygon and not self.polygons:
                 continue
             # Cull in world space before transforming or measuring any text.
             if (
                 not bounds.intersects(viewport)
-                or bounds.height() * self.scale < metrics.height() + 4
+                or bounds.height() * self.scale < line_height + 4
             ):
                 continue
             if (
@@ -449,7 +543,7 @@ class BoardCanvas(QWidget):
                 lines = text.splitlines()
                 self.caption_sizes[text] = (
                     max(metrics.horizontalAdvance(row) for row in lines) + 6,
-                    metrics.height() * len(lines) + 4,
+                    line_height * len(lines) + 4,
                 )
             width, height = self.caption_sizes[text]
             if (

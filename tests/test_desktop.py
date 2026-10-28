@@ -70,6 +70,37 @@ def paint_at(document, x, y, nets=(), components=(), visible=None, layer_order=(
 
 
 class NativeRenderingTests(unittest.TestCase):
+    def test_repeated_style_changes_restore_original_attributes_order_and_pixels(self):
+        import xml.etree.ElementTree as etree
+
+        for name in ("demo.kicad_pcb", "demo.kicad_sch"):
+            with self.subTest(name=name):
+                document = NativeDocument(render_file(FIXTURES / name))
+                info = document.info()
+                layers = {layer["id"] for layer in info["layers"]}
+                component = next(iter(info["components"]))
+                net = next(iter(info["nets"]))
+                original = etree.tostring(document.root)
+                request = {
+                    "token": 1,
+                    "rect": info["home"],
+                    "width": 400,
+                    "height": 300,
+                }
+                baseline = (layers, True, set(), set(), ())
+                expected = document.raster(dict(request, style=baseline))["image"]
+                styles = [
+                    (set(), False, {component}, set(), tuple(sorted(layers))),
+                    (layers, True, set(), {net}, tuple(sorted(layers, reverse=True))),
+                    (layers, False, {component}, {net}, ()),
+                ]
+                for style in styles * 3:
+                    document.raster(dict(request, style=style))
+                    actual = document.raster(dict(request, style=baseline))["image"]
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(etree.tostring(document.root), original)
+                    self.assertIsNone(document.selection_overlay)
+
     def test_measurement_centres_include_unconnected_copper_and_transform_exact_origins(
         self,
     ):
@@ -532,6 +563,41 @@ class NativeNavigationTests(unittest.TestCase):
         self.canvas.timer.stop()
         self.canvas.close()
 
+    def test_caption_index_culls_offscreen_rows_without_changing_priority_or_edges(
+        self,
+    ):
+        import random
+
+        rng = random.Random(43)
+        rows = [
+            (QRectF(x, y, 1, 1), str(index), "N", "layer-top", False, "U1")
+            for index, (x, y) in enumerate(
+                (rng.uniform(-100, 100), rng.uniform(-100, 100)) for _ in range(4000)
+            )
+        ]
+        rows += [
+            (QRectF(-100, -100, 200, 200), "SPAN", "N", "layer-top", False, "U1"),
+            (QRectF(-1, -1, 2, 2), "EDGE", "N", "layer-top", False, "U1"),
+        ]
+        info = dict(self.canvas.info, home=QRectF(-100, -100, 200, 200), captions=rows)
+        self.canvas.set_document(info)
+        for viewport in (
+            QRectF(-1, -1, 4, 4),
+            QRectF(0, 0, 20, 20),
+            QRectF(800, 800, 10, 10),
+            QRectF(-1000, -1000, 2000, 2000),
+        ):
+            candidates = list(self.canvas.caption_candidates(viewport))
+            self.assertEqual(
+                [row for row in candidates if row[0].intersects(viewport)],
+                [row for row in rows if row[0].intersects(viewport)],
+            )
+        self.assertLess(
+            len(list(self.canvas.caption_candidates(QRectF(-1, -1, 4, 4)))), 100
+        )
+        self.canvas.set_document(dict(info, captions=[]))
+        self.assertEqual(list(self.canvas.caption_candidates(QRectF(-1, -1, 4, 4))), [])
+
     def test_distance_label_bounds_clear_segments_markers_and_xy_legs_at_any_angle(
         self,
     ):
@@ -740,6 +806,232 @@ class NativeNavigationTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0]["token"], canvas.serial)
 
+    def test_zoom_out_refines_only_after_pausing_even_beyond_cached_bounds(self):
+        canvas = self.canvas
+        requests = []
+        canvas.render_requested.connect(requests.append)
+        canvas.request_frame()
+        request = requests.pop()
+        image = QImage(request["width"], request["height"], QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        canvas.accept_frame({**request, "image": image, "renders": 1})
+        for _ in range(8):
+            canvas.zoom_at(QPointF(400, 300), 0.8)
+            QTest.qWait(25)
+            self.assertEqual(
+                requests, [], "zooming beyond overscan must still defer SVG work"
+            )
+        self.assertFalse(canvas.frame["rect"].contains(canvas.viewport()))
+        wait_for(lambda: bool(requests))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["token"], canvas.serial)
+        self.assertEqual(requests[0]["rect"].center(), canvas.camera)
+
+    def test_continuous_uncovered_pan_refines_without_an_overview(self):
+        canvas = self.canvas
+        canvas.scale *= 4
+        canvas.nets = {"SELECTED"}
+        requests = []
+        canvas.render_requested.connect(requests.append)
+        canvas.request_frame()
+        request = requests.pop()
+        image = QImage(request["width"], request["height"], QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        canvas.accept_frame({**request, "image": image, "renders": 1})
+        self.assertIsNone(canvas.overview, "selected detail has no full-board fallback")
+        received_during_pan = False
+        for _ in range(8):
+            canvas.camera += QPointF(request["rect"].width() * 0.1, 0)
+            canvas.schedule(navigation=True)
+            QTest.qWait(25)
+            received_during_pan |= bool(requests)
+        self.assertFalse(canvas.frame["rect"].contains(canvas.viewport()))
+        self.assertTrue(
+            received_during_pan,
+            "an uncovered continuous pan must refresh before the pointer stops",
+        )
+        self.assertEqual(len(requests), 1, "worker requests remain coalesced")
+
+    def test_worker_finishing_after_navigation_idle_requests_latest_view_immediately(
+        self,
+    ):
+        canvas = self.canvas
+        requests = []
+        canvas.render_requested.connect(requests.append)
+        canvas.request_frame()
+        initial = requests.pop()
+        image = QImage(initial["width"], initial["height"], QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        canvas.accept_frame({**initial, "image": image, "renders": 1})
+        canvas.zoom_at(QPointF(400, 300), 1.5)
+        canvas.request_frame()
+        old = requests.pop()
+        canvas.timer.stop()
+        canvas.zoom_at(QPointF(400, 300), 1.5)
+        QTest.qWait(120)
+        self.assertFalse(canvas.navigating)
+        self.assertFalse(canvas.timer.isActive())
+        self.assertTrue(canvas.inflight)
+        self.assertEqual(requests, [])
+        canvas.accept_frame({**old, "image": image, "renders": 2})
+        self.assertTrue(canvas.timer.isActive())
+        self.assertEqual(
+            canvas.timer.interval(),
+            0,
+            "the completed idle period must not be followed by another 90 ms wait",
+        )
+        QTest.qWait(1)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["token"], canvas.serial)
+        self.assertEqual(requests[0]["rect"].center(), canvas.camera)
+
+    def test_old_camera_result_preserves_live_navigation_debounce(self):
+        canvas = self.canvas
+        requests = []
+        canvas.render_requested.connect(requests.append)
+        canvas.request_frame()
+        initial = requests.pop()
+        image = QImage(initial["width"], initial["height"], QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        canvas.accept_frame({**initial, "image": image, "renders": 1})
+        canvas.zoom_at(QPointF(400, 300), 0.8)
+        canvas.request_frame()
+        old = requests.pop()
+        canvas.timer.stop()
+        canvas.zoom_at(QPointF(400, 300), 0.8)
+        QTest.qWait(35)
+        remaining = canvas.timer.remainingTime()
+        canvas.accept_frame({**old, "image": image, "renders": 2})
+        self.assertFalse(canvas.inflight)
+        self.assertTrue(canvas.timer.isActive())
+        self.assertLessEqual(
+            canvas.timer.remainingTime(),
+            remaining + 10,
+            "a completed worker must retain the deadline set by the last input",
+        )
+        for _ in range(6):
+            canvas.zoom_at(QPointF(400, 300), 0.8)
+            QTest.qWait(25)
+            self.assertEqual(requests, [], "navigation must not start another raster")
+        wait_for(lambda: bool(requests))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["token"], canvas.serial)
+        self.assertEqual(requests[0]["rect"].center(), canvas.camera)
+
+    def test_stale_style_result_preserves_current_frame_and_requests_latest_view(self):
+        canvas = self.canvas
+        requests = []
+        canvas.render_requested.connect(requests.append)
+        canvas.nets = {"CURRENT"}
+        canvas.request_frame()
+        initial = requests.pop()
+        image = QImage(initial["width"], initial["height"], QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        canvas.accept_frame({**initial, "image": image, "renders": 1})
+        current_frame, current_overview = canvas.frame, canvas.overview
+        canvas.nets = {"OLD"}
+        canvas.schedule()
+        canvas.request_frame()
+        old = requests.pop()
+        canvas.nets = {"CURRENT"}
+        canvas.schedule()
+        canvas.camera += QPointF(initial["rect"].width() * 2, 0)
+        canvas.schedule(navigation=True)
+        canvas.accept_frame({**old, "image": image, "renders": 2})
+        self.assertFalse(canvas.inflight)
+        self.assertIs(canvas.frame, current_frame)
+        self.assertIs(canvas.overview, current_overview)
+        wait_for(lambda: bool(requests))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["style"], canvas.style_key())
+        self.assertEqual(requests[0]["token"], canvas.serial)
+        self.assertEqual(requests[0]["rect"].center(), canvas.camera)
+
+    def test_caption_picture_replays_during_navigation_and_rebuilds_at_idle(self):
+        canvas = self.canvas
+        layer = next(iter(canvas.visible))
+        canvas.info["home"] = QRectF(-10, -10, 20, 20)
+        canvas.info["captions"] = [(QRectF(-1, -1, 2, 2), "1", "N", layer, False, "U1")]
+        canvas.set_document(canvas.info)
+        canvas.timer.stop()
+        canvas.camera, canvas.scale = QPointF(), 100
+        image = QImage(800, 600, QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        canvas.frame = {
+            "image": image,
+            "rect": canvas.viewport(),
+            "style": canvas.style_key(),
+        }
+        target = image.copy()
+        painter = QPainter(target)
+        try:
+            with patch.object(
+                canvas, "paint_captions", wraps=canvas.paint_captions
+            ) as paint_captions:
+                canvas.paint_cached_captions(painter)
+                canvas.paint_cached_captions(painter)
+                self.assertEqual(paint_captions.call_count, 1)
+                for factor in (1.1, 0.9, 1.05):
+                    canvas.zoom_at(QPointF(400, 300), factor)
+                    canvas.paint_cached_captions(painter)
+                self.assertEqual(
+                    paint_captions.call_count,
+                    1,
+                    "navigation must replay labels without repeating placement work",
+                )
+                canvas.timer.stop()
+                canvas.finish_navigation()
+                canvas.paint_cached_captions(painter)
+                self.assertEqual(paint_captions.call_count, 2)
+                canvas.paint_cached_captions(painter)
+                self.assertEqual(paint_captions.call_count, 2)
+                canvas.nets = {"N"}
+                canvas.schedule()
+                canvas.paint_cached_captions(painter)
+                self.assertEqual(paint_captions.call_count, 3)
+        finally:
+            painter.end()
+
+    def test_cached_idle_captions_match_direct_rendering_at_device_dpi(self):
+        canvas = self.canvas
+        layer = next(iter(canvas.visible))
+        canvas.info["home"] = QRectF(-10, -10, 20, 20)
+        canvas.info["captions"] = [
+            (QRectF(-1, -1, 2, 2), "1", "NET", layer, False, "U1")
+        ]
+        canvas.set_document(canvas.info)
+        canvas.timer.stop()
+        canvas.camera, canvas.scale = QPointF(), 100
+        base = QImage(800, 600, QImage.Format.Format_ARGB32)
+        base.fill(QColor("red"))
+        canvas.frame = {
+            "image": base,
+            "rect": canvas.viewport(),
+            "style": canvas.style_key(),
+        }
+        for dpi in (72, 96, 144):
+            with self.subTest(dpi=dpi):
+                cached = base.copy()
+                cached.setDotsPerMeterX(round(dpi / 0.0254))
+                cached.setDotsPerMeterY(round(dpi / 0.0254))
+                direct = cached.copy()
+                painter = QPainter(cached)
+                canvas.paint_cached_captions(painter)
+                painter.end()
+                painter = QPainter(direct)
+                canvas.paint_captions(painter)
+                painter.end()
+                self.assertNotEqual(
+                    direct.pixelColor(400, 300),
+                    QColor("red"),
+                    "the visible caption must be drawn",
+                )
+                self.assertEqual(
+                    cached,
+                    direct,
+                    "idle caching must preserve caption text size and placement",
+                )
+
     def test_overview_fills_area_outside_the_detail_frame_during_navigation(self):
         canvas = self.canvas
         canvas.info["captions"] = []
@@ -764,9 +1056,7 @@ class NativeNavigationTests(unittest.TestCase):
 
     def test_offscreen_and_tiny_captions_do_not_measure_text(self):
         canvas = self.canvas
-        canvas.camera, canvas.scale = QPointF(), 40
         canvas.info["home"] = QRectF(-50, -50, 100, 100)
-        canvas.visible = {"layer-top"}
         canvas.info["captions"] = [
             (bounds, pin, "NET", "layer-top", False, "R1")
             for bounds, pin in [
@@ -775,6 +1065,9 @@ class NativeNavigationTests(unittest.TestCase):
                 (QRectF(-1, -1, 2, 2), "VISIBLE"),
             ]
         ]
+        canvas.set_document(canvas.info)
+        canvas.camera, canvas.scale = QPointF(), 40
+        canvas.visible = {"layer-top"}
         image = QImage(800, 600, QImage.Format.Format_ARGB32)
         image.fill(QColor("gray"))
         canvas.frame = {"image": image, "rect": canvas.viewport()}
@@ -786,9 +1079,7 @@ class NativeNavigationTests(unittest.TestCase):
 
     def test_pad_captions_follow_the_union_of_selected_components_and_nets(self):
         canvas = self.canvas
-        canvas.camera, canvas.scale = QPointF(), 40
         canvas.info["home"] = QRectF(-50, -50, 100, 100)
-        canvas.visible = {"layer-top"}
         canvas.info["captions"] = [
             (QRectF(x - 1, -1, 2, 2), pin, net, "layer-top", False, component)
             for x, pin, net, component in [
@@ -797,6 +1088,9 @@ class NativeNavigationTests(unittest.TestCase):
                 (5, "3", "N3", "R3"),
             ]
         ]
+        canvas.set_document(canvas.info)
+        canvas.camera, canvas.scale = QPointF(), 40
+        canvas.visible = {"layer-top"}
         image = QImage(800, 600, QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(QColor("gray"))
         canvas.frame = {"image": image, "rect": QRectF(-10, -7.5, 20, 15)}
