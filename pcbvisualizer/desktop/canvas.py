@@ -1,10 +1,17 @@
 """Cached native viewport: navigation paints images, never an SVG DOM."""
 
 import math
+from bisect import bisect_left, bisect_right
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
+
+SNAP_MODIFIERS = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
+SNAP_KEYS = {
+    Qt.Key.Key_Control: Qt.KeyboardModifier.ControlModifier,
+    Qt.Key.Key_Meta: Qt.KeyboardModifier.MetaModifier,
+}
 
 
 class BoardCanvas(QWidget):
@@ -28,6 +35,8 @@ class BoardCanvas(QWidget):
         self.polygons, self.measuring, self.unit = True, False, "mm"
         self.measurements, self.points = [], []
         self.measure_pointer = None
+        self.measure_snapping = False
+        self.snap_points, self.snap_x = [], []
         self.press = self.previous = None
         self.inflight, self.dirty, self.serial = False, False, 0
         self.paint_count = self.render_count = 0
@@ -40,6 +49,10 @@ class BoardCanvas(QWidget):
         self.info = info
         self.frame = self.overview = None
         self.caption_sizes.clear()
+        self.snap_points = sorted(
+            info.get("snap_points", []), key=lambda row: row[0].x()
+        )
+        self.snap_x = [point.x() for point, layers in self.snap_points]
         self.visible = {layer["id"] for layer in info["layers"] if layer["visible"]}
         self.layer_order = [layer["id"] for layer in info["layers"]]
         self.active_layer = None
@@ -267,25 +280,52 @@ class BoardCanvas(QWidget):
             painter.drawText((p + q) / 2 + QPointF(5, -5), self.distance(a, b))
             marker(p)
             marker(q)
-        if self.measuring and self.points:
-            a = self.points[0]
-            p = self.to_screen(a)
-            if self.measure_pointer is not None:
-                q = self.measure_pointer
-                pen.setStyle(Qt.PenStyle.DashLine)
-                painter.setPen(pen)
-                painter.drawLine(p, q)
-                painter.drawText(
-                    (p + q) / 2 + QPointF(5, -5), self.distance(a, self.to_world(q))
-                )
-                pen.setStyle(Qt.PenStyle.SolidLine)
-                painter.setPen(pen)
-            marker(p)
+        if self.measuring:
+            target, snapped = (
+                self.measurement_position(self.measure_pointer, self.measure_snapping)
+                if self.measure_pointer is not None
+                else (None, False)
+            )
+            if self.points:
+                a = self.points[0]
+                p = self.to_screen(a)
+                if target is not None:
+                    q = self.to_screen(target)
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                    painter.setPen(pen)
+                    painter.drawLine(p, q)
+                    painter.drawText(
+                        (p + q) / 2 + QPointF(5, -5), self.distance(a, target)
+                    )
+                    pen.setStyle(Qt.PenStyle.SolidLine)
+                    painter.setPen(pen)
+                marker(p)
+            if snapped:
+                marker(self.to_screen(target))
         painter.restore()
+
+    def measurement_position(self, position, snap):
+        point = self.to_world(position)
+        if not snap or not self.info or self.info["kind"] != "pcb":
+            return point, False
+        radius = 12 / self.scale
+        lo = bisect_left(self.snap_x, point.x() - radius)
+        hi = bisect_right(self.snap_x, point.x() + radius)
+        closest, distance = None, radius * radius
+        for index in range(lo, hi):
+            center, layers = self.snap_points[index]
+            if not self.visible.intersection(layers):
+                continue
+            delta = center - point
+            squared = delta.x() ** 2 + delta.y() ** 2
+            if squared <= distance:
+                closest, distance = center, squared
+        return (QPointF(closest), True) if closest is not None else (point, False)
 
     def cancel_measurement(self):
         self.points.clear()
         self.measure_pointer = None
+        self.measure_snapping = False
         self.update()
 
     def paint_captions(self, painter):
@@ -439,8 +479,9 @@ class BoardCanvas(QWidget):
             if self.dragged:
                 self.camera -= delta / self.scale
                 self.schedule(navigation=True)
-        if self.measuring and self.points:
+        if self.measuring:
             self.measure_pointer = event.position()
+            self.measure_snapping = bool(event.modifiers() & SNAP_MODIFIERS)
             self.update()
 
     def mouseReleaseEvent(self, event):
@@ -452,8 +493,12 @@ class BoardCanvas(QWidget):
         ):
             point = self.to_world(event.position())
             if self.measuring:
+                point, _snapped = self.measurement_position(
+                    event.position(), bool(event.modifiers() & SNAP_MODIFIERS)
+                )
                 self.points.append(point)
                 self.measure_pointer = event.position()
+                self.measure_snapping = bool(event.modifiers() & SNAP_MODIFIERS)
                 if len(self.points) == 2:
                     a, b = self.points
                     self.measurements.append((a, b))
@@ -488,5 +533,22 @@ class BoardCanvas(QWidget):
             self.nets.clear()
             self.schedule()
             self.selection_changed.emit()
+        elif event.key() in SNAP_KEYS and self.measuring:
+            self.measure_snapping = True
+            self.update()
         else:
             super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() in SNAP_KEYS and self.measuring:
+            self.measure_snapping = bool(
+                event.modifiers() & SNAP_MODIFIERS & ~SNAP_KEYS[event.key()]
+            )
+            self.update()
+        else:
+            super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event):
+        self.measure_snapping = False
+        self.update()
+        super().focusOutEvent(event)

@@ -79,6 +79,9 @@ pointer to preview a dashed line and its live distance, then click again to fix
 the endpoint. Completed measurements retain both endpoint markers. Escape or
 turning Measure off cancels the unfinished preview; **Clear measurements** removes
 both completed measurements and the preview.
+Hold Ctrl near a visible pad or via to snap either measurement endpoint to its
+centre; Command also works on macOS. The preview marks the snap target before
+you click. Release the key to return to free placement.
 Selecting a component or net in either 2D view keeps it bright and fades the
 remaining geometry to 15% contrast in layouts and 45% in schematics.
 Selected routes remain visible across other

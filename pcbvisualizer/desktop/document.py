@@ -7,7 +7,7 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 
-from PySide6.QtCore import QByteArray, QObject, QRectF, Qt, Signal, Slot
+from PySide6.QtCore import QByteArray, QObject, QPointF, QRectF, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from shapely.geometry import box
@@ -146,6 +146,17 @@ class NativeDocument:
                         }
                     )
         self.layer_ids = {layer["id"] for layer in self.layers}
+        copper_layers = {
+            node.get("id")
+            for node in self.scene
+            if node.get("data-layer-role") == "copper"
+            or node.get("data-layer-family") in ("signal", "internal_plane")
+            or node.get("data-layer-token", "").upper()
+            in ("TOP", "BOTTOM", "MULTILAYER")
+            or node.get("id", "").lower()
+            in ("layer-top", "layer-bottom", "layer-multilayer")
+        }
+        snap_points = defaultdict(set)
         self.drill_layers = {
             node.get("id")
             for node in self.scene
@@ -216,9 +227,25 @@ class NativeDocument:
                         paint[name] = value
             self.paints[identifier] = paint
             self.stroke_widths[identifier] = stroke_width
-            if not (component or net or cs or ns or hole):
+            snap = (
+                layer in copper_layers
+                and attr("data-primitive") in ("pad", "via")
+                and not hole
+            )
+            indexed = bool(component or net or cs or ns or hole)
+            if not (indexed or snap):
                 continue
             bounds = self.bounds(identifier)
+            if snap:
+                if attr("data-snap-x") and attr("data-snap-y"):
+                    center = self.renderer.transformForElement(identifier).map(
+                        QPointF(float(attr("data-snap-x")), float(attr("data-snap-y")))
+                    )
+                else:
+                    center = bounds.center()
+                snap_points[(center.x(), center.y())].add(layer)
+            if not indexed:
+                continue
             if bounds.isEmpty():
                 bounds = bounds.adjusted(-0.01, -0.01, 0.01, 0.01)
             primitive = Primitive(
@@ -244,6 +271,10 @@ class NativeDocument:
                 self.component_bounds[c].append(bounds)
             for n in ns or ([net] if net else []):
                 self.net_bounds[n].append(bounds)
+        self.snap_points = [
+            (QPointF(x, y), frozenset(layers))
+            for (x, y), layers in sorted(snap_points.items())
+        ]
         for cid, row in self.component_rows.items():
             for identifier in row.get("body_elements", []):
                 if identifier in self.elements:
@@ -307,6 +338,7 @@ class NativeDocument:
                 for p in self.primitives
                 if p.pin and not p.hole
             ],
+            "snap_points": self.snap_points,
             "component_layers": dict(self.component_layers),
             "net_layers": dict(self.net_layers),
             "scene3d": self.data.get("scene3d", {}),
