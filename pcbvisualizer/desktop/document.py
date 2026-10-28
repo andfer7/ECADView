@@ -146,6 +146,13 @@ class NativeDocument:
                         }
                     )
         self.layer_ids = {layer["id"] for layer in self.layers}
+        self.drill_layers = {
+            node.get("id")
+            for node in self.scene
+            if node.get("data-layer-role") == "drill"
+            or node.get("data-layer-token", "").upper() == "DRILLS"
+            or node.get("id", "").lower() == "layer-drills"
+        }
         self.parents = {
             child: parent for parent in self.root.iter() for child in parent
         }
@@ -305,18 +312,42 @@ class NativeDocument:
             "scene3d": self.data.get("scene3d", {}),
         }
 
-    def apply_style(self, visible, polygons, selected_components, selected_nets):
+    def ordered_layers(self, layer_order):
+        ranks = {identifier: index for index, identifier in enumerate(layer_order)}
+        # Drill cutouts must remain open even when copper is brought forward.
+        return sorted(
+            (layer["id"] for layer in self.layers),
+            key=lambda identifier: (
+                identifier in self.drill_layers,
+                ranks.get(identifier, -1),
+            ),
+        )
+
+    def apply_style(
+        self, visible, polygons, selected_components, selected_nets, layer_order=()
+    ):
         style = (
             frozenset(visible),
             polygons,
             frozenset(selected_components),
             frozenset(selected_nets),
+            tuple(layer_order),
         )
         if style == self.style:
             return
         self.style = style
         root = deepcopy(self.root)
         elements = {el.get("id"): el for el in root.iter() if el.get("id")}
+        if layer_order and self.layer_ids:
+            scene = elements.get(self.scene.get("id"), root)
+            ordered = iter(
+                elements[identifier] for identifier in self.ordered_layers(layer_order)
+            )
+            # Replace only layer slots, preserving backgrounds and other scene nodes.
+            scene[:] = [
+                next(ordered) if child.get("id") in self.layer_ids else child
+                for child in scene
+            ]
         hidden = set(self.layer_ids) - set(visible)
         for identifier in hidden:
             elements[identifier].set("display", "none")
@@ -444,7 +475,7 @@ class NativeDocument:
             "renders": self.render_count,
         }
 
-    def pick(self, position, tolerance, visible, polygons):
+    def pick(self, position, tolerance, visible, polygons, layer_order=()):
         indices = self.tree.query(
             box(
                 position.x() - tolerance,
@@ -455,7 +486,19 @@ class NativeDocument:
         )
         # Test paint, not just bounding boxes: holes, empty symbol outlines and
         # curved routes must remain click-through.
-        for index in sorted(indices, reverse=True):
+        ranks = (
+            {
+                identifier: index
+                for index, identifier in enumerate(self.ordered_layers(layer_order))
+            }
+            if layer_order
+            else {}
+        )
+        for index in sorted(
+            indices,
+            key=lambda index: (ranks.get(self.primitives[index].layer, -1), index),
+            reverse=True,
+        ):
             p = self.primitives[index]
             if p.layer and p.layer not in visible or p.polygon and not polygons:
                 continue
