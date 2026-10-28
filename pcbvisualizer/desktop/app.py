@@ -204,6 +204,7 @@ class MainWindow(QMainWindow):
         layer_layout.setContentsMargins(0, 0, 0, 0)
         self.layers = QListWidget()
         self.layers.itemChanged.connect(self.layer_changed)
+        self.layers.currentItemChanged.connect(self.layer_selected)
         layer_layout.addWidget(self.layers, 1)
         row = QHBoxLayout()
         layer_layout.addLayout(row)
@@ -352,7 +353,9 @@ class MainWindow(QMainWindow):
         self.net.setEnabled(bool(info))
         self.polygons.setEnabled(bool(info and info["kind"] == "pcb"))
         self.polygons.setVisible(bool(info and info["kind"] == "pcb" and not solid))
-        self.layer_controls.setVisible(bool(info and info["kind"] == "pcb" and not solid))
+        self.layer_controls.setVisible(
+            bool(info and info["kind"] == "pcb" and not solid)
+        )
         self.warning.setText(
             document.error_message
             if document and document.error_message
@@ -387,6 +390,8 @@ class MainWindow(QMainWindow):
                     else Qt.CheckState.Unchecked
                 )
                 self.layers.addItem(item)
+                if layer["id"] == canvas.active_layer:
+                    self.layers.setCurrentItem(item)
             self.polygons.setChecked(canvas.polygons)
             self.measure_action.setChecked(canvas.measuring)
             self.unit.blockSignals(True)
@@ -503,9 +508,15 @@ class MainWindow(QMainWindow):
             identifier = item.data(Qt.ItemDataRole.UserRole)
             if item.checkState() == Qt.CheckState.Checked:
                 document.canvas.visible.add(identifier)
+                document.canvas.raise_layer(identifier)
             else:
                 document.canvas.visible.discard(identifier)
             document.canvas.schedule()
+
+    def layer_selected(self, item, previous=None):
+        document = self.current()
+        if document and item:
+            document.canvas.raise_layer(item.data(Qt.ItemDataRole.UserRole))
 
     def all_layers(self, visible):
         document = self.current()

@@ -42,13 +42,13 @@ def board_document():
     return NativeDocument(render_file(FIXTURES / "demo.kicad_pcb"))
 
 
-def paint_at(document, x, y, nets=(), components=(), visible=None):
+def paint_at(document, x, y, nets=(), components=(), visible=None, layer_order=()):
     if visible is None:
         visible = {layer["id"] for layer in document.layers if layer["visible"]}
     return (
         document.raster(
             {
-                "style": (visible, True, set(components), set(nets)),
+                "style": (visible, True, set(components), set(nets), layer_order),
                 "token": 1,
                 "rect": QRectF(x - 1, y - 1, 2, 2),
                 "width": 200,
@@ -61,6 +61,43 @@ def paint_at(document, x, y, nets=(), components=(), visible=None):
 
 
 class NativeRenderingTests(unittest.TestCase):
+    def test_layer_order_changes_crossing_paint_and_pick_but_preserves_drills(self):
+        document = NativeDocument(
+            {
+                "name": "crossing",
+                "kind": "pcb",
+                "svg": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+                '<g id="scene" transform="translate(1 1)">'
+                '<g id="layer-top"><path data-net="TOP" d="M0 4H8" fill="none" stroke="red" stroke-width=".5"/></g>'
+                '<g id="layer-bottom"><path data-net="BOTTOM" d="M4 0V8" fill="none" stroke="blue" stroke-width=".5"/></g>'
+                '<g id="layer-drills"><circle data-hole-owner="via" cx="6" cy="4" r=".2" fill="#1b1d21"/></g>'
+                "</g></svg>",
+            }
+        )
+        visible = document.layer_ids
+        for order, color, net in [
+            ((), "#0000ff", "BOTTOM"),
+            (("layer-bottom", "layer-drills", "layer-top"), "#ff0000", "TOP"),
+            (("layer-drills", "layer-top", "layer-bottom"), "#0000ff", "BOTTOM"),
+        ]:
+            with self.subTest(order=order):
+                self.assertEqual(paint_at(document, 5, 5, layer_order=order), color)
+                self.assertEqual(
+                    document.pick(QPointF(5, 5), 0.03, visible, True, order)["nets"],
+                    [net],
+                )
+                self.assertEqual(paint_at(document, 7, 5, layer_order=order), "#1b1d21")
+                self.assertIsNone(
+                    document.pick(QPointF(7, 5), 0.03, visible, True, order)
+                )
+                self.assertEqual(
+                    paint_at(
+                        document, 5, 5, visible={"layer-bottom"}, layer_order=order
+                    ),
+                    "#0000ff",
+                )
+        self.assertEqual(paint_at(document, 5, 5), "#0000ff")
+
     def test_only_selected_schematic_net_strokes_thicken_and_restore(self):
         for kind in ("schematic", "pcb"):
             for group_width, path_style in [
@@ -552,6 +589,39 @@ class NativeWindowTests(unittest.TestCase):
     def tearDown(self):
         self.window.close()
         APP.processEvents()
+
+    def test_selected_layer_order_is_per_board_and_survives_sidebar_refresh(self):
+        self.window.open_files(
+            [FIXTURES / "demo.kicad_pcb"] * 2 + [FIXTURES / "demo.kicad_sch"]
+        )
+        wait_for(lambda: all(self.window.tabs.widget(i).info for i in range(3)))
+        first, second, schematic = [self.window.tabs.widget(i) for i in range(3)]
+        original = list(second.canvas.layer_order)
+        self.window.tabs.setCurrentWidget(first)
+        item = self.window.layers.item(0)
+        identifier = item.data(Qt.ItemDataRole.UserRole)
+        self.window.layers.setCurrentItem(item)
+        self.assertEqual(first.canvas.layer_order[-1], identifier)
+        self.assertEqual(second.canvas.layer_order, original)
+        item.setCheckState(Qt.CheckState.Unchecked)
+        self.assertNotIn(identifier, first.canvas.visible)
+        self.window.layers.setCurrentRow(1)
+        item.setCheckState(Qt.CheckState.Checked)
+        self.assertEqual(first.canvas.layer_order[-1], identifier)
+        self.assertIn(identifier, first.canvas.visible)
+        expected = list(first.canvas.layer_order)
+        self.window.tabs.setCurrentWidget(schematic)
+        self.assertEqual(schematic.canvas.layer_order, [])
+        self.window.tabs.setCurrentWidget(second)
+        self.assertEqual(second.canvas.layer_order, original)
+        self.window.tabs.setCurrentWidget(first)
+        self.assertEqual(first.canvas.layer_order, expected)
+        self.assertEqual(
+            self.window.layers.currentItem().data(Qt.ItemDataRole.UserRole), identifier
+        )
+        self.window.all_layers(False)
+        self.window.all_layers(True)
+        self.assertEqual(first.canvas.layer_order, expected)
 
     def test_async_tabs_search_layers_measurements_and_cross_probe(self):
         self.window.open_files(

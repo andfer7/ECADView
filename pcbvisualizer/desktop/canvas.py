@@ -21,6 +21,7 @@ class BoardCanvas(QWidget):
         self.camera, self.scale = QPointF(), 1.0
         self.frame = None
         self.visible, self.components, self.nets = set(), set(), set()
+        self.layer_order, self.active_layer = [], None
         self.polygons, self.measuring, self.unit = True, False, "mm"
         self.measurements, self.points = [], []
         self.press = self.previous = None
@@ -34,7 +35,16 @@ class BoardCanvas(QWidget):
     def set_document(self, info):
         self.info = info
         self.visible = {layer["id"] for layer in info["layers"] if layer["visible"]}
+        self.layer_order = [layer["id"] for layer in info["layers"]]
+        self.active_layer = None
         self.fit()
+
+    def raise_layer(self, identifier):
+        if self.info and self.info["kind"] == "pcb" and identifier in self.layer_order:
+            self.active_layer = identifier
+            self.layer_order.remove(identifier)
+            self.layer_order.append(identifier)
+            self.schedule()
 
     def to_world(self, point):
         return (
@@ -115,6 +125,7 @@ class BoardCanvas(QWidget):
                     self.polygons,
                     set(self.components),
                     set(self.nets),
+                    tuple(self.layer_order),
                 ),
             }
         )
@@ -362,6 +373,7 @@ class BoardCanvas(QWidget):
                             4 / self.scale,
                             set(self.visible),
                             self.polygons,
+                            tuple(self.layer_order),
                         ),
                         "shift": bool(
                             event.modifiers() & Qt.KeyboardModifier.ShiftModifier
