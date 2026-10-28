@@ -7,11 +7,8 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-SNAP_MODIFIERS = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
-SNAP_KEYS = {
-    Qt.Key.Key_Control: Qt.KeyboardModifier.ControlModifier,
-    Qt.Key.Key_Meta: Qt.KeyboardModifier.MetaModifier,
-}
+# Qt maps Command on macOS to ControlModifier / Key_Control.
+SNAP_MODIFIER = Qt.KeyboardModifier.ControlModifier
 
 
 class BoardCanvas(QWidget):
@@ -38,7 +35,6 @@ class BoardCanvas(QWidget):
         self.measure_snapping = False
         self.snap_points, self.snap_x = [], []
         self.press = self.previous = None
-        self.press_modifiers = Qt.KeyboardModifier.NoModifier
         self.inflight, self.dirty, self.serial = False, False, 0
         self.paint_count = self.render_count = 0
         self.timer = QTimer(self)
@@ -470,7 +466,6 @@ class BoardCanvas(QWidget):
     def mousePressEvent(self, event):
         self.setFocus()
         self.press = self.previous = event.position()
-        self.press_modifiers = event.modifiers()
         self.dragged = False
 
     def mouseMoveEvent(self, event):
@@ -483,34 +478,24 @@ class BoardCanvas(QWidget):
                 self.schedule(navigation=True)
         if self.measuring:
             self.measure_pointer = event.position()
-            self.measure_snapping = bool(event.modifiers() & SNAP_MODIFIERS)
+            self.measure_snapping = bool(event.modifiers() & SNAP_MODIFIER)
             self.update()
 
     def mouseReleaseEvent(self, event):
-        modifiers = event.modifiers()
-        if self.measuring:
-            modifiers |= self.press_modifiers
-        # macOS reports Control-left-click as RightButton. Accept that click
-        # for measuring, including a modifier released just before mouse-up.
-        measurement_click = (
-            self.measuring
-            and event.button() == Qt.MouseButton.RightButton
-            and bool(modifiers & SNAP_MODIFIERS)
-        )
         if (
             self.press is not None
             and not self.dragged
-            and (event.button() == Qt.MouseButton.LeftButton or measurement_click)
+            and event.button() == Qt.MouseButton.LeftButton
             and self.info
         ):
             point = self.to_world(event.position())
             if self.measuring:
                 point, _snapped = self.measurement_position(
-                    event.position(), bool(modifiers & SNAP_MODIFIERS)
+                    event.position(), bool(event.modifiers() & SNAP_MODIFIER)
                 )
                 self.points.append(point)
                 self.measure_pointer = event.position()
-                self.measure_snapping = bool(event.modifiers() & SNAP_MODIFIERS)
+                self.measure_snapping = bool(event.modifiers() & SNAP_MODIFIER)
                 if len(self.points) == 2:
                     a, b = self.points
                     self.measurements.append((a, b))
@@ -533,7 +518,6 @@ class BoardCanvas(QWidget):
                     }
                 )
         self.press = self.previous = None
-        self.press_modifiers = Qt.KeyboardModifier.NoModifier
 
     def mouseDoubleClickEvent(self, event):
         self.fit()
@@ -546,17 +530,15 @@ class BoardCanvas(QWidget):
             self.nets.clear()
             self.schedule()
             self.selection_changed.emit()
-        elif event.key() in SNAP_KEYS and self.measuring:
+        elif event.key() == Qt.Key.Key_Control and self.measuring:
             self.measure_snapping = True
             self.update()
         else:
             super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
-        if event.key() in SNAP_KEYS and self.measuring:
-            self.measure_snapping = bool(
-                event.modifiers() & SNAP_MODIFIERS & ~SNAP_KEYS[event.key()]
-            )
+        if event.key() == Qt.Key.Key_Control and self.measuring:
+            self.measure_snapping = False
             self.update()
         else:
             super().keyReleaseEvent(event)

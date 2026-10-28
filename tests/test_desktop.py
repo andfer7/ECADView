@@ -917,7 +917,7 @@ class NativeWindowTests(unittest.TestCase):
             self.assertIsNone(canvas.measure_pointer)
             self.assertFalse(canvas.measurements)
 
-    def test_ctrl_snaps_first_click_live_preview_and_final_via_endpoint(self):
+    def test_command_snaps_first_click_live_preview_and_final_via_endpoint(self):
         self.window.open_files([FIXTURES / "demo.kicad_pcb"])
         wait_for(lambda: self.window.current().canvas.frame)
         canvas = self.window.current().canvas
@@ -928,7 +928,7 @@ class NativeWindowTests(unittest.TestCase):
         QTest.mouseMove(canvas, near_start)
         QTest.keyPress(canvas, Qt.Key.Key_Control)
         self.assertTrue(
-            canvas.measure_snapping, "Ctrl works without moving the pointer"
+            canvas.measure_snapping, "Command works without moving the pointer"
         )
         QTest.mouseClick(
             canvas, Qt.MouseButton.LeftButton, Qt.ControlModifier, near_start
@@ -973,31 +973,25 @@ class NativeWindowTests(unittest.TestCase):
         QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=near_start)
         self.assertEqual(canvas.points, [canvas.to_world(QPointF(near_start))])
 
-    def test_control_click_reported_as_right_button_places_snapped_measurements(self):
+    def test_physical_control_does_not_snap_or_place_right_click_measurements(self):
         self.window.open_files([FIXTURES / "demo.kicad_pcb"])
         wait_for(lambda: self.window.current().canvas.frame)
         canvas = self.window.current().canvas
-        start, end = QPointF(10, 12), QPointF(20, 12)
+        start = QPointF(10, 12)
         near_start = canvas.to_screen(start).toPoint() + QPoint(6, 2)
-        near_end = canvas.to_screen(end).toPoint() + QPoint(7, 1)
         self.window.toggle_measure(True)
         QTest.mouseClick(canvas, Qt.RightButton, pos=near_start)
         self.assertFalse(canvas.points, "ordinary right-click is not a measurement")
-        for modifier in (Qt.ControlModifier, Qt.MetaModifier):
-            with self.subTest(modifier=modifier):
-                self.window.clear_measurements()
-                QTest.mouseClick(canvas, Qt.RightButton, modifier, near_start)
-                self.assertEqual(canvas.points, [start])
-                QTest.mousePress(canvas, Qt.RightButton, modifier, near_end)
-                QTest.mouseRelease(canvas, Qt.RightButton, Qt.NoModifier, near_end)
-                self.assertEqual(canvas.measurements, [(start, end)])
-                self.assertEqual(canvas.distance(*canvas.measurements[0]), "10.000 mm")
-                self.assertFalse(canvas.points)
-        self.window.toggle_measure(False)
-        self.window.clear_measurements()
+        # Qt maps the physical macOS Control key to Meta, and Command to Control.
+        QTest.mouseMove(canvas, near_start)
+        QTest.keyPress(canvas, Qt.Key_Meta)
+        self.assertFalse(canvas.measure_snapping)
         QTest.mouseClick(canvas, Qt.RightButton, Qt.MetaModifier, near_start)
         self.assertFalse(canvas.measurements)
         self.assertFalse(canvas.points)
+        QTest.keyRelease(canvas, Qt.Key_Meta)
+        QTest.mouseClick(canvas, Qt.LeftButton, Qt.MetaModifier, near_start)
+        self.assertEqual(canvas.points, [canvas.to_world(QPointF(near_start))])
 
     def test_close_while_loading_joins_workers_without_destroying_running_threads(self):
         self.window.open_files([FIXTURES / "demo.kicad_pcb"])

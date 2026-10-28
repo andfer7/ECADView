@@ -244,7 +244,7 @@ class MainWindow(QMainWindow):
         self.stats.setWordWrap(True)
         self.sidebar_layout.addWidget(self.stats)
         hint = QLabel(
-            "Drag or two-finger scroll to pan. Ctrl/⌘ + wheel to zoom. Double-click or F to fit.\nMeasure: hold Ctrl/⌘ to snap to pad/via centres.\n3D: drag to rotate; right/Shift-drag to pan; scroll to zoom."
+            "Drag or two-finger scroll to pan. Ctrl/⌘ + wheel to zoom. Double-click or F to fit.\nMeasure: hold ⌘ to snap to pad/via centres.\n3D: drag to rotate; right/Shift-drag to pan; scroll to zoom."
         )
         hint.setWordWrap(True)
         self.sidebar_layout.addWidget(hint)
