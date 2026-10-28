@@ -822,6 +822,103 @@ class NativeWindowTests(unittest.TestCase):
         self.window.close()
         APP.processEvents()
 
+    def test_q_toggles_unit_systems_and_refreshes_all_measurement_labels(self):
+        self.assertFalse(self.window.units_action.isEnabled())
+        self.assertFalse(self.window.unit.isEnabled())
+        self.window.open_files(
+            [
+                FIXTURES / "demo.kicad_pcb",
+                FIXTURES / "demo.kicad_pcb",
+                FIXTURES / "demo.kicad_sch",
+            ]
+        )
+        wait_for(lambda: all(self.window.tabs.widget(i).info for i in range(3)))
+        first, second, _schematic = [self.window.tabs.widget(i) for i in range(3)]
+        self.assertFalse(
+            self.window.units_action.isEnabled(), "schematics have no measuring tool"
+        )
+        self.window.tabs.setCurrentWidget(first)
+        canvas = first.canvas
+        canvas.measurements = [(QPointF(5, 5), QPointF(30.4, 5))]
+        canvas.selected_measurement = 0
+        self.window.toggle_measure(True)
+        canvas.points = [QPointF(5, 8)]
+        canvas.measure_pointer = canvas.to_screen(QPointF(30.4, 8))
+        geometry = (
+            list(canvas.measurements),
+            list(canvas.points),
+            QPointF(canvas.camera),
+            canvas.scale,
+        )
+        image = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+        labels = []
+
+        class Painter(QPainter):
+            def drawText(self, *args):
+                labels.append(args[-1])
+                return super().drawText(*args)
+
+        def paint_labels():
+            labels.clear()
+            painter = Painter(image)
+            canvas.paint_measurements(painter)
+            painter.end()
+            return list(labels)
+
+        def toggle():
+            canvas.setFocus()
+            QTest.keyClick(canvas, Qt.Key_Q)
+
+        serial = canvas.serial
+        toggle()
+        self.assertEqual(canvas.unit, "mil")
+        self.assertEqual(self.window.unit.currentText(), "mil")
+        self.assertEqual(self.window.units_action.text(), "Imperial (mil)")
+        self.assertEqual(self.window.statusBar().currentMessage(), "1000.0 mil")
+        self.assertEqual(
+            paint_labels(), ["1000.0 mil", "X: 1000.0 mil", "Y: 0.0 mil", "1000.0 mil"]
+        )
+        toggle()
+        self.assertEqual(canvas.unit, "mm")
+        self.assertEqual(self.window.units_action.text(), "Metric (mm)")
+        self.assertEqual(
+            paint_labels(), ["25.400 mm", "X: 25.400 mm", "Y: 0.000 mm", "25.400 mm"]
+        )
+        self.window.unit.setCurrentText("in")
+        self.assertEqual(
+            paint_labels(), ["1.0000 in", "X: 1.0000 in", "Y: 0.0000 in", "1.0000 in"]
+        )
+        toggle()
+        self.assertEqual(canvas.unit, "mm")
+        toggle()
+        self.assertEqual(canvas.unit, "in", "remember the chosen imperial unit")
+        self.assertEqual(
+            canvas.serial, serial, "changing units needs no vector refinement"
+        )
+        self.assertEqual(
+            (canvas.measurements, canvas.points, canvas.camera, canvas.scale), geometry
+        )
+        self.window.tabs.setCurrentWidget(second)
+        self.assertEqual(self.window.unit.currentText(), "mm")
+        second.canvas.setFocus()
+        QTest.keyClick(second.canvas, Qt.Key_Q)
+        self.assertEqual(second.canvas.unit, "mil")
+        self.window.tabs.setCurrentWidget(first)
+        self.assertEqual(self.window.unit.currentText(), "in")
+        self.assertEqual(self.window.units_action.text(), "Imperial (in)")
+        self.assertEqual(self.window.statusBar().currentMessage(), "1.0000 in")
+        field = self.window.component.lineEdit()
+        field.setFocus()
+        field.selectAll()
+        QTest.keyClicks(field, "Q1")
+        self.assertEqual(field.text(), "Q1")
+        self.assertEqual(canvas.unit, "in", "Q remains usable in text searches")
+        with patch.object(first, "is_3d", return_value=True):
+            self.window.mount()
+            self.assertFalse(self.window.units_action.isEnabled())
+        self.window.mount()
+        self.assertTrue(self.window.units_action.isEnabled())
+
     def test_selected_layer_order_is_per_board_and_survives_sidebar_refresh(self):
         self.window.open_files(
             [FIXTURES / "demo.kicad_pcb"] * 2 + [FIXTURES / "demo.kicad_sch"]
