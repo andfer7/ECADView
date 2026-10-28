@@ -117,6 +117,13 @@ if __name__ == "__main__":
         QImage.Format.Format_ARGB32_Premultiplied,
     )
     target.setDevicePixelRatio(args.dpr)
+    # Prepare the resting label layout before measuring navigation, matching a
+    # visible board. Layout is replayed with the image until the gesture pauses.
+    canvas.timer.stop()
+    canvas.navigating = False
+    painter = QPainter(target)
+    canvas.render(painter, QPoint())
+    painter.end()
     times = []
     renders_before_navigation = document.render_count
     previous_zoom = 1
@@ -127,6 +134,7 @@ if __name__ == "__main__":
             previous_zoom = zoom
         else:
             canvas.camera += QPointF(0.02, 0.01)
+            canvas.schedule(navigation=True)
         painter = QPainter(target)
         started = time.perf_counter()
         canvas.render(painter, QPoint())

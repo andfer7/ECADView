@@ -13,8 +13,12 @@ component fills retain their highlighting. Net stroke tests check 3.5× schemati
 widths, inherited/inline units, deselection, and unchanged PCB/component widths.
 Navigation tests check a
 fixed cache pixel bound and coalescing hundreds of navigation events while a
-renderer is busy. 3D tests check constrained triangle areas, board occlusion,
-hole/side ray intersections and body deletion/undo without a GL context.
+renderer is busy. Zoom-out waits for the gesture to pause even beyond overscan;
+long pans still refresh uncovered areas. Returning worker results preserve the
+latest input deadline and cannot restore an older selection. Pad captions reuse
+their recorded layout during movement and refresh at idle, with matching pixels
+across logical display resolutions. 3D tests check constrained triangle areas,
+board occlusion, hole/side ray intersections and body deletion/undo without a GL context.
 
 ```sh
 QT_QPA_PLATFORM=offscreen uv run python -B -m unittest discover -s tests -v
@@ -27,7 +31,8 @@ to the first frame, initial and unchanged-style vector-raster time,
 median/p95 cached paint times, and the number of vector renders during its
 navigation loop. `--styles` measures first selection, switching nets, revisiting
 a cached selection, clearing, and layer reordering separately. `--snapshot`
-saves the final navigation image for visual comparison.
+saves the final navigation image for visual comparison. The loop starts with a
+resting caption layout and measures replaying it during pan/zoom movement.
 Navigation timings measure cached painting, not the asynchronous refinement rate
 or end-to-end input latency. Compare fresh processes with the same viewport,
 zoom, pixel density and filesystem-cache conditions.
