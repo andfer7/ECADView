@@ -150,6 +150,8 @@ class MainWindow(QMainWindow):
         self.action_3d.setCheckable(True)
         self.measure_action = self.add_action("Measure", self.toggle_measure, "M")
         self.measure_action.setCheckable(True)
+        self.units_action = self.add_action("Metric (mm)", self.toggle_units, "Q")
+        self.units_action.setToolTip("Switch metric / imperial units (Q)")
         self.add_action("Clear measurements", self.clear_measurements)
         self.add_action("Clear selection", self.clear_selection, "Escape")
         quit_action = QAction("Quit", self)
@@ -348,6 +350,10 @@ class MainWindow(QMainWindow):
         self.measure_action.setEnabled(
             bool(info and info["kind"] == "pcb" and not document.is_3d())
         )
+        units_enabled = bool(info and info["kind"] == "pcb" and not solid)
+        self.units_action.setEnabled(units_enabled)
+        self.unit.setEnabled(units_enabled)
+        self.update_unit_controls()
         self.probe_button.setEnabled(False)
         self.component.setEnabled(bool(info))
         self.net.setEnabled(bool(info))
@@ -394,9 +400,6 @@ class MainWindow(QMainWindow):
                     self.layers.setCurrentItem(item)
             self.polygons.setChecked(canvas.polygons)
             self.measure_action.setChecked(canvas.measuring)
-            self.unit.blockSignals(True)
-            self.unit.setCurrentText(canvas.unit)
-            self.unit.blockSignals(False)
             self.selection.setText(
                 f"{len(canvas.components)} component(s), {len(canvas.nets)} net(s) selected"
             )
@@ -561,9 +564,41 @@ class MainWindow(QMainWindow):
             canvas.update()
 
     def set_unit(self, unit):
-        if self.current():
-            self.current().canvas.unit = unit
-            self.current().canvas.update()
+        document = self.current()
+        if not document or not document.info or unit not in ("mm", "mil", "in"):
+            return
+        canvas = document.canvas
+        canvas.unit = unit
+        if unit != "mm":
+            canvas.imperial_unit = unit
+        canvas.update()
+        self.update_unit_controls()
+
+    def toggle_units(self):
+        document = self.current()
+        if document and document.info:
+            canvas = document.canvas
+            self.set_unit(canvas.imperial_unit if canvas.unit == "mm" else "mm")
+
+    def update_unit_controls(self):
+        document = self.current()
+        unit = document.canvas.unit if document and document.info else "mm"
+        self.unit.blockSignals(True)
+        self.unit.setCurrentText(unit)
+        self.unit.blockSignals(False)
+        system = "Metric" if unit == "mm" else "Imperial"
+        self.units_action.setText(f"{system} ({unit})")
+        if document and document.info and document.info["kind"] == "pcb":
+            canvas = document.canvas
+            if canvas.measurements:
+                index = canvas.selected_measurement
+                if index is None:
+                    index = len(canvas.measurements) - 1
+                self.statusBar().showMessage(
+                    canvas.distance(*canvas.measurements[index])
+                )
+            else:
+                self.statusBar().showMessage(self.units_action.text())
 
     def mode(self, solid):
         if self.current():

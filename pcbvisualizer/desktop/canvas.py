@@ -30,6 +30,7 @@ class BoardCanvas(QWidget):
         self.visible, self.components, self.nets = set(), set(), set()
         self.layer_order, self.active_layer = [], None
         self.polygons, self.measuring, self.unit = True, False, "mm"
+        self.imperial_unit = "mil"
         self.measurements, self.points = [], []
         self.selected_measurement = None
         self.measure_pointer = None
