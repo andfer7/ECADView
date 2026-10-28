@@ -10,9 +10,22 @@ Zoom into a PCB to see pin numbers and net names over visible component pads
 when the captions fit. Navigation uses a bounded image cache, while parsing,
 spatial indexing and vector refinements run in a worker thread per document.
 Repeated pan and zoom input coalesces into one pending refinement instead of
-queuing redraws for thousands of individual graphics. Small text uses native
+queuing redraws for thousands of individual graphics. Cached images follow input
+immediately with smooth scaling; a sharp refinement follows when a gesture pauses.
+Panning within the cached margin reuses existing detail, and a retained overview
+fills uncovered areas while the next frame arrives. Offscreen pad captions are
+culled before text layout, and text measurements are cached. Small text uses native
 glyph outlines from installed fonts, so it remains visible below a pixel in
 document coordinates. Font appearance can differ from embedded browser fonts.
+
+To measure cached navigation at a realistic zoom and display density:
+
+```bash
+uv run python scripts/benchmark_native.py board.kicad_pcb --zoom 4 --dpr 2 --motion zoom
+```
+
+The benchmark reports cached paint latency separately from vector rendering; it
+does not measure display refresh rate or input latency.
 
 PCB tabs also offer a **2D / 3D** toggle. The 3D preview shows the board profile,
 curved edges, cutouts, through holes, slots, and simple extruded component bodies

@@ -17,9 +17,12 @@ class BoardCanvas(QWidget):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.info = None
         self.camera, self.scale = QPointF(), 1.0
         self.frame = None
+        self.overview = None
+        self.caption_sizes, self.caption_font_key = {}, None
         self.visible, self.components, self.nets = set(), set(), set()
         self.layer_order, self.active_layer = [], None
         self.polygons, self.measuring, self.unit = True, False, "mm"
@@ -34,6 +37,8 @@ class BoardCanvas(QWidget):
 
     def set_document(self, info):
         self.info = info
+        self.frame = self.overview = None
+        self.caption_sizes.clear()
         self.visible = {layer["id"] for layer in info["layers"] if layer["visible"]}
         self.layer_order = [layer["id"] for layer in info["layers"]]
         self.active_layer = None
@@ -84,13 +89,31 @@ class BoardCanvas(QWidget):
         before = self.to_world(point)
         self.scale = max(0.001, min(100000, self.scale * factor))
         self.camera += before - self.to_world(point)
-        self.schedule()
+        self.schedule(navigation=True)
 
-    def schedule(self):
+    def viewport(self):
+        return QRectF(
+            self.to_world(QPointF()),
+            self.to_world(QPointF(self.width(), self.height())),
+        )
+
+    def style_key(self):
+        return (
+            frozenset(self.visible),
+            self.polygons,
+            frozenset(self.components),
+            frozenset(self.nets),
+            tuple(self.layer_order),
+        )
+
+    def schedule(self, navigation=False):
         if self.info:
             self.serial += 1
             self.dirty = True
-            if not self.timer.isActive():
+            # Transform the cache immediately; refine after a gesture pauses.
+            # Outside the cached area keep refreshing during a long pan too.
+            covered = self.frame and self.frame["rect"].contains(self.viewport())
+            if (navigation and covered) or not self.timer.isActive():
                 self.timer.start()
         self.update()
 
@@ -103,6 +126,19 @@ class BoardCanvas(QWidget):
             or not self.height()
         ):
             return
+        style = self.style_key()
+        if self.frame and self.frame.get("style") == style:
+            resolution = self.frame["image"].width() / self.frame["rect"].width()
+            desired = self.scale * min(
+                self.devicePixelRatioF(),
+                4096 / max(self.width() * 1.4, self.height() * 1.4),
+            )
+            if (
+                self.frame["rect"].contains(self.viewport())
+                and abs(resolution / desired - 1) < 0.01
+            ):
+                self.dirty = False
+                return
         self.dirty, self.inflight = False, True
         # Overscan allows panning from the cached frame while the worker renders
         # the next view. The cache has a hard pixel bound, independent of zoom.
@@ -120,13 +156,7 @@ class BoardCanvas(QWidget):
                 "rect": rect,
                 "width": max(1, int(width * dpr)),
                 "height": max(1, int(height * dpr)),
-                "style": (
-                    set(self.visible),
-                    self.polygons,
-                    set(self.components),
-                    set(self.nets),
-                    tuple(self.layer_order),
-                ),
+                "style": style,
             }
         )
 
@@ -137,6 +167,10 @@ class BoardCanvas(QWidget):
         # A stale camera frame is still useful while navigating. A stale style
         # will be replaced by the one coalesced request as soon as this returns.
         self.frame = frame
+        if self.overview and self.overview.get("style") != frame.get("style"):
+            self.overview = None
+        if self.info and frame["rect"].contains(self.info["home"]):
+            self.overview = frame
         self.update()
         if self.dirty:
             self.timer.start()
@@ -187,12 +221,21 @@ class BoardCanvas(QWidget):
         self.paint_count += 1
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#1b1d21"))
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         if self.frame:
-            rect = self.frame["rect"]
-            target = QRectF(
-                self.to_screen(rect.topLeft()), self.to_screen(rect.bottomRight())
-            )
-            painter.drawImage(target, self.frame["image"])
+            frames = [self.frame]
+            if (
+                self.overview
+                and self.overview is not self.frame
+                and not self.frame["rect"].contains(self.viewport())
+            ):
+                frames.insert(0, self.overview)
+            for frame in frames:
+                rect = frame["rect"]
+                target = QRectF(
+                    self.to_screen(rect.topLeft()), self.to_screen(rect.bottomRight())
+                )
+                painter.drawImage(target, frame["image"])
         else:
             painter.setPen(QColor("#c8d0d8"))
             painter.drawText(
@@ -219,9 +262,25 @@ class BoardCanvas(QWidget):
         ):
             return
         painter.setFont(QFont("Sans Serif", 9))
+        metrics = painter.fontMetrics()
+        font_key = (
+            painter.font().key(),
+            painter.device().logicalDpiX(),
+            painter.device().logicalDpiY(),
+        )
+        if self.caption_font_key != font_key:
+            self.caption_font_key = font_key
+            self.caption_sizes.clear()
+        viewport = self.viewport()
         occupied = []
         for bounds, pin, net, layer, polygon, component in self.info["captions"]:
             if layer not in self.visible or polygon and not self.polygons:
+                continue
+            # Cull in world space before transforming or measuring any text.
+            if (
+                not bounds.intersects(viewport)
+                or bounds.height() * self.scale < metrics.height() + 4
+            ):
                 continue
             if (
                 (self.components or self.nets)
@@ -233,14 +292,13 @@ class BoardCanvas(QWidget):
                 self.to_screen(bounds.topLeft()), self.to_screen(bounds.bottomRight())
             )
             text = pin + ("\n" + net if net else "")
-            width = (
-                max(
-                    painter.fontMetrics().horizontalAdvance(row)
-                    for row in text.splitlines()
+            if text not in self.caption_sizes:
+                lines = text.splitlines()
+                self.caption_sizes[text] = (
+                    max(metrics.horizontalAdvance(row) for row in lines) + 6,
+                    metrics.height() * len(lines) + 4,
                 )
-                + 6
-            )
-            height = painter.fontMetrics().height() * len(text.splitlines()) + 4
+            width, height = self.caption_sizes[text]
             if (
                 rect.width() < width
                 or rect.height() < height
@@ -322,7 +380,7 @@ class BoardCanvas(QWidget):
             if delta.isNull():
                 delta = event.angleDelta() / 3
             self.camera -= QPointF(delta) / self.scale
-            self.schedule()
+            self.schedule(navigation=True)
         event.accept()
 
     def event(self, event):
@@ -347,7 +405,7 @@ class BoardCanvas(QWidget):
             self.dragged |= (event.position() - self.press).manhattanLength() > 4
             if self.dragged:
                 self.camera -= delta / self.scale
-                self.schedule()
+                self.schedule(navigation=True)
 
     def mouseReleaseEvent(self, event):
         if (

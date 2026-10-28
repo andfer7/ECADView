@@ -473,6 +473,7 @@ class NativeDocument:
             "rect": rect,
             "token": request["token"],
             "renders": self.render_count,
+            "style": self.style,
         }
 
     def pick(self, position, tolerance, visible, polygons, layer_order=()):
