@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QVector3D
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -484,6 +484,108 @@ class NativeNavigationTests(unittest.TestCase):
     def tearDown(self):
         self.canvas.timer.stop()
         self.canvas.close()
+
+    def test_pan_reuses_overscan_but_zoom_and_style_changes_request_new_detail(self):
+        canvas = self.canvas
+        requests = []
+        canvas.render_requested.connect(requests.append)
+
+        def complete():
+            request = requests[-1]
+            image = QImage(
+                request["width"], request["height"], QImage.Format.Format_ARGB32
+            )
+            image.fill(QColor("red"))
+            canvas.accept_frame({**request, "image": image, "renders": len(requests)})
+            canvas.timer.stop()
+
+        canvas.request_frame()
+        complete()
+        canvas.camera += QPointF(0.01, 0)
+        canvas.schedule(navigation=True)
+        canvas.request_frame()
+        self.assertEqual(len(requests), 1)
+        canvas.zoom_at(QPointF(400, 300), 2)
+        canvas.request_frame()
+        self.assertEqual(len(requests), 2)
+        complete()
+        self.assertIsNotNone(canvas.overview)
+        canvas.camera += QPointF(canvas.frame["rect"].width(), 0)
+        canvas.schedule(navigation=True)
+        canvas.request_frame()
+        self.assertEqual(len(requests), 3)
+        complete()
+        canvas.visible.clear()
+        canvas.schedule()
+        canvas.request_frame()
+        self.assertEqual(len(requests), 4)
+        complete()
+        self.assertIsNone(
+            canvas.overview, "old layers must not leak through the fallback"
+        )
+
+    def test_zoom_refines_once_after_the_gesture_pauses(self):
+        canvas = self.canvas
+        requests = []
+        canvas.render_requested.connect(requests.append)
+        canvas.request_frame()
+        request = requests.pop()
+        image = QImage(request["width"], request["height"], QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        canvas.accept_frame({**request, "image": image, "renders": 1})
+        for _ in range(6):
+            canvas.zoom_at(QPointF(400, 300), 1.02)
+            QTest.qWait(25)
+        self.assertEqual(
+            requests, [], "covered navigation should only transform the cache"
+        )
+        wait_for(lambda: bool(requests))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["token"], canvas.serial)
+
+    def test_overview_fills_area_outside_the_detail_frame_during_navigation(self):
+        canvas = self.canvas
+        canvas.info["captions"] = []
+        canvas.info["home"] = QRectF(-10, -10, 20, 20)
+        canvas.camera, canvas.scale = QPointF(), 20
+        overview = QImage(800, 800, QImage.Format.Format_ARGB32)
+        overview.fill(QColor("red"))
+        canvas.accept_frame(
+            {"image": overview, "rect": QRectF(-20, -20, 40, 40), "renders": 1}
+        )
+        detail = QImage(200, 200, QImage.Format.Format_ARGB32)
+        detail.fill(QColor("blue"))
+        canvas.accept_frame(
+            {"image": detail, "rect": QRectF(-5, -5, 10, 10), "renders": 2}
+        )
+        image = QImage(800, 600, QImage.Format.Format_ARGB32)
+        painter = QPainter(image)
+        canvas.render(painter, QPoint())
+        painter.end()
+        self.assertEqual(image.pixelColor(400, 300).name(), "#0000ff")
+        self.assertEqual(image.pixelColor(100, 300).name(), "#ff0000")
+
+    def test_offscreen_and_tiny_captions_do_not_measure_text(self):
+        canvas = self.canvas
+        canvas.camera, canvas.scale = QPointF(), 40
+        canvas.info["home"] = QRectF(-50, -50, 100, 100)
+        canvas.visible = {"layer-top"}
+        canvas.info["captions"] = [
+            (bounds, pin, "NET", "layer-top", False, "R1")
+            for bounds, pin in [
+                (QRectF(100, 100, 2, 2), "OFFSCREEN"),
+                (QRectF(0, 0, 0.01, 0.01), "TINY"),
+                (QRectF(-1, -1, 2, 2), "VISIBLE"),
+            ]
+        ]
+        image = QImage(800, 600, QImage.Format.Format_ARGB32)
+        image.fill(QColor("gray"))
+        canvas.frame = {"image": image, "rect": canvas.viewport()}
+        target = image.copy()
+        painter = QPainter(target)
+        canvas.paint_captions(painter)
+        self.assertEqual(set(canvas.caption_sizes), {"VISIBLE\nNET"})
+        painter.end()
 
     def test_pad_captions_follow_the_union_of_selected_components_and_nets(self):
         canvas = self.canvas
