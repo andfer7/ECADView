@@ -38,6 +38,7 @@ class BoardCanvas(QWidget):
         self.measure_snapping = False
         self.snap_points, self.snap_x = [], []
         self.press = self.previous = None
+        self.press_modifiers = Qt.KeyboardModifier.NoModifier
         self.inflight, self.dirty, self.serial = False, False, 0
         self.paint_count = self.render_count = 0
         self.timer = QTimer(self)
@@ -469,6 +470,7 @@ class BoardCanvas(QWidget):
     def mousePressEvent(self, event):
         self.setFocus()
         self.press = self.previous = event.position()
+        self.press_modifiers = event.modifiers()
         self.dragged = False
 
     def mouseMoveEvent(self, event):
@@ -485,16 +487,26 @@ class BoardCanvas(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
+        modifiers = event.modifiers()
+        if self.measuring:
+            modifiers |= self.press_modifiers
+        # macOS reports Control-left-click as RightButton. Accept that click
+        # for measuring, including a modifier released just before mouse-up.
+        measurement_click = (
+            self.measuring
+            and event.button() == Qt.MouseButton.RightButton
+            and bool(modifiers & SNAP_MODIFIERS)
+        )
         if (
             self.press is not None
             and not self.dragged
-            and event.button() == Qt.MouseButton.LeftButton
+            and (event.button() == Qt.MouseButton.LeftButton or measurement_click)
             and self.info
         ):
             point = self.to_world(event.position())
             if self.measuring:
                 point, _snapped = self.measurement_position(
-                    event.position(), bool(event.modifiers() & SNAP_MODIFIERS)
+                    event.position(), bool(modifiers & SNAP_MODIFIERS)
                 )
                 self.points.append(point)
                 self.measure_pointer = event.position()
@@ -521,6 +533,7 @@ class BoardCanvas(QWidget):
                     }
                 )
         self.press = self.previous = None
+        self.press_modifiers = Qt.KeyboardModifier.NoModifier
 
     def mouseDoubleClickEvent(self, event):
         self.fit()

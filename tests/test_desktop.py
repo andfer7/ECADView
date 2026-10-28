@@ -973,6 +973,32 @@ class NativeWindowTests(unittest.TestCase):
         QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=near_start)
         self.assertEqual(canvas.points, [canvas.to_world(QPointF(near_start))])
 
+    def test_control_click_reported_as_right_button_places_snapped_measurements(self):
+        self.window.open_files([FIXTURES / "demo.kicad_pcb"])
+        wait_for(lambda: self.window.current().canvas.frame)
+        canvas = self.window.current().canvas
+        start, end = QPointF(10, 12), QPointF(20, 12)
+        near_start = canvas.to_screen(start).toPoint() + QPoint(6, 2)
+        near_end = canvas.to_screen(end).toPoint() + QPoint(7, 1)
+        self.window.toggle_measure(True)
+        QTest.mouseClick(canvas, Qt.RightButton, pos=near_start)
+        self.assertFalse(canvas.points, "ordinary right-click is not a measurement")
+        for modifier in (Qt.ControlModifier, Qt.MetaModifier):
+            with self.subTest(modifier=modifier):
+                self.window.clear_measurements()
+                QTest.mouseClick(canvas, Qt.RightButton, modifier, near_start)
+                self.assertEqual(canvas.points, [start])
+                QTest.mousePress(canvas, Qt.RightButton, modifier, near_end)
+                QTest.mouseRelease(canvas, Qt.RightButton, Qt.NoModifier, near_end)
+                self.assertEqual(canvas.measurements, [(start, end)])
+                self.assertEqual(canvas.distance(*canvas.measurements[0]), "10.000 mm")
+                self.assertFalse(canvas.points)
+        self.window.toggle_measure(False)
+        self.window.clear_measurements()
+        QTest.mouseClick(canvas, Qt.RightButton, Qt.MetaModifier, near_start)
+        self.assertFalse(canvas.measurements)
+        self.assertFalse(canvas.points)
+
     def test_close_while_loading_joins_workers_without_destroying_running_threads(self):
         self.window.open_files([FIXTURES / "demo.kicad_pcb"])
         document = self.window.current()
