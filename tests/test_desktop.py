@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QVector3D
+from PySide6.QtGui import QColor, QCursor, QImage, QMouseEvent, QPainter, QVector3D
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from shapely.geometry import Polygon
@@ -876,7 +876,7 @@ class NativeWindowTests(unittest.TestCase):
         QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=end)
         self.assertEqual(len(canvas.measurements), 1)
         self.assertFalse(canvas.points)
-        self.assertIsNone(canvas.measure_pointer)
+        self.assertEqual(canvas.measure_pointer, QPointF(end))
         completed, _ = overlay()
         for point in (start, end):
             self.assertNotEqual(
@@ -885,9 +885,12 @@ class NativeWindowTests(unittest.TestCase):
                 "both endpoints retain a marker",
             )
         QTest.mouseMove(canvas, end + QPoint(40, 20))
-        self.assertEqual(
-            overlay()[0], completed, "the second click fixes the measurement"
-        )
+        self.assertEqual(len(canvas.measurements), 1)
+        moved, _ = overlay()
+        for point in (start, end, end + QPoint(40, 20)):
+            self.assertNotEqual(
+                moved.pixelColor(point + QPoint(0, 6)).name(), "#1b1d21"
+            )
         a, b = canvas.measurements[0]
         self.assertAlmostEqual(b.x() - a.x(), 10, delta=0.1)
         self.window.toggle_measure(False)
@@ -914,7 +917,7 @@ class NativeWindowTests(unittest.TestCase):
             self.assertTrue(canvas.points)
             cancel()
             self.assertFalse(canvas.points)
-            self.assertIsNone(canvas.measure_pointer)
+            self.assertEqual(canvas.measure_pointer is not None, canvas.measuring)
             self.assertFalse(canvas.measurements)
 
     def test_command_snaps_first_click_live_preview_and_final_via_endpoint(self):
@@ -968,7 +971,7 @@ class NativeWindowTests(unittest.TestCase):
         )
         self.assertEqual(canvas.measurements, [(start, end)])
         self.assertEqual(canvas.distance(*canvas.measurements[0]), "10.000 mm")
-        self.assertIsNone(canvas.measure_pointer)
+        self.assertEqual(canvas.measure_pointer, QPointF(near_end))
         QTest.keyRelease(canvas, Qt.Key.Key_Control)
         QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=near_start)
         self.assertEqual(canvas.points, [canvas.to_world(QPointF(near_start))])
@@ -992,6 +995,34 @@ class NativeWindowTests(unittest.TestCase):
         QTest.keyRelease(canvas, Qt.Key_Meta)
         QTest.mouseClick(canvas, Qt.LeftButton, Qt.MetaModifier, near_start)
         self.assertEqual(canvas.points, [canvas.to_world(QPointF(near_start))])
+
+    def test_measurement_marker_is_visible_immediately_on_every_mode_entry(self):
+        self.window.open_files([FIXTURES / "demo.kicad_pcb"])
+        wait_for(lambda: self.window.current().canvas.frame)
+        canvas = self.window.current().canvas
+        for position in (QPoint(350, 250), QPoint(650, 400)):
+            with patch.object(
+                QCursor, "pos", return_value=canvas.mapToGlobal(position)
+            ):
+                self.window.measure_action.trigger()
+            self.assertTrue(canvas.measuring)
+            self.assertEqual(canvas.measure_pointer, QPointF(position))
+            self.assertEqual(canvas.cursor().shape(), Qt.CrossCursor)
+            self.assertFalse(canvas.points)
+            image = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+            image.fill(QColor("#1b1d21"))
+            painter = QPainter(image)
+            canvas.paint_measurements(painter)
+            painter.end()
+            self.assertNotEqual(
+                image.pixelColor(position).name(),
+                "#1b1d21",
+                "marker appears without moving or clicking",
+            )
+            self.window.measure_action.trigger()
+            self.assertFalse(canvas.measuring)
+            self.assertIsNone(canvas.measure_pointer)
+            self.assertNotEqual(canvas.cursor().shape(), Qt.CrossCursor)
 
     def test_close_while_loading_joins_workers_without_destroying_running_threads(self):
         self.window.open_files([FIXTURES / "demo.kicad_pcb"])

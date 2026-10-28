@@ -494,8 +494,7 @@ class MainWindow(QMainWindow):
         if document:
             document.canvas.components.clear()
             document.canvas.nets.clear()
-            document.canvas.cancel_measurement()
-            document.canvas.measuring = False
+            document.canvas.set_measuring(False)
             document.canvas.schedule()
             if document.solid:
                 document.solid.selected.clear()
@@ -549,9 +548,7 @@ class MainWindow(QMainWindow):
     def toggle_measure(self, checked):
         if self.current():
             canvas = self.current().canvas
-            canvas.measuring = checked
-            if not checked:
-                canvas.cancel_measurement()
+            canvas.set_measuring(checked)
             canvas.setFocus()
 
     def clear_measurements(self):

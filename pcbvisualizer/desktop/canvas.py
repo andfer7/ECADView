@@ -4,8 +4,8 @@ import math
 from bisect import bisect_left, bisect_right
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen
+from PySide6.QtWidgets import QApplication, QWidget
 
 # Qt maps Command on macOS to ControlModifier / Key_Control.
 SNAP_MODIFIER = Qt.KeyboardModifier.ControlModifier
@@ -278,7 +278,7 @@ class BoardCanvas(QWidget):
             marker(p)
             marker(q)
         if self.measuring:
-            target, snapped = (
+            target, _snapped = (
                 self.measurement_position(self.measure_pointer, self.measure_snapping)
                 if self.measure_pointer is not None
                 else (None, False)
@@ -297,7 +297,7 @@ class BoardCanvas(QWidget):
                     pen.setStyle(Qt.PenStyle.SolidLine)
                     painter.setPen(pen)
                 marker(p)
-            if snapped:
+            if target is not None:
                 marker(self.to_screen(target))
         painter.restore()
 
@@ -319,10 +319,22 @@ class BoardCanvas(QWidget):
                 closest, distance = center, squared
         return (QPointF(closest), True) if closest is not None else (point, False)
 
+    def set_measuring(self, enabled):
+        self.measuring = enabled
+        if enabled:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.unsetCursor()
+        self.cancel_measurement()
+
     def cancel_measurement(self):
         self.points.clear()
-        self.measure_pointer = None
-        self.measure_snapping = False
+        self.measure_pointer = (
+            QPointF(self.mapFromGlobal(QCursor.pos())) if self.measuring else None
+        )
+        self.measure_snapping = bool(
+            self.measuring and QApplication.keyboardModifiers() & SNAP_MODIFIER
+        )
         self.update()
 
     def paint_captions(self, painter):
@@ -468,6 +480,15 @@ class BoardCanvas(QWidget):
         self.press = self.previous = event.position()
         self.dragged = False
 
+    def enterEvent(self, event):
+        if self.measuring:
+            self.measure_pointer = event.position()
+            self.measure_snapping = bool(
+                QApplication.keyboardModifiers() & SNAP_MODIFIER
+            )
+            self.update()
+        super().enterEvent(event)
+
     def mouseMoveEvent(self, event):
         if self.previous is not None:
             delta = event.position() - self.previous
@@ -499,7 +520,7 @@ class BoardCanvas(QWidget):
                 if len(self.points) == 2:
                     a, b = self.points
                     self.measurements.append((a, b))
-                    self.cancel_measurement()
+                    self.points.clear()
                     self.measurement_changed.emit(self.distance(a, b))
                 self.update()
             else:
@@ -524,8 +545,7 @@ class BoardCanvas(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            self.cancel_measurement()
-            self.measuring = False
+            self.set_measuring(False)
             self.components.clear()
             self.nets.clear()
             self.schedule()
