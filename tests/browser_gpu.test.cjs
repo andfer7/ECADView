@@ -75,6 +75,81 @@ async function colors(page, coords) {
 }
 const near = (actual, expected, tolerance = 3) => actual.forEach((v, i) => assert.ok(Math.abs(v - expected[i]) <= tolerance, `${actual} != ${expected}`));
 
+test('layout startup shows WebGL progress and blocks early navigation until the first accelerated draw', async t => {
+  const page = await pageFor(t, {});
+  let releaseRender, releaseGeometry, renderStarted, geometryStarted;
+  const renderGate = new Promise(resolve => { releaseRender = resolve; });
+  const geometryGate = new Promise(resolve => { releaseGeometry = resolve; });
+  const rendering = new Promise(resolve => { renderStarted = resolve; });
+  const preparing = new Promise(resolve => { geometryStarted = resolve; });
+  t.after(() => { releaseRender(); releaseGeometry(); });
+  await page.route('**/render', async route => {
+    renderStarted(); await renderGate;
+    await route.fulfill({ json: fixture('Starting.PcbDoc') });
+  });
+  await page.route('**/geometry', async route => {
+    geometryStarted(); await geometryGate; await route.continue().catch(() => {});
+  });
+  await page.locator('#file').setInputFiles({ name: 'Starting.PcbDoc', mimeType: 'application/octet-stream', buffer: Buffer.from('test') });
+  await rendering;
+  assert.equal(await page.locator('#busy').textContent(), 'Rendering…');
+  assert.equal(await page.locator('#zoom-in').isDisabled(), true);
+  releaseRender(); await preparing;
+  assert.equal(await page.locator('#busy').isVisible(), true);
+  assert.equal(await page.locator('#busy').textContent(), 'Starting WebGL…');
+  assert.equal(await page.locator('#view').getAttribute('aria-busy'), 'true');
+  for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn', 'mode-2d', 'mode-3d'])
+    assert.equal(await page.locator('#' + id).isDisabled(), true, `${id} is unavailable during startup`);
+  const before = await page.locator('#view > svg').getAttribute('viewBox');
+  const box = await page.locator('#view').boundingBox(), x = box.x + box.width / 2, y = box.y + box.height / 2;
+  await page.mouse.move(x, y); await page.mouse.wheel(20, 50);
+  await page.keyboard.down('Control'); await page.mouse.wheel(0, -50); await page.keyboard.up('Control');
+  await page.mouse.down({ button: 'middle' }); await page.mouse.move(x + 80, y + 40); await page.mouse.up({ button: 'middle' });
+  await page.mouse.down(); await page.mouse.move(x - 80, y - 40); await page.mouse.up();
+  await page.locator('#view').focus(); await page.keyboard.press('+'); await page.keyboard.press('f'); await page.keyboard.press('m');
+  await page.locator('#view').evaluate(view => {
+    for (const [type, scale] of [['gesturestart', 1], ['gesturechange', 2], ['gestureend', 2]]) {
+      const event = new Event(type, { bubbles: true, cancelable: true }); event.scale = scale; view.dispatchEvent(event);
+    }
+  });
+  assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), before, 'early input cannot change the camera');
+  assert.equal(await page.locator('#selection-rectangle').isHidden(), true);
+  assert.equal(await page.locator('#measure-btn').getAttribute('class'), null);
+  releaseGeometry(); await ready(page);
+  await page.waitForFunction(() => document.querySelector('#view').getAttribute('aria-busy') === 'false');
+  assert.equal(await page.locator('#busy').isHidden(), true);
+  assert.equal(await page.locator('#zoom-in').isEnabled(), true);
+  assert.ok(Number((await dataset(page)).frames) > 0, 'the loading gate ends after WebGL has drawn');
+  await page.locator('#zoom-in').click();
+  await page.waitForFunction(before => document.querySelector('#view > svg').getAttribute('viewBox') !== before, before);
+  const zoomed = await page.locator('#view > svg').getAttribute('viewBox');
+  await page.mouse.move(x, y); await page.mouse.wheel(20, 30);
+  await page.waitForFunction(before => document.querySelector('#view > svg').getAttribute('viewBox') !== before, zoomed);
+});
+
+test('WebGL startup completes even when the browser suspends animation callbacks', async t => {
+  const page = await pageFor(t, fixture(), () => { window.requestAnimationFrame = () => 0; });
+  await page.waitForFunction(() => document.querySelector('#view').classList.contains('gpu-layout'), undefined, { polling: 50 });
+  assert.equal(await page.locator('#busy').isHidden(), true);
+  assert.equal(await page.locator('#zoom-in').isEnabled(), true);
+});
+
+test('WebGL preparation failure releases the startup gate into a working SVG fallback', async t => {
+  const page = await pageFor(t, {});
+  await page.route('**/geometry', route => route.fulfill({ status: 500, json: { error: 'Test compiler failure' } }));
+  await page.locator('#file').setInputFiles({ name: 'Fallback.PcbDoc', mimeType: 'application/octet-stream', buffer: Buffer.from('test') });
+  await page.waitForFunction(() => document.querySelector('#renderer-status').textContent.includes('Test compiler failure'));
+  assert.equal(await page.locator('#busy').isHidden(), true);
+  assert.equal(await page.locator('#view').getAttribute('aria-busy'), 'false');
+  assert.equal(await page.locator('#zoom-in').isEnabled(), true);
+  assert.equal(await page.locator('#view.gpu-layout').count(), 0);
+  const before = await page.locator('#view > svg').getAttribute('viewBox');
+  await page.locator('#zoom-in').click();
+  await page.waitForFunction(before => document.querySelector('#view > svg').getAttribute('viewBox') !== before, before);
+  const p = await point(page, 30, 48); await page.mouse.click(p.x, p.y);
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+});
+
 test('GPU draws source transforms, pours, cutouts, slots, transparency and layer order like SVG', async t => {
   const page = await pageFor(t); await ready(page);
   const samples = [[9, 11], [18, 19], [54, 15], [58, 18], [77, 18], [77, 21], [47, 48], [45, 66]];
@@ -172,6 +247,8 @@ test('unsupported geometry and unavailable WebGL retain the selectable SVG viewe
     HTMLCanvasElement.prototype.getContext = function (type, ...args) { return type === 'webgl2' ? null : original.call(this, type, ...args); };
   });
   await unavailable.waitForFunction(() => document.querySelector('#renderer-status').textContent.includes('unavailable'));
+  assert.equal(await unavailable.locator('#busy').isHidden(), true);
+  assert.equal(await unavailable.locator('#zoom-in').isEnabled(), true);
   assert.equal(await unavailable.locator('#view.gpu-layout').count(), 0);
   const p = await point(unavailable, 30, 48); await unavailable.mouse.click(p.x, p.y);
   assert.equal(await unavailable.locator('#net-query').inputValue(), 'GND');
@@ -228,9 +305,39 @@ test('closing a tab during preparation cannot mount stale GPU geometry', async t
   assert.equal(await page.locator('#view.gpu-layout').count(), 0);
   assert.equal(await page.locator('.layout-webgl').isHidden(), true);
   assert.equal(await page.locator('#view > svg').count(), 0);
+  assert.equal(await page.locator('#busy').isHidden(), true);
+  assert.equal(await page.locator('#view').getAttribute('aria-busy'), 'false');
   await page.unroute('**/geometry');
   await page.locator('#file').setInputFiles({ name: 'Next.PcbDoc', mimeType: 'application/octet-stream', buffer: Buffer.from('test') });
   await ready(page);
+});
+
+test('WebGL startup state follows the active tab without blocking a ready document', async t => {
+  const page = await pageFor(t); await ready(page);
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const preparing = new Promise(resolve => { started = resolve; });
+  t.after(() => release());
+  await page.route('**/geometry', async route => { started(); await gate; await route.continue().catch(() => {}); });
+  await page.locator('#file').setInputFiles({ name: 'Pending.PcbDoc', mimeType: 'application/octet-stream', buffer: Buffer.from('test') });
+  await preparing;
+  assert.equal(await page.locator('#busy').textContent(), 'Starting WebGL…');
+  await page.getByRole('tab', { name: 'GPU.PcbDoc', exact: true }).click(); await ready(page);
+  assert.equal(await page.locator('#busy').isHidden(), true);
+  assert.equal(await page.locator('#zoom-in').isEnabled(), true);
+  await page.getByRole('tab', { name: 'Pending.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#busy').isVisible(), true);
+  assert.equal(await page.locator('#zoom-in').isDisabled(), true);
+  await page.getByRole('tab', { name: 'GPU.PcbDoc', exact: true }).click();
+  const compiled = page.waitForResponse(response => response.url().endsWith('/geometry'));
+  release();
+  // A background completion must not replace the active board or its controls.
+  await compiled;
+  await page.waitForFunction(() => document.querySelector('#busy').style.display === 'none');
+  assert.equal(await page.locator('#filename').textContent(), 'GPU.PcbDoc');
+  await page.getByRole('tab', { name: 'Pending.PcbDoc', exact: true }).click(); await ready(page);
+  assert.equal(await page.locator('#busy').isHidden(), true);
+  assert.equal(await page.locator('#zoom-in').isEnabled(), true);
 });
 
 test('rectangle selects mixed GPU objects and additive nets without rebuilding retained geometry, including SVG fallback', async t => {

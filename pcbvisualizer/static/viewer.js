@@ -16,6 +16,27 @@ import { trackViewerSession } from './viewer-session.js';
   let activeBoard = null, nextBoardId = 1;
   let layoutGPU = null, gpuUnavailable = false, labelTimer = 0;
   let geometryQueue = Promise.resolve();
+  function viewLoading() { return Boolean(activeBoard?.loading || activeBoard?.gpuLoading); }
+  function updateLoading() {
+    const wasLoading = view.getAttribute('aria-busy') === 'true', loading = viewLoading();
+    $('busy').textContent = activeBoard?.gpuLoading ? 'Starting WebGL…' : 'Rendering…';
+    $('busy').style.display = loading ? 'flex' : 'none';
+    view.setAttribute('aria-busy', String(loading));
+    for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn']) $(id).disabled = !svg || loading;
+    $('mode-2d').disabled = !svg || loading;
+    $('mode-3d').disabled = loading || activeBoard?.kind === 'schematic' || !activeBoard?.scene3d?.board?.length;
+    if (wasLoading && !loading) netLabels.update(activeBoard, gpuActive());
+  }
+  // The SVG remains the hit-test surface, but navigating a large unaccelerated
+  // layout during preparation can overwhelm the browser. Keep input off it
+  // until the first GPU draw (or the explicit SVG fallback).
+  for (const type of ['wheel', 'gesturestart', 'gesturechange', 'gestureend', 'pointerdown', 'pointermove', 'pointerup',
+    'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'touchstart', 'touchmove', 'touchend']) {
+    view.addEventListener(type, event => {
+      if (!viewLoading()) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+    }, { capture: true, passive: false });
+  }
   function gpuActive() { return Boolean(layoutGPU && !layoutGPU.lost && activeBoard?.gpuScene && layoutGPU.scene === activeBoard.gpuScene); }
   function paintGPU() {
     if (!gpuActive() || is3D()) return;
@@ -41,16 +62,9 @@ import { trackViewerSession } from './viewer-session.js';
   }
   async function prepareGPU(board, data) {
     if (data.kind === 'schematic' || !data.webgl || gpuUnavailable) return;
-    try {
-      layoutGPU ||= new LayoutWebGL(view, message => {
-        if (message && activeBoard) activeBoard.gpuStatus = 'SVG: ' + message;
-        syncGPU();
-        if (activeBoard?.svg) { updateComponentStatus(); updateNetStatus(); }
-      });
-    } catch (error) { gpuUnavailable = true; board.gpuStatus = error.message; syncGPU(); return; }
     const controller = new AbortController(); board.gpuController = controller;
     const generation = board.request;
-    board.gpuStatus = 'SVG · preparing WebGL…';
+    board.gpuStatus = 'Starting WebGL…';
     if (board === activeBoard) syncGPU();
     // Avoid repeatedly sending several large SVG bodies while the single
     // isolated compiler is busy. Closed/reloaded tabs skip their queued turn.
@@ -60,6 +74,24 @@ import { trackViewerSession } from './viewer-session.js';
     try {
       await previous;
       if (controller.signal.aborted) return;
+      // Let the loading message paint before synchronous shader compilation.
+      if (board === activeBoard && !document.hidden)
+        await new Promise(resolve => {
+          const done = () => { clearTimeout(timer); cancelAnimationFrame(frame); resolve(); };
+          // Occluded windows may stop animation callbacks without becoming
+          // hidden. They must not hold the geometry queue indefinitely.
+          const timer = setTimeout(done, 100);
+          const frame = requestAnimationFrame(() => setTimeout(done, 0));
+        });
+      if (controller.signal.aborted) return;
+      if (gpuUnavailable) { board.gpuStatus = 'SVG: WebGL 2 is unavailable.'; return; }
+      try {
+        layoutGPU ||= new LayoutWebGL(view, message => {
+          if (message && activeBoard) activeBoard.gpuStatus = 'SVG: ' + message;
+          syncGPU();
+          if (activeBoard?.svg) { updateComponentStatus(); updateNetStatus(); }
+        });
+      } catch (error) { gpuUnavailable = true; throw error; }
       const body = JSON.stringify({ svg: data.svg, kind: 'pcb', polygon_elements: data.polygon_elements || [] });
       let response;
       for (;;) {
@@ -79,7 +111,13 @@ import { trackViewerSession } from './viewer-session.js';
         board.gpuStatus = 'SVG: ' + error.message;
         if (board === activeBoard) syncGPU();
       }
-    } finally { finished(); }
+    } finally {
+      if (board.gpuController === controller) {
+        board.gpuLoading = false; board.gpuController = null;
+        if (board === activeBoard) { syncGPU(); updateLoading(); }
+      }
+      finished();
+    }
   }
 
   // ------------------------------------------------------------ board tabs / loading
@@ -160,7 +198,6 @@ import { trackViewerSession } from './viewer-session.js';
       svg: null, groups: [], vb: null, home: null, unit: 'mm', imperialUnit: 'mil', selectedMeasurement: null, measuring: false, pts: [], measurements: [], hover: null, mg: null,
     });
     $('filename').textContent = board ? board.name : 'No document loaded';
-    for (const id of ['zoom-in', 'zoom-out', 'view-fit']) $(id).disabled = !svg;
     const schematic = board?.kind === 'schematic';
     document.querySelectorAll('[data-pcb-only]').forEach(el => { el.hidden = schematic; });
     $('schematic-selection').hidden = !schematic;
@@ -172,7 +209,7 @@ import { trackViewerSession } from './viewer-session.js';
       `${s.components} components, ${s.wires} wires, ${s.net_labels} net labels` :
       `${s.components} components, ${s.pads} pads, ${s.tracks} tracks, ${s.vias} vias\n${s.polygons} polygons, ${s.regions} poured regions`;
     $('empty').style.display = board ? 'none' : '';
-    $('busy').style.display = board && board.loading ? 'flex' : 'none';
+    updateLoading();
     label.replaceChildren(); readout.textContent = '';
     $('measure-btn').classList.toggle('on', measuring); view.classList.toggle('measuring', measuring);
     document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
@@ -219,11 +256,12 @@ import { trackViewerSession } from './viewer-session.js';
     if (board === activeBoard) saveBoard();
     board.controller?.abort();
     board.gpuController?.abort();
+    board.gpuController = null; board.gpuLoading = false;
     const controller = new AbortController(); board.controller = controller;
     const request = ++board.request;
     board.loading = true;
     updateTabs();
-    if (board === activeBoard) $('busy').style.display = 'flex';
+    if (board === activeBoard) updateLoading();
     try {
       const r = await fetch('/render', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(board.file.name), 'X-WebGL': '1' }, body: board.file, signal: controller.signal });
       const data = await r.json();
@@ -237,7 +275,7 @@ import { trackViewerSession } from './viewer-session.js';
     } finally {
       if (boards.includes(board) && request === board.request) {
         board.loading = false; updateTabs();
-        if (board === activeBoard) $('busy').style.display = 'none';
+        if (board === activeBoard) updateLoading();
       }
     }
   }
@@ -263,7 +301,8 @@ import { trackViewerSession } from './viewer-session.js';
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
                            layoutComponents: data.layout_components || [], scene3d: data.scene3d, camera3d: null, bodyEdits: null,
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure, sceneGroup: rendered.querySelector('#scene'),
-                           gpuScene: null, gpuStatus: 'SVG', gpuComponents: [], gpuNets: [], copperLayerOrder: data.copper_layer_order || [],
+                           gpuScene: null, gpuLoading: kind === 'pcb' && Boolean(data.webgl) && !gpuUnavailable,
+                           gpuStatus: 'SVG', gpuComponents: [], gpuNets: [], copperLayerOrder: data.copper_layer_order || [],
                            selectedMeasurement: null, activeLayer: null,
                            holeElements: [...rendered.querySelectorAll('#scene [data-hole-owner], #scene [data-primitive$="-hole"]')] });
     if (kind === 'schematic') prepareSchematicSelection(board, data.selection);
@@ -311,8 +350,7 @@ import { trackViewerSession } from './viewer-session.js';
     const available = activeBoard?.kind !== 'schematic' && Boolean(activeBoard?.scene3d?.board?.length);
     if (!available && activeBoard) activeBoard.mode = '2d';
     const showing = is3D();
-    $('mode-2d').disabled = !svg;
-    $('mode-3d').disabled = !available;
+    updateLoading();
     for (const mode of ['2d', '3d']) {
       $('mode-' + mode).classList.toggle('on', (mode === '3d') === showing);
       $('mode-' + mode).setAttribute('aria-pressed', String((mode === '3d') === showing));
@@ -866,6 +904,7 @@ import { trackViewerSession } from './viewer-session.js';
   $('component-clear').onclick = clearComponent;
   $('component-fit').onclick = () => fitMatches(componentHits);
   function fitMatches(hits) {
+    if (viewLoading()) return;
     const rects = hits.map(el => el.getBoundingClientRect()).filter(r => r.width || r.height);
     if (!rects.length) return;
     const bounds = rects.reduce((b, r) => ({ left: Math.min(b.left, r.left), top: Math.min(b.top, r.top),
@@ -1115,7 +1154,7 @@ import { trackViewerSession } from './viewer-session.js';
     const r = view.getBoundingClientRect(); return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
   }
   function zoomAt(point, factor) {
-    if (!svg || !Number.isFinite(factor) || factor <= 0) return;
+    if (!svg || viewLoading() || !Number.isFinite(factor) || factor <= 0) return;
     cancelDrag();
     const span = Math.max(vb.w, vb.h), base = Math.max(home.w, home.h);
     const k = Math.max(base * 0.0001, Math.min(base * 100, span * factor)) / span;
@@ -1124,7 +1163,11 @@ import { trackViewerSession } from './viewer-session.js';
            w: vb.w * k, h: vb.h * k };
     queueViewUpdate();
   }
-  function resetView() { if (is3D()) { threeViewer?.fit(); return; } if (svg) { cancelDrag(); vb = { ...home }; apply(); } }
+  function resetView() {
+    if (viewLoading()) return;
+    if (is3D()) { threeViewer?.fit(); return; }
+    if (svg) { cancelDrag(); vb = { ...home }; apply(); }
+  }
   $('zoom-in').onclick = () => is3D() ? threeViewer?.zoom(1 / 1.25) : zoomAt(centerPoint(), 1 / 1.25);
   $('zoom-out').onclick = () => is3D() ? threeViewer?.zoom(1.25) : zoomAt(centerPoint(), 1.25);
   $('view-fit').onclick = resetView;
@@ -1271,6 +1314,7 @@ import { trackViewerSession } from './viewer-session.js';
     readout.textContent = `dist ${fmt(Math.hypot(dx, dy))}\ndx   ${fmt(Math.abs(dx))}\ndy   ${fmt(Math.abs(dy))}\nang  ${(Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1)}°`;
   }
   function setMeasuring(v) {
+    if (v && viewLoading()) return;
     cancelDrag();
     v = Boolean(v && svg && !is3D() && activeBoard?.kind !== 'schematic');
     measuring = v; $('measure-btn').classList.toggle('on', v); view.classList.toggle('measuring', v);
