@@ -336,6 +336,7 @@ source = { editable = "." }
 dependencies = [
     { name = "altium-monkey" },
     { name = "freetype-py" },
+    { name = "numpy" },
     { name = "pyside6-addons" },
     { name = "pyside6-essentials" },
     { name = "sexpdata" },
@@ -351,6 +352,7 @@ build = [
 requires-dist = [
     { name = "altium-monkey", specifier = ">=2026.9.22" },
     { name = "freetype-py", specifier = ">=2.5.1" },
+    { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pyside6-addons", specifier = ">=6.8,<7" },
     { name = "pyside6-essentials", specifier = ">=6.8,<7" },
     { name = "sexpdata", specifier = ">=1.0.2,<2" },

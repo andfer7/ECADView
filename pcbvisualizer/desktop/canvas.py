@@ -1,4 +1,4 @@
-"""Cached native viewport: navigation paints images, never an SVG DOM."""
+"""Cached viewport and input controller shared by GPU and raster rendering."""
 
 import math
 from bisect import bisect_left, bisect_right
@@ -13,12 +13,21 @@ SNAP_MODIFIER = Qt.KeyboardModifier.ControlModifier
 
 class BoardCanvas(QWidget):
     render_requested = Signal(object)
+    scene_requested = Signal()
     pick_requested = Signal(object)
     selection_changed = Signal()
     measurement_changed = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, opengl=True):
         super().__init__(parent)
+        self.opengl_view = None
+        self.opengl_error = ""
+        self._opengl_requested = opengl
+        self.gpu_scene = None
+        self.scene_requested_once = False
+        self.scene_error = ""
+        self.caption_paths = []
+        self.caption_holes, self.caption_hole_spanning = {}, []
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
@@ -49,6 +58,11 @@ class BoardCanvas(QWidget):
 
     def set_document(self, info):
         self.info = info
+        self.gpu_scene = None
+        self.scene_requested_once = False
+        self.scene_error = ""
+        self.caption_paths = []
+        self.caption_holes, self.caption_hole_spanning = {}, []
         self.frame = self.overview = None
         self.caption_cache = None
         self.caption_sizes.clear()
@@ -71,6 +85,63 @@ class BoardCanvas(QWidget):
         self.layer_order = [layer["id"] for layer in info["layers"]]
         self.active_layer = None
         self.fit()
+        if info["kind"] == "pcb":
+            self.enable_opengl()
+        else:
+            self.release_graphics()
+
+    def enable_opengl(self):
+        # Headless Qt plugins have no compositing/context support. Keep the
+        # existing raster canvas usable for these platforms and explicit tests.
+        if (
+            not self._opengl_requested
+            or self.opengl_view is not None
+            or QApplication.platformName() in {"offscreen", "minimal"}
+        ):
+            return
+        try:
+            from .opengl import LayoutOpenGLView
+
+            view = LayoutOpenGLView(self)
+            self.opengl_view = view
+            view.failed.connect(
+                self.fallback_opengl, Qt.ConnectionType.QueuedConnection
+            )
+            view.setGeometry(self.rect())
+            view.show()
+            QTimer.singleShot(1000, self.check_opengl)
+        except Exception as exc:  # noqa: BLE001 - preserve raster view on unavailable drivers
+            self.fallback_opengl(str(exc))
+
+    def check_opengl(self):
+        view = self.opengl_view
+        if view is not None and view.isVisible() and not view.isValid():
+            self.fallback_opengl("Could not create an OpenGL layout context")
+
+    @Slot(str)
+    def fallback_opengl(self, message):
+        self.opengl_error = message
+        self._opengl_requested = False
+        self.release_graphics()
+        self.schedule()
+
+    def release_graphics(self):
+        view, self.opengl_view = self.opengl_view, None
+        if view is not None:
+            view.hide()
+            view.cleanup()
+            view.deleteLater()
+        self.gpu_scene = None
+        self.caption_paths = []
+        self.caption_holes = {}
+        self.caption_hole_spanning = []
+        self.caption_cache = None
+
+    def update(self, *args):
+        super().update(*args)
+        view = getattr(self, "opengl_view", None)
+        if view is not None:
+            view.update()
 
     def raise_layer(self, identifier):
         if self.info and self.info["kind"] == "pcb" and identifier in self.layer_order:
@@ -114,6 +185,7 @@ class BoardCanvas(QWidget):
             self.fit(bounds.adjusted(-1, -1, 1, 1))
 
     def zoom_at(self, point, factor):
+        point = QPointF(point)
         before = self.to_world(point)
         self.scale = max(0.001, min(100000, self.scale * factor))
         self.camera += before - self.to_world(point)
@@ -141,7 +213,9 @@ class BoardCanvas(QWidget):
             self.navigating = navigation
             # Zoom-out stays idle-only even outside the detail image. A long
             # pan still refreshes uncovered areas during movement.
-            covered = self.frame and self.frame["rect"].contains(self.viewport())
+            covered = self.gpu_scene is not None or (
+                self.frame and self.frame["rect"].contains(self.viewport())
+            )
             if not navigation or zoom or covered or not self.timer.isActive():
                 self.timer.start(90 if navigation else 0)
         self.update()
@@ -152,6 +226,9 @@ class BoardCanvas(QWidget):
         self.request_frame()
 
     def request_frame(self):
+        if self.gpu_scene is not None and self.opengl_view is not None:
+            self.dirty = False
+            return
         if (
             not self.info
             or self.inflight
@@ -191,6 +268,7 @@ class BoardCanvas(QWidget):
                 "width": max(1, int(width * dpr)),
                 "height": max(1, int(height * dpr)),
                 "style": style,
+                "raster_required": self.opengl_view is None,
             }
         )
 
@@ -208,11 +286,39 @@ class BoardCanvas(QWidget):
             if self.info and frame["rect"].contains(self.info["home"]):
                 self.overview = frame
             self.update()
+            if self.opengl_view is not None and not self.scene_requested_once:
+                self.scene_requested_once = True
+                self.scene_requested.emit()
         # Preserve the deadline set by the latest input, including zoom-out.
         if self.dirty and not self.timer.isActive():
             self.timer.start(
                 0 if not self.navigating or style != frame.get("style") else 90
             )
+
+    @Slot(object)
+    def accept_gpu_scene(self, scene):
+        if not scene.get("supported"):
+            self.scene_error = scene.get("reason", "Unsupported vector scene")
+            self.update()
+            return
+        if self.opengl_view is None:
+            return
+        self.gpu_scene = scene
+        self.inflight = self.dirty = False
+        self.frame = self.overview = None
+        self.caption_cache = None
+        self.caption_paths = scene.get("caption_paths", [])
+        self.caption_holes, self.caption_hole_spanning = {}, []
+        for bounds, path in scene.get("hole_paths", []):
+            x0, x1 = math.floor(bounds.left()), math.floor(bounds.right())
+            y0, y1 = math.floor(bounds.top()), math.floor(bounds.bottom())
+            if (x1 - x0 + 1) * (y1 - y0 + 1) > 64:
+                self.caption_hole_spanning.append(path)
+                continue
+            for x in range(x0, x1 + 1):
+                for y in range(y0, y1 + 1):
+                    self.caption_holes.setdefault((x, y), []).append(path)
+        self.update()
 
     @Slot(object)
     def accept_pick(self, message):
@@ -257,25 +363,35 @@ class BoardCanvas(QWidget):
         self.selection_changed.emit()
 
     def paintEvent(self, event):
+        if self.opengl_view is not None:
+            return
         self.paint_count += 1
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#1b1d21"))
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        if self.frame:
-            frames = [self.frame]
-            if (
-                self.overview
-                and self.overview is not self.frame
-                and not self.frame["rect"].contains(self.viewport())
-            ):
-                frames.insert(0, self.overview)
-            for frame in frames:
-                rect = frame["rect"]
-                target = QRectF(
-                    self.to_screen(rect.topLeft()), self.to_screen(rect.bottomRight())
-                )
-                painter.drawImage(target, frame["image"])
-        else:
+        for frame in self.display_frames():
+            rect = frame["rect"]
+            target = QRectF(
+                self.to_screen(rect.topLeft()), self.to_screen(rect.bottomRight())
+            )
+            painter.drawImage(target, frame["image"])
+        self.paint_overlays(painter)
+        painter.end()
+
+    def display_frames(self):
+        if not self.frame:
+            return []
+        frames = [self.frame]
+        if (
+            self.overview
+            and self.overview is not self.frame
+            and not self.frame["rect"].contains(self.viewport())
+        ):
+            frames.insert(0, self.overview)
+        return frames
+
+    def paint_overlays(self, painter):
+        if not self.frame and self.gpu_scene is None:
             painter.setPen(QColor("#c8d0d8"))
             painter.drawText(
                 self.rect(),
@@ -284,13 +400,30 @@ class BoardCanvas(QWidget):
             )
         if self.info:
             self.paint_cached_captions(painter)
+        if (
+            self.opengl_view is not None
+            and self.scene_requested_once
+            and self.gpu_scene is None
+            and not self.scene_error
+        ):
+            painter.save()
+            painter.fillRect(QRectF(10, 10, 190, 30), QColor(20, 24, 28, 215))
+            painter.setPen(QColor("#f7fbff"))
+            painter.drawText(
+                QRectF(20, 10, 170, 30),
+                Qt.AlignmentFlag.AlignVCenter,
+                "Preparing layout…",
+            )
+            painter.restore()
         self.paint_measurements(painter)
-        painter.end()
 
     def paint_measurements(self, painter):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setFont(QFont("Sans Serif", 14, QFont.Weight.DemiBold))
+        font = QFont(QApplication.font())
+        font.setPointSize(14)
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
         pen = QPen(QColor("#ffffff"), 3)
         painter.setPen(pen)
         painter.setBrush(QColor("#1b1d21"))
@@ -440,17 +573,23 @@ class BoardCanvas(QWidget):
             for value in (bounds.left(), bounds.right(), bounds.top(), bounds.bottom())
         )
 
-    def caption_candidates(self, viewport):
+    def caption_candidates(self, viewport, indexed=False):
         rows = self.info["captions"]
         x0, x1, y0, y1 = self.caption_cells(viewport)
         if (x1 - x0 + 1) * (y1 - y0 + 1) > 4096:
-            return rows
-        indices = set(self.caption_spanning)
-        for x in range(x0, x1 + 1):
-            for y in range(y0, y1 + 1):
-                indices.update(self.caption_grid.get((x, y), ()))
+            indices = range(len(rows))
+        else:
+            found = set(self.caption_spanning)
+            for x in range(x0, x1 + 1):
+                for y in range(y0, y1 + 1):
+                    found.update(self.caption_grid.get((x, y), ()))
+            indices = sorted(found)
         # Preserve drawing/collision priority when a pad belongs to several cells.
-        return (rows[index] for index in sorted(indices))
+        return (
+            ((index, rows[index]) for index in indices)
+            if indexed
+            else (rows[index] for index in indices)
+        )
 
     def paint_cached_captions(self, painter):
         """Move the last label layout with the board until navigation pauses."""
@@ -458,7 +597,11 @@ class BoardCanvas(QWidget):
             return
         style = self.style_key()
         key = (
-            self.frame["image"].cacheKey() if self.frame else None,
+            id(self.gpu_scene)
+            if self.gpu_scene is not None
+            else self.frame["image"].cacheKey()
+            if self.frame
+            else None,
             self.camera.x(),
             self.camera.y(),
             self.scale,
@@ -468,8 +611,10 @@ class BoardCanvas(QWidget):
             painter.device().logicalDpiY(),
             style,
         )
-        if not self.navigating and (
-            self.caption_cache is None or self.caption_cache["key"] != key
+        if (
+            not self.navigating
+            and (not self.inflight or self.opengl_view is None)
+            and (self.caption_cache is None or self.caption_cache["key"] != key)
         ):
             picture = QPicture()
             recorder = QPainter(picture)
@@ -502,7 +647,8 @@ class BoardCanvas(QWidget):
             or self.scale * self.info["home"].width() / max(1, self.width()) < 2
         ):
             return
-        font = QFont("Sans Serif", 9)
+        font = QFont(QApplication.font())
+        font.setPointSize(9)
         if logical_dpi is not None:
             font.setPointSizeF(9 * logical_dpi / painter.device().logicalDpiY())
         painter.setFont(font)
@@ -518,9 +664,8 @@ class BoardCanvas(QWidget):
             self.caption_sizes.clear()
         viewport = self.viewport()
         occupied = []
-        for bounds, pin, net, layer, polygon, component in self.caption_candidates(
-            viewport
-        ):
+        for index, row in self.caption_candidates(viewport, indexed=True):
+            bounds, pin, net, layer, polygon, component = row
             if layer not in self.visible or polygon and not self.polygons:
                 continue
             # Cull in world space before transforming or measuring any text.
@@ -560,9 +705,11 @@ class BoardCanvas(QWidget):
             )
             if any(caption.intersects(other) for other in occupied):
                 continue
-            if not self.frame:
+            region = (
+                self.caption_paths[index] if index < len(self.caption_paths) else None
+            )
+            if region is None and not self.frame:
                 continue
-            image, view = self.frame["image"], self.frame["rect"]
             placed = False
             for dx, dy in ((0, 0), (0, -0.25), (0, 0.25), (-0.25, 0), (0.25, 0)):
                 candidate = caption.translated(dx * rect.width(), dy * rect.height())
@@ -583,20 +730,37 @@ class BoardCanvas(QWidget):
                         candidate.bottom(),
                     )
                 ]
-                pixels = [
-                    (
-                        int((p.x() - view.x()) / view.width() * image.width()),
-                        int((p.y() - view.y()) / view.height() * image.height()),
-                    )
-                    for p in probes
-                ]
-                if not all(
-                    0 <= x < image.width()
-                    and 0 <= y < image.height()
-                    and image.pixelColor(x, y) != QColor("#1b1d21")
-                    for x, y in pixels
-                ):
-                    continue
+                if region is not None:
+                    if not all(
+                        region.contains(p)
+                        and not any(
+                            hole.contains(p)
+                            for hole in (
+                                *self.caption_holes.get(
+                                    (math.floor(p.x()), math.floor(p.y())), ()
+                                ),
+                                *self.caption_hole_spanning,
+                            )
+                        )
+                        for p in probes
+                    ):
+                        continue
+                else:
+                    image, view = self.frame["image"], self.frame["rect"]
+                    pixels = [
+                        (
+                            int((p.x() - view.x()) / view.width() * image.width()),
+                            int((p.y() - view.y()) / view.height() * image.height()),
+                        )
+                        for p in probes
+                    ]
+                    if not all(
+                        0 <= x < image.width()
+                        and 0 <= y < image.height()
+                        and image.pixelColor(x, y) != QColor("#1b1d21")
+                        for x, y in pixels
+                    ):
+                        continue
                 painter.fillRect(candidate, QColor(20, 24, 28, 215))
                 painter.setPen(QColor("#f7fbff"))
                 painter.drawText(candidate, Qt.AlignmentFlag.AlignCenter, text)
@@ -615,7 +779,19 @@ class BoardCanvas(QWidget):
         return f"{math.hypot(b.x() - a.x(), b.y() - a.y()) * factor:.{digits}f} {self.unit}"
 
     def resizeEvent(self, event):
+        if self.opengl_view is not None:
+            self.opengl_view.setGeometry(self.rect())
         self.schedule()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.opengl_view is not None:
+            QTimer.singleShot(1000, self.check_opengl)
+
+    def closeEvent(self, event):
+        self.timer.stop()
+        self.release_graphics()
+        super().closeEvent(event)
 
     def wheelEvent(self, event):
         if event.modifiers() & (
@@ -638,6 +814,10 @@ class BoardCanvas(QWidget):
             self.zoom_at(event.position(), max(0.01, 1 + event.value()))
             event.accept()
             return True
+        if event.type() == QEvent.Type.DevicePixelRatioChange and getattr(
+            self, "info", None
+        ):
+            self.schedule()
         return super().event(event)
 
     def mousePressEvent(self, event):

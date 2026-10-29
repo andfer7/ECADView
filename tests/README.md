@@ -57,8 +57,35 @@ and direct native masks against Qt SVG. At a fixed view, the last two selected
 images are cached with a combined 64 MiB bound; camera/layer/polygon changes
 invalidate them. Schematic contour and selection styling uses its existing path.
 
-Real OpenGL output and the standalone macOS bundle also require
-a live desktop smoke check; the offscreen Qt plugin cannot create a GL context.
+Layout GPU tests run separately on a live desktop, since the offscreen Qt plugin
+cannot create a GL context. On macOS:
+
+```sh
+PCB_GPU_TESTS=1 QT_QPA_PLATFORM=cocoa uv run python -B -m unittest tests.test_layout_gpu tests.test_gpu_scene -v
+uv run python scripts/benchmark_layout_gpu.py /path/to/large.PcbDoc --renderer both --zoom 4 --motion zoom
+```
+
+The GPU checks require a valid context and report the OpenGL renderer. They
+compare image orientation, color, transparency, camera transforms and overlays,
+verify texture reuse and bounded residency, and release resources on cleanup.
+Retained-scene tests also compare GPU geometry against the SVG raster reference
+for copper voids, drill holes, layer order, polygon visibility and selections.
+They require camera changes to reuse static geometry, selection changes to update
+only the object lookup, and neither to emit CPU refinement requests. CPU compiler
+tests check transforms, caption/hole paths, finite indexed buffers and whole-scene
+fallback for unsupported composition.
+The ordinary offscreen suite covers the raster fallback. GPU framebuffer captures
+use `grabFramebuffer()`; ordinary `QWidget.render()` does not capture GL contents.
+The live comparison reports CPU paint submission times and event timer cadence,
+separately from source loading and geometry preparation/upload. It does not
+measure total GPU execution or end-to-end display latency.
+`scripts/benchmark_layout_interaction.py` instead keeps the real document worker
+connected during a timed zoom/pause/pan workload. Compare its default retained
+mode with `--renderer textures` to include asynchronous SVG refinements. It
+reports scripted camera-to-Qt-presentation callback times, event-loop cadence,
+loading/preparation milestones and raster/upload counts. It does not measure
+physical trackpad or display latency. The standalone bundle and real 3D output
+also require a live desktop smoke check.
 
 The optional browser regression tests launch the real Python server and load its HTML,
 CSS, and JavaScript, with small SVG fixtures in place of the Altium renderer.

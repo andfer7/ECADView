@@ -57,7 +57,9 @@ class DocumentTab(QWidget):
         self.worker.frame.connect(self.canvas.accept_frame)
         self.worker.picked.connect(self.canvas.accept_pick)
         self.worker.mesh.connect(self.receive_mesh)
+        self.worker.gpu_scene.connect(self.canvas.accept_gpu_scene)
         self.canvas.render_requested.connect(self.worker.render)
+        self.canvas.scene_requested.connect(self.worker.build_gpu_scene)
         self.canvas.pick_requested.connect(self.worker.pick)
         self.mesh_requested.connect(self.worker.build_mesh)
         self.stop_requested.connect(self.worker.shutdown)
@@ -117,6 +119,7 @@ class DocumentTab(QWidget):
 
     def shutdown(self):
         self.canvas.timer.stop()
+        self.canvas.release_graphics()
         if self.thread.isRunning():
             self.stop_requested.emit()
         # A renderer never outlives its thread/window, including a tab closed
