@@ -318,7 +318,20 @@ class PcbRenderer:
         if self.side == "bottom":
             self.scene.set("transform", f"translate({fmt(bounds[0]+bounds[2])} 0) scale(-1 1)")
         svg = svg_document(self.scene, bounds, defs)
+        stack = form(form(self.root, "setup"), "stackup")
+        copper_order = [
+            str(row[1]) for row in forms(stack, "layer")
+            if len(row) > 1 and str(row[1]).endswith(".Cu")
+        ]
+        if not copper_order:
+            copper_order = [layer for layer in self.layers if layer.endswith(".Cu")]
+        tokens = {"F.Cu": "TOP", "B.Cu": "BOTTOM"}
+        copper_order = [
+            tokens.get(layer, "MID" + layer[2:-3] if layer.startswith("In") else layer)
+            for layer in copper_order
+        ]
         return {"svg": svg, "kind": "pcb", "warnings": sorted(self.warnings), "stats": self.stats,
+                "copper_layer_order": copper_order,
                 "polygon_elements": self.polygon_ids, "layout_components": self.layout_components,
                 "scene3d": {"board": shapes, "thickness": thickness, "bodies": [], "notes": notes, "units": "mm"}}
 

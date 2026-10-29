@@ -184,6 +184,27 @@ class NativeDocument:
                             "visible": default_layer(node),
                         }
                     )
+        # The inspector follows physical copper order. Keep the source/paint
+        # sequence separate so merely displaying the list cannot change overlap.
+        ranks = {
+            token: index
+            for index, token in enumerate(data.get("copper_layer_order", []))
+        }
+        list_ranks = {
+            node.get("id"): ranks[node.get("data-layer-token")]
+            for node in self.scene
+            if node.get("data-layer-token") in ranks
+        }
+        ordered = iter(
+            sorted(
+                (layer for layer in self.layers if layer["id"] in list_ranks),
+                key=lambda layer: list_ranks[layer["id"]],
+            )
+        )
+        self.layer_list = [
+            next(ordered) if layer["id"] in list_ranks else layer
+            for layer in self.layers
+        ]
         self.layer_ids = {layer["id"] for layer in self.layers}
         copper_layers = {
             node.get("id")
@@ -414,6 +435,7 @@ class NativeDocument:
             "stats": self.data.get("stats", {}),
             "warnings": self.data.get("warnings", []),
             "layers": self.layers,
+            "layer_list": self.layer_list,
             "home": self.home,
             "components": self.component_rows
             or {name: {"name": name, "id": name} for name in self.component_bounds},

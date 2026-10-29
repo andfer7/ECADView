@@ -391,7 +391,7 @@ class MainWindow(QMainWindow):
                 widget.setEditText(
                     ", ".join(rows[key]["name"] for key in selected if key in rows)
                 )
-            for layer in info["layers"]:
+            for layer in info.get("layer_list", info["layers"]):
                 item = QListWidgetItem(layer["name"])
                 item.setData(Qt.ItemDataRole.UserRole, layer["id"])
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)

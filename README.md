@@ -6,6 +6,9 @@ tabs, inspect layers and polygon pours, find components and nets, cross-probe
 between documents, and measure PCB geometry. The default application uses Qt
 painting and native OpenGL. It starts no web server and opens no browser.
 
+The layout layer list follows the board's physical copper stack, including
+renamed inner layers. Selecting or enabling a layer brings it to the front.
+
 Zoom into a PCB to see pin numbers and net names over visible component pads
 when the captions fit. Parsing, spatial indexing and geometry preparation run in
 a worker thread per document. The 2D layout first shows a cached preview, then
@@ -239,6 +242,7 @@ pcbvisualizer/
 tests/
   test_desktop.py         Native rendering, tabs, navigation and picking tests
   test_layout_gpu.py      GPU fidelity, texture reuse and raster fallback tests
+  test_layer_list.py      Physical stack ordering and independent drawing order
   test_gpu_scene.py       Retained geometry, GPU selection and upload regressions
   test_gpu_paths.py       Curved/dashed path and fill-rule raster comparisons
   test_rendering.py       Rendering regression tests
