@@ -1,5 +1,7 @@
 import { NetLabels } from './net-labels.js';
 import { LayoutWebGL } from './layout-webgl.js';
+import { styleSchematic } from './schematic-style.js';
+import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurement-tools.js';
 
 (function () {
   const $ = id => document.getElementById(id);
@@ -80,11 +82,11 @@ import { LayoutWebGL } from './layout-webgl.js';
   // ------------------------------------------------------------ board tabs / loading
   function saveBoard() {
     if (!activeBoard) return;
-    Object.assign(activeBoard, { svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg });
+    Object.assign(activeBoard, { svg, groups, vb, home, unit, imperialUnit, measuring, pts, measurements, selectedMeasurement, hover, mg });
   }
   function createBoard(file, name = file.name) {
     const board = { id: nextBoardId++, file, name, stats: null, warnings: [],
-                    svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false,
+                    svg: null, groups: [], vb: null, home: null, unit: 'mm', imperialUnit: 'mil', selectedMeasurement: null, measuring: false,
                     pts: [], measurements: [], hover: null, mg: null, loading: false, request: 0 };
     boards.push(board);
     return board;
@@ -94,6 +96,16 @@ import { LayoutWebGL } from './layout-webgl.js';
     for (const board of boards) {
       const tab = document.createElement('div');
       tab.className = 'tab' + (board === activeBoard ? ' active' : '');
+      tab.title = 'Drag to reorder; Alt+Shift+Left/Right moves this tab';
+      tab.draggable = true;
+      tab.ondragstart = e => { e.dataTransfer.setData('application/x-pcb-tab', String(board.id)); e.dataTransfer.effectAllowed = 'move'; };
+      tab.ondragover = e => { if ([...e.dataTransfer.types].includes('application/x-pcb-tab')) e.preventDefault(); };
+      tab.ondrop = e => {
+        if (![...e.dataTransfer.types].includes('application/x-pcb-tab')) return;
+        e.preventDefault();
+        const source = boards.find(item => item.id === Number(e.dataTransfer.getData('application/x-pcb-tab')));
+        if (source && source !== board) moveTab(source, boards.indexOf(board));
+      };
       const button = document.createElement('button');
       button.className = 'tab-name'; button.id = 'board-tab-' + board.id;
       button.textContent = board.name + (board.loading ? ' …' : ''); button.title = board.name;
@@ -103,6 +115,9 @@ import { LayoutWebGL } from './layout-webgl.js';
       button.onclick = () => activateBoard(board);
       button.onkeydown = e => {
         const index = boards.indexOf(board);
+        if (e.altKey && e.shiftKey && ['ArrowLeft', 'ArrowRight'].includes(e.key)) {
+          e.preventDefault(); moveTab(board, Math.max(0, Math.min(boards.length - 1, index + (e.key === 'ArrowLeft' ? -1 : 1)))); return;
+        }
         let target;
         if (e.key === 'ArrowRight') target = boards[(index + 1) % boards.length];
         if (e.key === 'ArrowLeft') target = boards[(index + boards.length - 1) % boards.length];
@@ -120,6 +135,10 @@ import { LayoutWebGL } from './layout-webgl.js';
     updateProbeTargets();
     updateProbeResult();
   }
+  function moveTab(board, destination) {
+    boards.splice(boards.indexOf(board), 1); boards.splice(destination, 0, board); updateTabs();
+    $('board-tab-' + board.id).focus();
+  }
   function activateBoard(board) {
     saveBoard();
     mountBoard(board);
@@ -133,8 +152,8 @@ import { LayoutWebGL } from './layout-webgl.js';
     unmount3D();
     if (svg) svg.remove();
     activeBoard = board; drag = null; gestureScale = null;
-    ({ svg, groups, vb, home, unit, measuring, pts, measurements, hover, mg } = board || {
-      svg: null, groups: [], vb: null, home: null, unit: 'mm', measuring: false, pts: [], measurements: [], hover: null, mg: null,
+    ({ svg, groups, vb, home, unit, imperialUnit, measuring, pts, measurements, selectedMeasurement, hover, mg } = board || {
+      svg: null, groups: [], vb: null, home: null, unit: 'mm', imperialUnit: 'mil', selectedMeasurement: null, measuring: false, pts: [], measurements: [], hover: null, mg: null,
     });
     $('filename').textContent = board ? board.name : 'No document loaded';
     for (const id of ['zoom-in', 'zoom-out', 'view-fit']) $(id).disabled = !svg;
@@ -153,6 +172,7 @@ import { LayoutWebGL } from './layout-webgl.js';
     label.replaceChildren(); readout.textContent = '';
     $('measure-btn').classList.toggle('on', measuring); view.classList.toggle('measuring', measuring);
     document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
+    updateUnits();
     layersEl.replaceChildren();
     if (svg) {
       svg.style.display = '';
@@ -239,7 +259,9 @@ import { LayoutWebGL } from './layout-webgl.js';
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
                            layoutComponents: data.layout_components || [], scene3d: data.scene3d, camera3d: null, bodyEdits: null,
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure, sceneGroup: rendered.querySelector('#scene'),
-                           gpuScene: null, gpuStatus: 'SVG', gpuComponents: [], gpuNets: [] });
+                           gpuScene: null, gpuStatus: 'SVG', gpuComponents: [], gpuNets: [], copperLayerOrder: data.copper_layer_order || [],
+                           selectedMeasurement: null, activeLayer: null,
+                           holeElements: [...rendered.querySelectorAll('#scene [data-hole-owner], #scene [data-primitive$="-hole"]')] });
     if (kind === 'schematic') prepareSchematicSelection(board, data.selection);
     if (board === activeBoard) mountBoard(board);
     prepareGPU(board, data);
@@ -247,9 +269,16 @@ import { LayoutWebGL } from './layout-webgl.js';
 
   $('open').onclick = () => $('file').click();
   $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
-  view.addEventListener('dragover', e => { e.preventDefault(); view.classList.add('drop'); });
+  document.addEventListener('dragover', e => {
+    if (![...e.dataTransfer.types].includes('Files')) return;
+    e.preventDefault(); view.classList.add('drop');
+  });
   view.addEventListener('dragleave', () => view.classList.remove('drop'));
-  view.addEventListener('drop', e => { e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files); });
+  document.addEventListener('drop', e => {
+    if (![...e.dataTransfer.types].includes('Files')) return;
+    e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files);
+  });
+  document.addEventListener('dragleave', e => { if (!e.relatedTarget) view.classList.remove('drop'); });
 
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 5000); }
 
@@ -273,7 +302,7 @@ import { LayoutWebGL } from './layout-webgl.js';
       $('mode-' + mode).classList.toggle('on', (mode === '3d') === showing);
       $('mode-' + mode).setAttribute('aria-pressed', String((mode === '3d') === showing));
     }
-    document.querySelectorAll('[data-2d-only]').forEach(el => { el.hidden = showing || activeBoard?.kind === 'schematic'; });
+    document.querySelectorAll('[data-2d-only]').forEach(el => { el.hidden = showing || el.hasAttribute('data-pcb-only') && activeBoard?.kind === 'schematic'; });
     $('three-controls').hidden = !showing;
     $('three-status').textContent = (activeBoard?.scene3d?.notes || []).join('\n');
     $('three-status').hidden = !showing && available;
@@ -281,6 +310,7 @@ import { LayoutWebGL } from './layout-webgl.js';
     view.classList.toggle('measuring', !showing && measuring);
     if (svg) svg.style.display = showing ? 'none' : '';
     syncGPU();
+    updateUnits();
     updateBodyControls();
     if (showing) show3D();
   }
@@ -411,10 +441,16 @@ import { LayoutWebGL } from './layout-webgl.js';
     board.schematicNets = index(selection.nets, 'data-sch-nets');
     board.selectedComponents = new Set(); board.selectedNets = new Set();
     // Give thin wires and pins a usable screen-space click target without changing their drawing.
-    for (const el of board.svg.querySelectorAll('[data-sch-nets] line, [data-sch-nets] path, [data-sch-nets] polyline')) {
+    const conductors = new Set();
+    for (const target of board.svg.querySelectorAll('[data-sch-nets]')) {
+      if (target.matches('line, path, polyline')) conductors.add(target);
+      for (const el of target.querySelectorAll('line, path, polyline')) conductors.add(el);
+    }
+    for (const el of conductors) {
       const hit = el.cloneNode(false);
       for (const attr of [...hit.attributes]) if (attr.name === 'id' || attr.name.startsWith('data-')) hit.removeAttribute(attr.name);
       hit.removeAttribute('style'); hit.setAttribute('class', 'sch-hit');
+      hit.setAttribute('data-sch-nets', el.closest('[data-sch-nets]').getAttribute('data-sch-nets'));
       hit.setAttribute('aria-hidden', 'true'); el.before(hit);
     }
   }
@@ -454,12 +490,23 @@ import { LayoutWebGL } from './layout-webgl.js';
       const matched = new Set([...selected].flatMap(id => index.get(id).elements));
       for (const row of index.values()) for (const el of row.elements) el.classList.toggle(cls, matched.has(el));
     }
+    styleSchematic(board);
     const names = (selected, index) => [...selected].map(id => index.get(id).name).join(', ');
     const selected = [];
     if (board.selectedComponents.size) selected.push('Components: ' + names(board.selectedComponents, board.schematicComponents));
     if (board.selectedNets.size) selected.push('Nets: ' + names(board.selectedNets, board.schematicNets));
     $('schematic-selection-status').textContent = selected.join('\n') || 'Nothing selected.';
     $('schematic-clear').disabled = !selected.length;
+    componentHits = [...board.selectedComponents].flatMap(id => board.schematicComponents.get(id).elements);
+    netHits = [...board.selectedNets].flatMap(id => board.schematicNets.get(id).elements);
+    for (const [kind, index, selection, hits] of [['component', board.schematicComponents, board.selectedComponents, componentHits],
+      ['net', board.schematicNets, board.selectedNets, netHits]]) {
+      const value = names(selection, index);
+      if (document.activeElement !== $(kind + '-query')) { $(kind + '-query').value = value; board[kind + 'Query'] = value; }
+      $(kind + '-fit').disabled = !hits.length;
+      $(kind + '-reveal').hidden = true;
+      $(kind + '-status').textContent = selection.size ? `${selection.size} ${kind}${selection.size === 1 ? '' : 's'} highlighted.` : '';
+    }
     updateProbeTargets();
   }
   function clearSchematicSelection() {
@@ -652,7 +699,7 @@ import { LayoutWebGL } from './layout-webgl.js';
       activeBoard.gpuNets = [...new Set(netHits.filter(visible).map(el => el.dataset.net))];
       // IDs in a lookup texture tint the original GPU geometry. Keep the DOM
       // solely for exact hit testing, search, bounds and cross-probing.
-      svg.querySelectorAll('#component-highlight, #net-highlight').forEach(el => el.remove());
+      svg.querySelectorAll('#component-highlight, #net-highlight, #layout-holes').forEach(el => el.remove());
       svg.classList.toggle('layout-selection', Boolean(activeBoard.gpuComponents.length || activeBoard.gpuNets.length));
       paintGPU();
       return { overlay: { childElementCount: groups.filter(g => g.style.display !== 'none' && branches.has(g)).length },
@@ -686,6 +733,7 @@ import { LayoutWebGL } from './layout-webgl.js';
     for (const group of groups) if (group.style.display !== 'none' && branches.has(group)) overlay.append(branch(group));
     for (const el of overlay.querySelectorAll('*')) {
       el.removeAttribute('id'); el.classList.remove('component-match', 'net-match');
+      el.style.setProperty('pointer-events', 'none', 'important');
       for (const attr of [...el.attributes]) if (attr.name.startsWith('data-')) el.removeAttribute(attr.name);
     }
     if (overlay.childElementCount) svg.querySelector('#scene').append(overlay);
@@ -693,11 +741,33 @@ import { LayoutWebGL } from './layout-webgl.js';
     return { overlay, hidden: groups.filter(group => group.style.display === 'none' && branches.has(group)).length,
       hiddenPolygons: hits.some(hiddenPolygon) };
   }
+  function updateHoleOverlay() {
+    if (!svg || activeBoard?.kind !== 'pcb' || gpuActive()) return;
+    const component = svg.querySelector('#component-highlight'), net = svg.querySelector('#net-highlight');
+    // A component's own geometry keeps its component color when its net is
+    // selected too, matching the native renderer's object selection priority.
+    if (component) component.parentNode.append(component);
+    if (component || net) {
+      // Like the native hole pass, keep every visible drill cutout above
+      // highlighted copper, including holes belonging to another net.
+      const key = JSON.stringify([activeBoard.polygonsHidden,
+        [...activeBoard.sceneGroup.children].filter(g => groups.includes(g)).map(g => [g.id, g.style.display])]);
+      const previous = svg.querySelector('#layout-holes');
+      if (previous && activeBoard.holeOverlayStyle === key) previous.parentNode.append(previous);
+      else {
+        buildLayoutHighlight('layout-holes', activeBoard.holeElements || [], '');
+        activeBoard.holeOverlayStyle = key;
+      }
+    } else svg.querySelector('#layout-holes')?.remove();
+  }
 
   // ------------------------------------------------------------ component search
   let componentIndex = new Map(), componentHits = [];
   function mountComponentSearch() {
     componentIndex = new Map(); componentHits = [];
+    if (activeBoard?.kind === 'schematic') {
+      for (const row of activeBoard.schematicComponents.values()) componentIndex.set(row.name, row.elements);
+    }
     for (const el of svg?.querySelectorAll('#scene [data-component]') || []) {
       const name = el.dataset.component;
       if (!name) continue;
@@ -709,9 +779,10 @@ import { LayoutWebGL } from './layout-webgl.js';
     }));
     $('component-query').disabled = !svg;
     $('component-query').value = activeBoard?.componentQuery || '';
-    searchComponents();
+    if (activeBoard?.kind !== 'schematic') searchComponents();
   }
   function searchComponents() {
+    if (activeBoard?.kind === 'schematic') { searchSchematic('component'); return; }
     for (const el of componentHits) el.classList.remove('component-match');
     componentHits = [];
     const query = $('component-query').value.trim().toLowerCase();
@@ -725,7 +796,9 @@ import { LayoutWebGL } from './layout-webgl.js';
     updateProbeTargets();
   }
   function updateComponentStatus(count = new Set(componentHits.map(el => el.dataset.component)).size) {
+    if (activeBoard?.kind === 'schematic') { updateSchematicSelection(); return; }
     const { overlay, hidden, hiddenPolygons } = buildLayoutHighlight('component-highlight', componentHits, '#ffe066');
+    updateHoleOverlay();
     $('component-fit').disabled = !overlay.childElementCount;
     $('component-reveal').hidden = !hidden;
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
@@ -778,6 +851,11 @@ import { LayoutWebGL } from './layout-webgl.js';
     layersEl.innerHTML = '';
     // Keep the sidebar in renderer order even after changing SVG paint order.
     if (!groups.length) groups = [...svg.querySelectorAll('#scene > g')];
+    const ranks = new Map((activeBoard.copperLayerOrder || []).map((token, i) => [token, i]));
+    const copper = groups.filter(g => ranks.has(g.dataset.layerToken)).sort((a, b) => ranks.get(a.dataset.layerToken) - ranks.get(b.dataset.layerToken));
+    let index = 0;
+    groups = groups.map(g => ranks.has(g.dataset.layerToken) ? copper[index++] : g);
+    activeBoard.groups = groups;
     for (const g of groups) {
       const name = g.dataset.layerDisplayName || g.dataset.layerName || g.id.replace(/^layer-/, '');
       const color = g.dataset.color || (g.id === 'board-outline' ? '#C0A000' : '#888');
@@ -786,16 +864,35 @@ import { LayoutWebGL } from './layout-webgl.js';
       cb.onchange = () => {
         g.style.display = cb.checked ? '' : 'none';
         // SVG paints later siblings on top; retain the scene's transforms and clipping.
-        if (cb.checked) g.parentNode.append(g);
+        if (cb.checked) raiseLayer(g);
         updateComponentStatus();
+        if (measuring) { refreshHover(); draw(); }
       };
       const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = color;
-      lab.append(cb, sw, document.createTextNode(name));
+      const title = document.createElement('button'); title.type = 'button'; title.className = 'layer-name';
+      title.textContent = name; title.setAttribute('aria-pressed', String(activeBoard.activeLayer === g.id));
+      title.onclick = e => { e.preventDefault(); raiseLayer(g); updateComponentStatus(); updateNetStatus(); };
+      lab.classList.toggle('active-layer', activeBoard.activeLayer === g.id);
+      lab.append(cb, sw, title);
       if (g.dataset.primitiveCount !== undefined) { const c = document.createElement('span'); c.className = 'count'; c.textContent = g.dataset.primitiveCount; lab.append(c); }
       layersEl.append(lab); g._cb = cb;
     }
   }
-  const setAll = v => { groups.forEach(g => { g._cb.checked = v; g.style.display = v ? '' : 'none'; }); updateComponentStatus(); };
+  function raiseLayer(group) {
+    activeBoard.activeLayer = group.id;
+    group.parentNode.append(group);
+    // Preserve native cutouts when a copper layer is moved above other copper.
+    for (const drill of groups.filter(g => g.dataset.layerRole === 'drill' || g.dataset.layerToken === 'DRILLS' || g.id === 'layer-drills')) drill.parentNode.append(drill);
+    for (const g of groups) {
+      const row = g._cb?.closest('label');
+      row?.classList.toggle('active-layer', g === group);
+      row?.querySelector('.layer-name')?.setAttribute('aria-pressed', String(g === group));
+    }
+  }
+  const setAll = v => {
+    groups.forEach(g => { g._cb.checked = v; g.style.display = v ? '' : 'none'; }); updateComponentStatus();
+    if (measuring) { refreshHover(); draw(); }
+  };
   $('all').onclick = () => setAll(true);
   $('none').onclick = () => setAll(false);
 
@@ -803,6 +900,9 @@ import { LayoutWebGL } from './layout-webgl.js';
   let netIndex = new Map(), netHits = [];
   function mountNetSearch() {
     netIndex = new Map(); netHits = [];
+    if (activeBoard?.kind === 'schematic') {
+      for (const row of activeBoard.schematicNets.values()) netIndex.set(row.name, row.elements);
+    }
     for (const el of svg?.querySelectorAll('#scene [data-net]') || []) {
       const name = el.dataset.net;
       if (!name) continue;
@@ -814,9 +914,10 @@ import { LayoutWebGL } from './layout-webgl.js';
     }));
     $('net-query').disabled = !svg;
     $('net-query').value = activeBoard?.netQuery || '';
-    searchNets();
+    if (activeBoard?.kind !== 'schematic') searchNets();
   }
   function searchNets() {
+    if (activeBoard?.kind === 'schematic') { searchSchematic('net'); return; }
     for (const el of netHits) el.classList.remove('net-match');
     netHits = [];
     const query = $('net-query').value.trim().toLowerCase();
@@ -830,7 +931,9 @@ import { LayoutWebGL } from './layout-webgl.js';
     updateProbeTargets();
   }
   function updateNetStatus(count = new Set(netHits.map(el => el.dataset.net)).size) {
+    if (activeBoard?.kind === 'schematic') { updateSchematicSelection(); return; }
     const { overlay, hidden, hiddenPolygons } = buildLayoutHighlight('net-highlight', netHits, '#68e0ff');
+    updateHoleOverlay();
     $('net-fit').disabled = !overlay.childElementCount;
     $('net-reveal').hidden = !hidden;
     $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
@@ -839,16 +942,27 @@ import { LayoutWebGL } from './layout-webgl.js';
     netLabels.update(activeBoard, gpuActive());
   }
   function clearNet() { resetProbeSelection('probeNets'); $('net-query').value = ''; searchNets(); }
+  function searchSchematic(kind) {
+    const board = activeBoard, query = $(kind + '-query').value.trim().toLowerCase();
+    const index = kind === 'component' ? board.schematicComponents : board.schematicNets;
+    const exact = [...index].filter(([, row]) => row.name.toLowerCase() === query);
+    const matches = exact.length ? exact : [...index].filter(([, row]) => query && row.name.toLowerCase().includes(query));
+    board[kind === 'component' ? 'selectedComponents' : 'selectedNets'] = new Set(matches.map(([id]) => id));
+    board[kind + 'Query'] = $(kind + '-query').value;
+    updateSchematicSelection();
+    if (query && !matches.length) $(kind + '-status').textContent = `No matching ${kind}s.`;
+  }
   $('net-query').oninput = () => { resetProbeSelection('probeNets'); searchNets(); };
   $('net-clear').onclick = clearNet;
-  function toggleLayoutSelection(name, attribute, hits, selectionKey, queryId, search) {
+  function toggleLayoutSelection(name, attribute, hits, selectionKey, queryId, search, additive = false) {
     const selected = new Set(hits.map(el => el.dataset[attribute]));
     const remove = selected.delete(name);
     resetProbeSelection(selectionKey);
     // Retain the other exact matches from a search or cross-probe. The query
     // remains a readable list; the array prevents substring or comma matching.
-    if (remove && selected.size) activeBoard[selectionKey] = [...selected];
-    $(queryId).value = remove ? [...selected].join(', ') : name;
+    if (additive && !remove) selected.add(name);
+    if ((remove || additive) && selected.size) activeBoard[selectionKey] = [...selected];
+    $(queryId).value = remove || additive ? [...selected].join(', ') : name;
     search();
   }
   view.addEventListener('click', e => {
@@ -858,12 +972,12 @@ import { LayoutWebGL } from './layout-webgl.js';
     const primitive = e.target.closest('#scene [data-net]');
     const name = primitive?.dataset.net;
     if (name && svg.contains(primitive) && netIndex.has(name)) {
-      toggleLayoutSelection(name, 'net', netHits, 'probeNets', 'net-query', searchNets);
+      toggleLayoutSelection(name, 'net', netHits, 'probeNets', 'net-query', searchNets, e.shiftKey);
     }
     const component = e.target.closest('#scene [data-component]');
     const designator = component?.dataset.component;
     if (designator && svg.contains(component) && componentIndex.has(designator)) {
-      toggleLayoutSelection(designator, 'component', componentHits, 'probeComponents', 'component-query', searchComponents);
+      toggleLayoutSelection(designator, 'component', componentHits, 'probeComponents', 'component-query', searchComponents, e.shiftKey);
     }
   });
   $('net-fit').onclick = () => fitMatches(netHits);
@@ -883,6 +997,7 @@ import { LayoutWebGL } from './layout-webgl.js';
     cancelViewUpdate();
     if (!svg) return;
     svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+    if (measuring) refreshHover();
     if (redrawMeasurements) draw(); else positionMeasurementLabels();
     paintGPU();
     clearTimeout(labelTimer);
@@ -951,7 +1066,7 @@ import { LayoutWebGL } from './layout-webgl.js';
   view.addEventListener('gestureend', e => { if (gestureScale !== null) e.preventDefault(); gestureScale = null; }, { passive: false });
   view.addEventListener('mousedown', e => {
     panned = false;
-    if (!is3D() && svg && (e.button === 1 || e.button === 0 && !measuring)) {
+    if (!is3D() && svg && (e.button === 1 || e.button === 0)) {
       if (e.button === 1) e.preventDefault();
       drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y, scale: screenUnits() };
     }
@@ -960,6 +1075,7 @@ import { LayoutWebGL } from './layout-webgl.js';
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y, scale = drag.scale;
     if (Math.hypot(dx, dy) > 3) panned = true;
+    if (!panned) return;
     vb.x = drag.vx - scale.a * dx - scale.c * dy; vb.y = drag.vy - scale.b * dx - scale.d * dy;
     queueViewUpdate();
   });
@@ -968,39 +1084,81 @@ import { LayoutWebGL } from './layout-webgl.js';
   view.addEventListener('dblclick', e => { if (e.button === 0 && !measuring) resetView(); });
 
   // ------------------------------------------------------------ measuring (SVG units are mm)
-  const UNITS = { mm: { f: 1, d: 3 }, mil: { f: 1000 / 25.4, d: 1 }, in: { f: 1 / 25.4, d: 4 } };
-  let unit = 'mm', measuring = false, pts = [], measurements = [], hover = null, mg = null;
-  const fmt = v => (v * UNITS[unit].f).toFixed(UNITS[unit].d) + ' ' + unit;
+  let unit = 'mm', imperialUnit = 'mil', measuring = false, pts = [], measurements = [], selectedMeasurement = null, hover = null, mg = null;
+  let lastPointer = null, snapping = false;
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const snapModifier = e => mac ? e.metaKey : e.ctrlKey;
+  const fmt = v => distance(v, unit);
   const toSvg = e => viewPoint(e);
   const toScreen = p => { const q = new DOMPoint(p.x, p.y).matrixTransform(svg.getScreenCTM()); const r = view.getBoundingClientRect(); return { x: q.x - r.left, y: q.y - r.top }; };
-  function dot(p) { const c = document.createElementNS(NS, 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 0.3); return c; }
+  function marker(p, pointer = false) {
+    const g = document.createElementNS(NS, 'g'); g.classList.add('measurement-marker');
+    g.dataset.x = p.x; g.dataset.y = p.y;
+    if (pointer) { g.id = 'measure-pointer'; g.dataset.snapped = String(Boolean(p.snapped)); }
+    g.append(document.createElementNS(NS, 'circle'), document.createElementNS(NS, 'path'));
+    return g;
+  }
+  function refreshHover(e) {
+    if (e) { lastPointer = { clientX: e.clientX, clientY: e.clientY }; snapping = Boolean(snapModifier(e)); }
+    if (measuring && svg && !is3D()) hover = snapPoint(toSvg(lastPointer || centerPoint()), { ...activeBoard, groups }, snapping);
+  }
   function positionMeasurementLabels() {
-    if (!svg || is3D() || !label.childElementCount) return;
-    const segments = [...measurements];
-    if (pts.length && hover) segments.push([pts[0], hover]);
-    for (let i = 0; i < segments.length; i++) {
-      const [a, b] = segments[i], caption = label.children[i];
-      if (!caption) continue;
-      const point = toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    if (!svg || is3D() || !mg) return;
+    const scale = Math.hypot(svg.getScreenCTM().a, svg.getScreenCTM().b);
+    for (const g of mg.querySelectorAll('.measurement-marker')) {
+      const p = g.id === 'measure-pointer' && hover ? hover : { x: g.dataset.x, y: g.dataset.y };
+      g.setAttribute('transform', `translate(${p.x} ${p.y})`);
+      g.querySelector('circle').setAttribute('r', 6 / scale);
+      const r = 10 / scale; g.querySelector('path').setAttribute('d', `M${-r} 0H${r}M0 ${-r}V${r}`);
+      if (g.id === 'measure-pointer') g.dataset.snapped = String(Boolean(p.snapped));
+    }
+    const preview = mg.querySelector('.measurement-preview');
+    if (preview && hover) { preview.setAttribute('x2', hover.x); preview.setAttribute('y2', hover.y); }
+    for (const caption of label.children) {
+      const pair = caption.dataset.index === 'preview' ? pts.length && hover && [pts[0], hover] : measurements[Number(caption.dataset.index)];
+      if (!pair) continue;
+      if (caption.dataset.index === 'preview') caption.textContent = fmt(Math.hypot(pair[1].x - pair[0].x, pair[1].y - pair[0].y));
+      const [a, b] = pair.map(toScreen);
+      const point = labelPosition(a, b, { w: caption.offsetWidth, h: caption.offsetHeight }, caption.dataset.kind);
       caption.style.left = point.x + 'px'; caption.style.top = point.y + 'px';
     }
+    updateMeasurementReadout();
+  }
+  function measurementLine(a, b, cls) {
+    const line = document.createElementNS(NS, 'line'); line.setAttribute('class', cls);
+    for (const [key, value] of Object.entries({ x1: a.x, y1: a.y, x2: b.x, y2: b.y })) line.setAttribute(key, value);
+    return line;
+  }
+  function measurementLabel(text, index, kind = 'total') {
+    const caption = document.createElement('div'); caption.className = 'measure-label';
+    caption.dataset.index = index; caption.dataset.kind = kind; caption.textContent = text; label.append(caption);
   }
   function draw() {
     if (!mg || is3D()) return;
     mg.replaceChildren(); label.replaceChildren();
-    const segments = [...measurements];
-    if (pts.length && hover) segments.push([pts[0], hover]);
-    if (pts.length) mg.append(dot(pts[0]));
-    for (const [a, b] of segments) {
-      const l = document.createElementNS(NS, 'line');
-      l.setAttribute('x1', a.x); l.setAttribute('y1', a.y); l.setAttribute('x2', b.x); l.setAttribute('y2', b.y);
-      mg.append(l, dot(a), dot(b));
-      const m = toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-      const caption = document.createElement('div'); caption.className = 'measure-label';
-      caption.textContent = fmt(Math.hypot(b.x - a.x, b.y - a.y));
-      caption.style.left = m.x + 'px'; caption.style.top = m.y + 'px'; label.append(caption);
+    for (let index = 0; index < measurements.length; index++) {
+      const [a, b] = measurements[index];
+      const chosen = index === selectedMeasurement;
+      mg.append(measurementLine(a, b, 'measurement-segment' + (chosen ? ' selected' : '')), marker(a), marker(b));
+      measurementLabel(fmt(Math.hypot(b.x - a.x, b.y - a.y)), index);
+      if (chosen) {
+        const corner = { x: b.x, y: a.y };
+        mg.append(measurementLine(a, corner, 'measurement-axis'), measurementLine(corner, b, 'measurement-axis'));
+        measurementLabel('X: ' + fmt(Math.abs(b.x - a.x)), index, 'x');
+        measurementLabel('Y: ' + fmt(Math.abs(b.y - a.y)), index, 'y');
+      }
     }
-    const latest = segments.at(-1);
+    if (measuring && hover) {
+      if (pts.length) {
+        mg.append(measurementLine(pts[0], hover, 'measurement-preview'), marker(pts[0]));
+        measurementLabel(fmt(Math.hypot(hover.x - pts[0].x, hover.y - pts[0].y)), 'preview');
+      }
+      mg.append(marker(hover, true));
+    }
+    positionMeasurementLabels();
+  }
+  function updateMeasurementReadout() {
+    const latest = pts.length && hover ? [pts[0], hover] : measurements[selectedMeasurement ?? measurements.length - 1];
     if (!latest) {
       const p = pts[0] || (measuring && hover);
       readout.textContent = p ? `cursor  ${fmt(p.x)}, ${fmt(-p.y)}` : ''; return;
@@ -1011,10 +1169,33 @@ import { LayoutWebGL } from './layout-webgl.js';
   function setMeasuring(v) {
     v = Boolean(v && svg && !is3D() && activeBoard?.kind !== 'schematic');
     measuring = v; $('measure-btn').classList.toggle('on', v); view.classList.toggle('measuring', v);
-    if (!v) { pts = []; hover = null; draw(); }
+    pts = []; hover = null;
+    if (v) refreshHover();
+    draw();
   }
+  function updateUnits() {
+    document.querySelectorAll('.unit').forEach(b => b.classList.toggle('on', b.dataset.unit === unit));
+    $('units-toggle').textContent = unit === 'mm' ? 'Metric (mm)' : `Imperial (${unit})`;
+    $('units-toggle').disabled = !svg || is3D() || activeBoard?.kind !== 'pcb';
+    $('units-toggle').setAttribute('aria-pressed', String(unit !== 'mm'));
+  }
+  function setUnit(next) {
+    if (!UNITS[next]) return;
+    unit = next; if (unit !== 'mm') imperialUnit = unit;
+    updateUnits(); draw();
+  }
+  function toggleUnits() { if (svg && !is3D() && activeBoard?.kind === 'pcb') setUnit(unit === 'mm' ? imperialUnit : 'mm'); }
   $('measure-btn').onclick = () => setMeasuring(!measuring);
+  $('units-toggle').onclick = toggleUnits;
   window.addEventListener('keydown', e => {
+    if (measuring && (e.key === 'Meta' || e.key === 'Control')) { snapping = Boolean(snapModifier(e)); refreshHover(); draw(); }
+    const editing = e.target.closest('textarea, select, [contenteditable], input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="file"])');
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); $('file').click(); return; }
+    if (!editing && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      if (e.key.toLowerCase() === 'f') { e.preventDefault(); resetView(); return; }
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); $('zoom-in').click(); return; }
+      if (e.key === '-') { e.preventDefault(); $('zoom-out').click(); return; }
+    }
     if (is3D()) {
       if (e.target.closest('input, textarea, [contenteditable]') || e.target.closest('select') && e.target !== $('three-body-list')) return;
       if (e.key === 'Escape') { e.preventDefault(); clearBodies(); }
@@ -1026,27 +1207,46 @@ import { LayoutWebGL } from './layout-webgl.js';
       return;
     }
     if (e.key === 'Escape') {
+      selectedMeasurement = null;
       clearSchematicSelection();
       clearComponent();
       e.preventDefault();
       clearNet(); setMeasuring(false);
       return;
     }
-    if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+    if (editing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'm' || e.key === 'M') setMeasuring(!measuring);
-    if (e.shiftKey && e.key.toLowerCase() === 'c') { measurements = []; pts = []; hover = null; draw(); }
+    if (e.key.toLowerCase() === 'q') { e.preventDefault(); toggleUnits(); }
+    if (e.shiftKey && e.key.toLowerCase() === 'c') { measurements = []; pts = []; selectedMeasurement = null; refreshHover(); draw(); }
   });
-  document.querySelectorAll('.unit').forEach(b => b.onclick = () => {
-    unit = b.dataset.unit; document.querySelectorAll('.unit').forEach(x => x.classList.toggle('on', x === b)); draw();
+  window.addEventListener('keyup', e => {
+    if (measuring && (e.key === 'Meta' || e.key === 'Control')) { snapping = Boolean(snapModifier(e)); refreshHover(); draw(); }
   });
+  window.addEventListener('blur', () => { snapping = false; if (measuring) { refreshHover(); draw(); } });
+  document.querySelectorAll('.unit').forEach(b => b.onclick = () => setUnit(b.dataset.unit));
+  view.addEventListener('click', e => {
+    if (!svg || is3D() || activeBoard.kind !== 'pcb' || panned || e.button !== 0 || measuring && (pts.length || snapModifier(e))) return;
+    const rect = view.getBoundingClientRect();
+    const hit = segmentAt({ x: e.clientX - rect.left, y: e.clientY - rect.top }, measurements, toScreen);
+    if (hit !== null) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      selectedMeasurement = selectedMeasurement === hit ? null : hit;
+      if (measuring) refreshHover(e);
+      draw();
+    } else if (selectedMeasurement !== null) { selectedMeasurement = null; draw(); }
+  }, true);
   view.addEventListener('click', e => {
     if (is3D()) return;
-    if (!svg || !measuring || e.button !== 0) return;
-    pts.push(toSvg(e));
-    if (pts.length === 2) { measurements.push(pts); pts = []; hover = null; }
+    if (!svg || !measuring || panned || e.button !== 0) return;
+    refreshHover(e); selectedMeasurement = null;
+    pts.push({ x: hover.x, y: hover.y });
+    if (pts.length === 2) { measurements.push(pts); pts = []; }
     draw();
   });
-  view.addEventListener('mousemove', e => { if (svg && !is3D() && measuring) { hover = toSvg(e); if (pts.length || !measurements.length) draw(); } });
+  view.addEventListener('mousemove', e => {
+    lastPointer = { clientX: e.clientX, clientY: e.clientY };
+    if (svg && !is3D() && measuring) { refreshHover(e); draw(); }
+  });
 
   new ResizeObserver(() => {
     positionMeasurementLabels();
@@ -1056,11 +1256,12 @@ import { LayoutWebGL } from './layout-webgl.js';
 
   // ------------------------------------------------------------ board passed on the command line
   fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {
-    if (!d || !d.svg) return;
-    const file = new File([Uint8Array.from(atob(d.source), c => c.charCodeAt(0))], d.name);
-    const board = createBoard(file);
-    show(board, d);
-    if (!activeBoard) activateBoard(board);
-    else updateTabs();
+    const documents = d?.documents || (d?.svg ? [d] : []), activate = !activeBoard, opened = [];
+    for (const data of documents) {
+      if (!data.svg) continue;
+      const file = new File([Uint8Array.from(atob(data.source || ''), c => c.charCodeAt(0))], data.name);
+      const board = createBoard(file); opened.push(board); show(board, data);
+    }
+    if (activate && opened.length) activateBoard(opened.at(-1)); else updateTabs();
   }).catch(e => toast('Could not load the initial document: ' + e.message));
 })();

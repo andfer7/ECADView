@@ -176,6 +176,21 @@ test('unsupported geometry and unavailable WebGL retain the selectable SVG viewe
   assert.equal(await unavailable.locator('#net-query').inputValue(), 'GND');
 });
 
+test('SVG fallback preserves all visible drill cutouts above selected copper, including unrelated holes', async t => {
+  const page = await pageFor(t, fixture(), () => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...args) { return type === 'webgl2' ? null : original.call(this, type, ...args); };
+  });
+  await page.waitForFunction(() => document.querySelector('#renderer-status').textContent.includes('unavailable'));
+  await page.locator('#net-query').fill('GND');
+  const sampled = await colors(page, [[54, 15], [58, 18], [77, 18]]);
+  near(sampled[0], [104, 224, 255]); near(sampled[1], [27, 29, 33]); near(sampled[2], [27, 29, 33]);
+  await page.locator('#component-query').fill('U1'); near((await colors(page, [[58, 18]]))[0], [27, 29, 33]);
+  await page.locator('#layers label').filter({ hasText: 'Drills' }).locator('input').uncheck();
+  near((await colors(page, [[58, 18]]))[0], [255, 224, 102]);
+  await page.keyboard.press('Escape'); assert.equal(await page.locator('#layout-holes').count(), 0);
+});
+
 test('a real KiCad PCB uses retained WebGL and a schematic remains SVG', async t => {
   const page = await pageFor(t, {});
   await page.unroute('**/render');

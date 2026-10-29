@@ -30,7 +30,7 @@
       </div>
       <div id="three-status" class="hint" role="status"></div>
     </div>
-    <div data-pcb-only data-2d-only>
+    <div data-2d-only>
       <label for="component-query">Find component</label>
       <input id="component-query" type="search" list="component-options" placeholder="Designator, e.g. R12" title="Search by designator or click a component. Click a selected component again to deselect it. Escape clears the selection." autocomplete="off" disabled>
       <datalist id="component-options"></datalist>
@@ -38,7 +38,7 @@
       <button id="component-reveal" hidden>Show matching layers</button>
       <div id="component-status" class="hint" role="status"></div>
     </div>
-    <div data-pcb-only data-2d-only>
+    <div data-2d-only>
       <label for="net-query">Find net</label>
       <input id="net-query" type="search" list="net-options" placeholder="Net name, e.g. GND" autocomplete="off" disabled>
       <datalist id="net-options"></datalist>
@@ -54,8 +54,9 @@
     <div data-pcb-only data-2d-only>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
+      <button id="units-toggle" aria-pressed="false" title="Switch metric / imperial units (Q)" disabled>Metric (mm)</button>
       <div id="readout"></div>
-      <div class="hint">Click copper to select a net. Click a selected net or component again to deselect it. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. Double-click to reset. Measure: click two points. Esc exits measurement mode and deselects the net; Shift+C clears all measurements.</div>
+      <div class="hint">Click copper to select a net; click it again to deselect. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. F or double-click fits. Measure (M): click two points; hold Command on macOS or Ctrl on Windows/Linux to snap to visible pad/via centres. Click a completed segment for dashed X/Y distances. Q switches metric/imperial. Esc cancels the tool and selection; Shift+C clears measurements.</div>
     </div>
     <div id="schematic-selection" hidden>
       <label>Selection</label>

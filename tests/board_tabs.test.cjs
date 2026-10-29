@@ -163,6 +163,323 @@ const currentViewBox = page => page.locator('#view > svg').evaluate(svg => {
 const pointOnScreen = (page, x, y) => page.locator('#view > svg').evaluate((svg, p) => {
   const q = new DOMPoint(p.x, p.y).matrixTransform(svg.getScreenCTM()); return { clientX: q.x, clientY: q.y };
 }, { x, y });
+async function pixelOnGraphic(page, graphic) {
+  const rect = await graphic.boundingBox(), png = (await page.screenshot({ scale: 'css' })).toString('base64');
+  return page.evaluate(async ({ png, x, y }) => {
+    const bitmap = await createImageBitmap(await (await fetch('data:image/png;base64,' + png)).blob());
+    const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
+    const context = canvas.getContext('2d'); context.drawImage(bitmap, 0, 0);
+    return [...context.getImageData(Math.round(x), Math.round(y), 1, 1).data].slice(0, 3);
+  }, { png, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
+}
+
+const parityBoard = (name, webgl = false) => ({ ...boardData(name), kind: 'pcb', webgl,
+  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" data-board="${name}">
+    <g id="scene" transform="translate(2 3)">
+      <g id="layer-top" data-layer-role="copper" data-layer-token="TOP" data-layer-name="Top copper">
+        <circle id="snap-pad" data-primitive="pad" data-component="U1" data-net="A" cx="20" cy="20" r="5" fill="red"/>
+        <circle id="snap-via" data-primitive="via" data-net="A" cx="60" cy="50" r="4" fill="red"/>
+      </g>
+      <g id="layer-bottom" data-layer-role="copper" data-layer-name="Back copper">
+        <rect data-primitive="pad" x="35" y="15" width="10" height="10" fill="blue"/>
+      </g>
+      <g id="layer-mechanical1" data-layer-role="mechanical" data-layer-name="Mechanical">
+        <circle data-primitive="pad" cx="80" cy="20" r="4" fill="white"/>
+      </g>
+      <g id="layer-drills" data-layer-role="drill" data-layer-name="Drills">
+        <circle data-hole-owner="snap-via" cx="60" cy="50" r="1" fill="#1b1d21"/>
+      </g>
+    </g></svg>` });
+async function openParityBoard(t, gpu) {
+  const result = await openPage(t, { render: (route, name) => reply(route, parityBoard(name, gpu)) });
+  const page = result.page;
+  await page.locator('#file').setInputFiles(file('Parity.PcbDoc')); await loaded(page, 'Parity.PcbDoc');
+  if (gpu) await page.waitForFunction(() => document.querySelector('#view.gpu-layout'));
+  return page;
+}
+async function clickWorld(page, x, y) {
+  const p = await pointOnScreen(page, x, y); await page.mouse.click(p.clientX, p.clientY);
+}
+const segmentPoints = page => page.locator('#measure .measurement-segment').evaluateAll(lines => lines.map(line =>
+  ['x1', 'y1', 'x2', 'y2'].map(key => Number(line.getAttribute(key)))));
+
+for (const gpu of [false, true]) {
+  const renderer = gpu ? 'WebGL' : 'SVG fallback';
+  test(`native parity: ${renderer} measurement pointer, Command snapping, visible copper and screen-sized markers`, async t => {
+    const page = await openParityBoard(t, gpu);
+    const modifier = await page.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform) ? 'Meta' : 'Control');
+    const start = await pointOnScreen(page, 22.6, 23.3);
+    await page.mouse.move(start.clientX, start.clientY); await page.keyboard.press('m');
+    const pointer = page.locator('#measure-pointer');
+    assert.equal(await pointer.count(), 1, 'entry does not require a click or extra pointer movement');
+    assert.equal(await pointer.getAttribute('data-snapped'), 'false');
+    if (modifier === 'Meta') {
+      await page.keyboard.down('Control'); assert.equal(await pointer.getAttribute('data-snapped'), 'false'); await page.keyboard.up('Control');
+    }
+    await page.keyboard.down(modifier);
+    assert.equal(await pointer.getAttribute('data-snapped'), 'true');
+    const center = await pointer.evaluate(el => { const m = el.transform.baseVal.consolidate().matrix; return [m.e, m.f]; });
+    near(center[0], 22, 'pad center X', 1e-9); near(center[1], 23, 'pad center Y', 1e-9);
+    await page.mouse.click(start.clientX, start.clientY);
+    await page.keyboard.up(modifier);
+    assert.equal(await pointer.getAttribute('data-snapped'), 'false');
+    const end = await pointOnScreen(page, 62.5, 53.4); await page.mouse.move(end.clientX, end.clientY);
+    await page.keyboard.down(modifier);
+    near(Number(await page.locator('.measurement-preview').getAttribute('x2')), 62, 'preview via center X', 1e-9);
+    near(Number(await page.locator('.measurement-preview').getAttribute('y2')), 53, 'preview via center Y', 1e-9);
+    await page.mouse.click(end.clientX, end.clientY); await page.keyboard.up(modifier);
+    (await segmentPoints(page))[0].forEach((value, i) => near(value, [22, 23, 62, 53][i], 'exact snapped endpoint', 1e-9));
+    assert.equal(await pointer.count(), 1, 'the tool stays visible between measurements');
+    assert.equal(await page.locator('.measure-label').textContent(), '50.000 mm');
+    const style = await page.locator('.measurement-segment').evaluate(el => ({ stroke: getComputedStyle(el).stroke, width: getComputedStyle(el).strokeWidth }));
+    assert.deepEqual(style, { stroke: 'rgb(255, 255, 255)', width: '3px' });
+    assert.ok(await page.locator('.measure-label').evaluate(el => parseFloat(getComputedStyle(el).fontSize)) >= 18);
+    const markerSize = () => pointer.locator('circle').evaluate(el => el.r.baseVal.value * Math.hypot(el.getScreenCTM().a, el.getScreenCTM().b));
+    near(await markerSize(), 6, 'marker radius before zoom', .01);
+    await page.locator('#view').dispatchEvent('wheel', { ctrlKey: true, deltaY: -50, clientX: end.clientX, clientY: end.clientY }); await settleView(page);
+    near(await markerSize(), 6, 'marker radius after zoom', .01);
+    await page.locator('#layers label').filter({ hasText: 'Back copper' }).locator('input').uncheck();
+    const hidden = await pointOnScreen(page, 42.3, 23.2); await page.mouse.move(hidden.clientX, hidden.clientY);
+    await page.keyboard.down(modifier); assert.equal(await pointer.getAttribute('data-snapped'), 'false');
+    await page.locator('#layers label').filter({ hasText: 'Back copper' }).locator('input').check();
+    await page.mouse.move(hidden.clientX, hidden.clientY); assert.equal(await pointer.getAttribute('data-snapped'), 'true');
+    await page.keyboard.up(modifier); await page.keyboard.press('Escape');
+    assert.equal(await pointer.count(), 0); assert.equal((await segmentPoints(page)).length, 1);
+    await page.keyboard.press('m'); assert.equal(await pointer.count(), 1, 'entry shows the marker every time');
+    const camera = await currentViewBox(page), retained = await segmentPoints(page);
+    const move = await pointOnScreen(page, 60, 45);
+    await page.mouse.move(move.clientX, move.clientY); await page.mouse.down();
+    await page.mouse.move(move.clientX + 30, move.clientY + 15); await page.mouse.up(); await settleView(page);
+    assert.notDeepEqual(await currentViewBox(page), camera, 'left dragging pans while measuring');
+    assert.deepEqual(await segmentPoints(page), retained); assert.equal(await page.locator('.measurement-preview').count(), 0);
+  });
+
+  test(`native parity: ${renderer} selectable X/Y measurements, unit toggle and per-tab imperial preference`, async t => {
+    const page = await openParityBoard(t, gpu);
+    await page.keyboard.press('m'); await clickWorld(page, 10, 10); await clickWorld(page, 50, 40); await page.keyboard.press('Escape');
+    const original = await segmentPoints(page), viewBox = await currentViewBox(page);
+    assert.equal(await page.locator('.measurement-axis').count(), 0);
+    await clickWorld(page, 30, 25);
+    assert.equal(await page.locator('.measurement-segment').count(), 1);
+    assert.equal(await page.locator('.measurement-axis').count(), 2);
+    assert.deepEqual(await page.locator('.measure-label').allTextContents(), ['50.000 mm', 'X: 40.000 mm', 'Y: 30.000 mm']);
+    assert.ok((await page.locator('.measurement-axis').evaluateAll(lines => lines.map(line => getComputedStyle(line).strokeDasharray))).every(value => value !== 'none'));
+    await page.locator('[data-unit="in"]').click();
+    assert.match(await page.locator('.measure-label').first().textContent(), /1\.9685 in/);
+    await page.keyboard.press('q'); assert.equal(await page.locator('#units-toggle').textContent(), 'Metric (mm)');
+    await page.keyboard.press('q'); assert.equal(await page.locator('#units-toggle').textContent(), 'Imperial (in)');
+    assert.ok((await page.locator('.measure-label').allTextContents()).every(text => text.endsWith(' in')));
+    await page.locator('#net-query').fill('q'); await page.keyboard.press('q');
+    assert.equal(await page.locator('#net-query').inputValue(), 'qq');
+    assert.equal(await page.locator('#units-toggle').textContent(), 'Imperial (in)', 'Q stays typeable in search');
+    await page.locator('#file').setInputFiles(file('Other.PcbDoc')); await loaded(page, 'Other.PcbDoc');
+    if (gpu) await page.waitForFunction(() => document.querySelector('#view.gpu-layout'));
+    assert.equal(await page.locator('#units-toggle').textContent(), 'Metric (mm)');
+    await page.locator('[data-unit="mil"]').click(); await page.keyboard.press('q'); await page.keyboard.press('q');
+    assert.equal(await page.locator('#units-toggle').textContent(), 'Imperial (mil)');
+    await page.getByRole('tab', { name: 'Parity.PcbDoc', exact: true }).click();
+    assert.equal(await page.locator('#units-toggle').textContent(), 'Imperial (in)');
+    assert.deepEqual(await segmentPoints(page), original); assert.deepEqual(await currentViewBox(page), viewBox);
+    assert.equal(await page.locator('.measurement-axis').count(), 2);
+    await page.keyboard.press('m'); await clickWorld(page, 30, 25);
+    assert.equal(await page.locator('.measurement-preview').count(), 0, 'selecting while measuring does not start a new segment');
+    assert.equal(await page.locator('.measurement-axis').count(), 0, 'a repeated segment click toggles X/Y off');
+    await clickWorld(page, 30, 25); assert.equal(await page.locator('.measurement-axis').count(), 2);
+    await page.keyboard.press('Shift+C'); assert.equal(await page.locator('.measurement-segment, .measurement-axis').count(), 0);
+  });
+}
+
+test('native parity: green contour-only schematic symbols and 3.5x nets with 45% context contrast, search and restoration', async t => {
+  const data = selectableSchematicData('Style.SchDoc');
+  data.svg = data.svg.replace('id="wire-1"><line', 'id="wire-1" stroke-width="2"><line').replace('stroke="blue" stroke-width="1"', 'stroke="blue"');
+  const { page } = await openPage(t, { render: route => reply(route, data) });
+  await page.locator('#file').setInputFiles(file(data.name)); await loaded(page, data.name);
+  await page.locator('#component-query').fill('r1');
+  const paint = selector => page.locator(selector).evaluate(el => {
+    const p = getComputedStyle(el); return { fill: p.fill, stroke: p.stroke, width: p.strokeWidth };
+  });
+  assert.deepEqual(await paint('#body-1'), { fill: 'rgb(255, 255, 176)', stroke: 'rgb(0, 138, 59)', width: '1px' });
+  assert.equal((await paint('#component-1 text')).fill, 'rgb(0, 138, 59)');
+  assert.equal((await paint('#wire-1 line:not(.sch-hit)')).stroke, 'rgb(140, 139, 251)');
+  await page.locator('#net-query').fill('gnd');
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await paint('#wire-1 line:not(.sch-hit)')).stroke, 'rgb(0, 138, 59)');
+    assert.equal((await paint('#wire-1 line:not(.sch-hit)')).width, '7px');
+    await page.locator('#net-clear').click(); await page.locator('#net-query').fill('GND');
+  }
+  assert.ok(await page.locator('#schematic-highlight').count());
+  assert.equal(await page.locator('#schematic-highlight').evaluate(el => getComputedStyle(el).pointerEvents), 'none');
+  await page.locator('#net-fit').click();
+  assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), '0 0 100 80');
+  await page.keyboard.press('Escape');
+  assert.deepEqual(await paint('#body-1'), { fill: 'rgb(255, 255, 176)', stroke: 'rgb(165, 42, 42)', width: '1px' });
+  assert.equal((await paint('#wire-1 line:not(.sch-hit)')).stroke, 'rgb(0, 0, 255)');
+  assert.equal((await paint('#wire-1 line:not(.sch-hit)')).width, '2px');
+  assert.equal(await page.locator('#schematic-highlight').count(), 0);
+});
+
+test('native parity: filled-only schematic bodies retain their interiors and leaf net graphics remain selectable', async t => {
+  const data = { ...schematicData('Leaf.SchDoc'), selection: {
+    components: [{ id: 'c', name: 'U1', elements: ['c'], body_elements: ['body'] }],
+    nets: [{ id: 'n', name: 'SIGNAL', elements: ['route', 'junction'] }],
+  }, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"><g id="scene">
+    <rect width="100" height="80" fill="#fffcf8"/>
+    <g id="c"><rect id="body" x="10" y="10" width="20" height="12" fill="#ffffb0" stroke="none"/></g>
+    <line id="route" x1="40" y1="40" x2="80" y2="40" stroke="blue" stroke-width=".3"/>
+    <circle id="junction" cx="80" cy="40" r="1" fill="blue"/>
+  </g></svg>` };
+  const { page } = await openPage(t, { render: route => reply(route, data) });
+  await page.locator('#file').setInputFiles(file(data.name)); await page.waitForFunction(() => document.querySelector('#body'));
+  await page.locator('#component-query').fill('U1');
+  assert.deepEqual(await page.locator('#body').evaluate(el => [getComputedStyle(el).fill, getComputedStyle(el).stroke]),
+    ['rgb(255, 255, 176)', 'rgb(0, 138, 59)']);
+  await page.keyboard.press('Escape');
+  await clickWorld(page, 60, 40.4);
+  assert.equal(await schematicStatus(page), 'Nets: SIGNAL');
+  assert.equal(await page.locator('#route').evaluate(el => getComputedStyle(el).strokeWidth), '1.05px');
+  assert.equal(await page.locator('#junction').evaluate(el => getComputedStyle(el).fill), 'rgb(0, 138, 59)');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#body').evaluate(el => getComputedStyle(el).stroke), 'none');
+});
+
+test('native parity: physical layer list order and selecting visible layers retain independent paint/visibility state', async t => {
+  const data = layeredBoardData('Stack.PcbDoc');
+  data.copper_layer_order = ['TOP', 'MID9', 'MID1', 'BOTTOM'];
+  data.svg = data.svg.replace('id="layer-top"', 'id="layer-top" data-layer-token="TOP"')
+    .replace('id="layer-bottom"', 'id="layer-bottom" data-layer-token="BOTTOM"')
+    .replace('<g id="board-outline">', '<g id="mid1" data-layer-token="MID1" data-layer-role="copper" data-layer-name="A digital"><path d="M0 5H90"/></g><g id="mid9" data-layer-token="MID9" data-layer-role="copper" data-layer-name="Z analogue"><path d="M0 10H90"/></g><g id="board-outline">');
+  const { page } = await openPage(t, { render: route => reply(route, data) });
+  await page.locator('#file').setInputFiles(file(data.name)); await loaded(page, data.name);
+  assert.deepEqual(await page.locator('#layers .layer-name').allTextContents(), ['Top copper', 'Z analogue', 'A digital', 'Bottom copper', 'board-outline']);
+  assert.deepEqual(await layerOrder(page), ['layer-top', 'layer-bottom', 'mid1', 'mid9', 'board-outline']);
+  await page.getByRole('button', { name: 'Top copper', exact: true }).click();
+  assert.equal(await frontLayer(page), 'layer-top');
+  assert.equal(await page.locator('#layers input').first().isChecked(), true);
+  assert.equal(await page.getByRole('button', { name: 'Top copper', exact: true }).getAttribute('aria-pressed'), 'true');
+  const order = await layerOrder(page);
+  await page.locator('#file').setInputFiles(file('Other.PcbDoc')); await loaded(page, data.name);
+  await page.getByRole('tab').first().click();
+  assert.deepEqual(await layerOrder(page), order);
+  assert.equal(await page.getByRole('button', { name: 'Top copper', exact: true }).getAttribute('aria-pressed'), 'true');
+});
+
+test('native parity: total measurement labels stay outside segments and X/Y legs for all directions and survive zoom', async t => {
+  const page = await openParityBoard(t, false);
+  for (const [a, b] of [[[10, 10], [60, 45]], [[60, 45], [10, 10]], [[10, 60], [60, 15]], [[60, 15], [10, 60]],
+    [[10, 30], [70, 30]], [[40, 10], [40, 60]], [[40, 40], [41, 40.5]]]) {
+    await page.keyboard.press('Shift+C'); await page.keyboard.press('m');
+    await clickWorld(page, ...a); await clickWorld(page, ...b); await page.keyboard.press('Escape');
+    await clickWorld(page, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+    const clear = () => page.locator('#view > svg').evaluate(svg => {
+      const box = document.querySelector('.measure-label[data-kind="total"]').getBoundingClientRect();
+      const lines = [...svg.querySelectorAll('#measure line')];
+      return lines.every(line => {
+        const a = new DOMPoint(+line.getAttribute('x1'), +line.getAttribute('y1')).matrixTransform(svg.getScreenCTM());
+        const b = new DOMPoint(+line.getAttribute('x2'), +line.getAttribute('y2')).matrixTransform(svg.getScreenCTM());
+        // An expanded rectangle must not intersect the finite measurement line.
+        let low = 0, high = 1;
+        for (const [p, q] of [[a.x - b.x, a.x - box.left + 2], [b.x - a.x, box.right + 2 - a.x],
+          [a.y - b.y, a.y - box.top + 2], [b.y - a.y, box.bottom + 2 - a.y]]) {
+          if (p === 0 && q < 0) return true;
+          if (p < 0) low = Math.max(low, q / p); else if (p > 0) high = Math.min(high, q / p);
+        }
+        return low > high;
+      });
+    });
+    assert.equal(await clear(), true, 'distance text clears its total and dashed axes');
+    await page.keyboard.press('+'); await settleView(page);
+    assert.equal(await clear(), true, 'labels keep clearing their segments after zoom');
+    await page.keyboard.press('f'); await settleView(page);
+    await page.keyboard.press('Escape');
+  }
+});
+
+test('native parity: Shift adds PCB selections and fit/zoom/open shortcuts preserve text entry', async t => {
+  const { page } = await openClickableComponents(t);
+  await page.locator('[data-primitive="component-pad"]').click();
+  await page.locator('[data-primitive="component-body"]').click({ modifiers: ['Shift'] });
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1, C2');
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC');
+  await page.locator('[data-primitive="component-pad"]').click({ modifiers: ['Shift'] });
+  assert.equal(await page.locator('#component-query').inputValue(), 'C2');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  const original = await currentViewBox(page);
+  await page.keyboard.press('+'); await settleView(page);
+  assert.ok((await currentViewBox(page)).w < original.w);
+  await page.keyboard.press('f'); assert.deepEqual(await currentViewBox(page), original);
+  await page.locator('#component-query').fill(''); await page.keyboard.type('f-q+');
+  assert.equal(await page.locator('#component-query').inputValue(), 'f-q+');
+  assert.deepEqual(await currentViewBox(page), original);
+  const modifier = await page.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform) ? 'Meta' : 'Control');
+  const chooser = page.waitForEvent('filechooser'); await page.keyboard.press(modifier + '+o');
+  await (await chooser).setFiles(file('Opened.PcbDoc')); await loaded(page, 'Opened.PcbDoc');
+});
+
+test('native parity: schematic embedded PNG diagrams render through the real server and retain their pixels during selection', async t => {
+  const source = execFileSync(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'), ['-c', `
+import sys, tempfile
+from pathlib import Path
+from PySide6.QtGui import QColor, QImage, QPainter
+from altium_monkey import AltiumSchDoc, SchRectMils, SchPointMils, make_sch_embedded_image, make_sch_wire, make_sch_net_label
+with tempfile.TemporaryDirectory() as tmp:
+ image = QImage(8, 4, QImage.Format.Format_ARGB32)
+ image.fill(QColor('red'))
+ painter = QPainter(image); painter.fillRect(4, 0, 4, 4, QColor('blue')); painter.end()
+ png = Path(tmp) / 'diagram.png'; image.save(str(png), 'PNG')
+ sheet = AltiumSchDoc()
+ sheet.add_object(make_sch_embedded_image(bounds_mils=SchRectMils(500, 500, 7500, 4500), source_path=png))
+ sheet.add_object(make_sch_wire(points_mils=[SchPointMils(1000, 5500), SchPointMils(8000, 5500)]))
+ sheet.add_object(make_sch_net_label(location_mils=SchPointMils(1000, 5500), text='DIAGRAM_NET'))
+ path = Path(tmp) / 'diagram.SchDoc'; sheet.save(path); sys.stdout.buffer.write(path.read_bytes())
+`]);
+  const { page } = await openPage(t); await page.unroute('**/render');
+  await page.locator('#file').setInputFiles({ name: 'diagram.SchDoc', mimeType: 'application/octet-stream', buffer: source });
+  await page.waitForFunction(() => document.querySelector('#filename').textContent === 'diagram.SchDoc' && document.querySelector('#busy').style.display === 'none');
+  assert.ok(await page.locator('#scene image').count() > 0);
+  const pixels = async () => {
+    const coordinates = await page.locator('#scene image').first().evaluate(el => {
+      const b = el.getBBox(); return [.25, .75].map(f => {
+        const p = new DOMPoint(b.x + b.width * f, b.y + b.height / 2).matrixTransform(el.getScreenCTM()); return [p.x, p.y];
+      });
+    });
+    const png = (await page.screenshot()).toString('base64');
+    return page.evaluate(async ({ png, coordinates }) => {
+      const bitmap = await createImageBitmap(await (await fetch('data:image/png;base64,' + png)).blob());
+      const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
+      const ctx = canvas.getContext('2d'); ctx.drawImage(bitmap, 0, 0);
+      return coordinates.map(([x, y]) => [...ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data].slice(0, 3));
+    }, { png, coordinates });
+  };
+  assert.deepEqual(await pixels(), [[255, 0, 0], [0, 0, 255]]);
+  await clickSchematicGraphic(page, page.locator('.sch-hit').first());
+  assert.match(await schematicStatus(page), /Nets:/);
+  assert.deepEqual(await pixels(), [[255, 0, 0], [0, 0, 255]]);
+  await page.keyboard.press('Escape'); assert.deepEqual(await pixels(), [[255, 0, 0], [0, 0, 255]]);
+});
+
+test('native parity: multiple startup files, reordering tabs and dropping files on the sidebar preserve document state', async t => {
+  const data = name => ({ ...boardData(name), source: Buffer.from(name).toString('base64') });
+  const { page, requests } = await openPage(t, { initial: { documents: [data('First.PcbDoc'), data('Second.PcbDoc'), data('Third.PcbDoc')] } });
+  await loaded(page, 'Third.PcbDoc');
+  assert.equal(await page.getByRole('tab').count(), 3);
+  await page.getByRole('tab', { name: 'First.PcbDoc', exact: true }).click();
+  await page.locator('[data-unit="in"]').click();
+  await page.keyboard.press('+'); await settleView(page); const zoom = await currentViewBox(page);
+  const names = () => page.getByRole('tab').allTextContents();
+  await page.getByRole('tab', { name: 'First.PcbDoc', exact: true }).focus();
+  await page.keyboard.press('Alt+Shift+ArrowRight'); assert.deepEqual(await names(), ['Second.PcbDoc', 'First.PcbDoc', 'Third.PcbDoc']);
+  await page.locator('.tab').nth(1).dragTo(page.locator('.tab').nth(2));
+  assert.deepEqual(await names(), ['Second.PcbDoc', 'Third.PcbDoc', 'First.PcbDoc']);
+  assert.deepEqual(await currentViewBox(page), zoom); assert.equal(await page.locator('#units-toggle').textContent(), 'Imperial (in)');
+  assert.equal(requests.length, 0, 'startup and tab order changes do not re-upload documents');
+  const transfer = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer(); transfer.items.add(new File(['Dropped.PcbDoc'], 'Dropped.PcbDoc')); return transfer;
+  });
+  await page.locator('#panel').dispatchEvent('drop', { dataTransfer: transfer }); await loaded(page, 'Dropped.PcbDoc');
+  assert.equal(await page.getByRole('tab').count(), 4);
+  await page.getByRole('tab', { name: 'First.PcbDoc', exact: true }).click();
+  assert.deepEqual(await currentViewBox(page), zoom); assert.equal(await page.locator('#units-toggle').textContent(), 'Imperial (in)');
+});
 const pointInView = (page, p) => page.locator('#view > svg').evaluate((svg, p) => {
   const q = new DOMPoint(p.clientX, p.clientY).matrixTransform(svg.getScreenCTM().inverse()); return { x: q.x, y: q.y };
 }, p);
@@ -202,8 +519,8 @@ test('mixes PCB and schematic tabs while preserving the view and PCB measurement
   await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
   assert.equal(await page.locator('#DocumentMainGroup').isVisible(), true);
   assert.equal(await page.locator('#layers-wrap').isVisible(), false);
-  assert.equal(await page.locator('#component-query').isVisible(), false);
-  assert.equal(await page.locator('#net-query').isVisible(), false);
+  assert.equal(await page.locator('#component-query').isVisible(), true);
+  assert.equal(await page.locator('#net-query').isVisible(), true);
   assert.equal(await page.locator('#measure-btn').isVisible(), false);
   assert.equal(await page.locator('#stats').textContent(), '3 components, 7 wires, 2 net labels');
   await page.locator('#view').click(); await page.keyboard.press('m');
@@ -393,7 +710,7 @@ test('hollow rotated and mirrored symbol bodies select components without captur
   await page.locator('#file').setInputFiles(file('Symbols.SchDoc')); await loaded(page, 'Symbols.SchDoc');
   await clickSchematicGraphic(page, page.locator('#body-1'));
   assert.equal(await schematicStatus(page), 'Components: R1', 'clicking empty space inside the outline selects the component');
-  assert.equal(await page.locator('#body-1 path').evaluate(el => getComputedStyle(el).stroke), 'rgb(189, 97, 0)');
+  assert.equal(await page.locator('#body-1 path').evaluate(el => getComputedStyle(el).stroke), 'rgb(0, 138, 59)');
   assert.equal(await page.locator('.sch-component-hit').first().evaluate(el => getComputedStyle(el).fill), 'rgba(0, 0, 0, 0)');
   await clickSchematicGraphic(page, page.locator('#body-2'), true);
   assert.equal(await schematicStatus(page), 'Components: R1, U[2]"<test>');
@@ -737,6 +1054,9 @@ test('pan/zoom redraws are batched and reposition completed measurement labels w
   const readout = await page.locator('#readout').textContent();
   const result = await page.locator('#view').evaluate(el => new Promise(resolve => {
     const svg = el.querySelector('svg'), line = el.querySelector('#measure line'), label = el.querySelector('.measure-label');
+    const center = () => new DOMPoint((+line.getAttribute('x1') + +line.getAttribute('x2')) / 2,
+      (+line.getAttribute('y1') + +line.getAttribute('y2')) / 2).matrixTransform(svg.getScreenCTM());
+    const before = { center: center(), x: parseFloat(label.style.left), y: parseFloat(label.style.top) };
     let updates = 0;
     const observer = new MutationObserver(records => { updates += records.length; });
     observer.observe(svg, { attributes: true, attributeFilter: ['viewBox'] });
@@ -747,7 +1067,8 @@ test('pan/zoom redraws are batched and reposition completed measurement labels w
         (+line.getAttribute('y1') + +line.getAttribute('y2')) / 2).matrixTransform(svg.getScreenCTM());
       const r = el.getBoundingClientRect();
       resolve({ updates, sameLine: line === el.querySelector('#measure line'), sameLabel: label === el.querySelector('.measure-label'),
-        x: parseFloat(label.style.left), y: parseFloat(label.style.top), expectedX: midpoint.x - r.left, expectedY: midpoint.y - r.top });
+        x: parseFloat(label.style.left), y: parseFloat(label.style.top), expectedX: before.x + midpoint.x - before.center.x,
+        expectedY: before.y + midpoint.y - before.center.y });
     }, 0));
   }));
   assert.equal(result.updates, 1, 'one viewBox update for a burst of events in a frame');
@@ -1139,14 +1460,8 @@ test('finds nets case insensitively, prefers exact net names and safely clears h
   assert.equal(await page.locator('.net-match').first().evaluate(el => getComputedStyle(el).fill), 'rgb(255, 0, 0)', 'original renderer paint is unchanged');
   assert.equal(await page.locator('#scene > g').last().getAttribute('id'), 'net-highlight');
   assert.equal(await page.locator('#net-highlight [id], #net-highlight [data-net]').count(), 0);
-  assert.equal(await page.locator('.net-match').first().evaluate(el => {
-    const r = el.getBoundingClientRect();
-    const overlay = document.querySelector('#net-highlight');
-    overlay.style.pointerEvents = 'auto';
-    const color = getComputedStyle(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)).fill;
-    overlay.style.pointerEvents = 'none';
-    return color;
-  }), 'rgb(104, 224, 255)', 'highlight is visible above the overlapping blue layer');
+  assert.deepEqual(await pixelOnGraphic(page, page.locator('.net-match').first()), [104, 224, 255],
+    'highlight is visible above the overlapping blue layer');
   await page.locator('#net-fit').click();
   assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), '0 0 100 80');
   await page.locator('#net-query').fill('U[1]"');
@@ -1287,7 +1602,7 @@ test('Escape exits measurement mode with a search field focused and retains fini
   assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
   assert.equal(await page.locator('#measure line').count(), 1);
   assert.equal(await page.locator('.measure-label').textContent(), caption);
-  await page.locator('[data-primitive="pad"]').click();
+  await page.locator('[data-primitive="pad"]').click({ position: { x: 3, y: 3 } });
   assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'normal selection resumes after Escape');
   assert.equal(await page.locator('#measure line').count(), 1);
   await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
@@ -1320,14 +1635,8 @@ test('finds components case insensitively, prefers exact designators and safely 
   assert.equal(await page.locator('.component-match').first().evaluate(el => getComputedStyle(el).fill), 'rgb(255, 0, 0)', 'original renderer paint is unchanged');
   assert.equal(await page.locator('#scene > g').last().getAttribute('id'), 'component-highlight');
   assert.equal(await page.locator('#component-highlight [id], #component-highlight [data-component]').count(), 0);
-  assert.equal(await page.locator('.component-match').first().evaluate(el => {
-    const r = el.getBoundingClientRect();
-    const overlay = document.querySelector('#component-highlight');
-    overlay.style.pointerEvents = 'auto';
-    const color = getComputedStyle(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)).fill;
-    overlay.style.pointerEvents = 'none';
-    return color;
-  }), 'rgb(255, 224, 102)', 'highlight is visible above the overlapping blue layer');
+  assert.deepEqual(await pixelOnGraphic(page, page.locator('.component-match').first()), [255, 224, 102],
+    'highlight is visible above the overlapping blue layer');
   await page.locator('#component-fit').click();
   assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), '0 0 100 80');
   await page.locator('#component-query').fill('U[1]"');
@@ -1663,8 +1972,8 @@ test('panning and measurements do not change the selected net, and later clicks 
   assert.equal(await page.locator('#measure line').count(), 1);
   assert.equal(await page.locator('#net-query').inputValue(), 'GND');
   await page.locator('#measure-btn').click();
-  await page.locator('[data-primitive="pad"]').click();
-  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'saved measurement endpoints do not intercept selection');
+  await page.locator('[data-primitive="pad"]').click({ position: { x: 3, y: 3 } });
+  assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'copper away from the measurement remains selectable');
 });
 
 test('clicked net selections remain attached to their own board tabs', async t => {
@@ -1774,10 +2083,10 @@ test('repeated layout component clicks toggle selection, highlighting and dimmin
   await body.click(); await page.locator('[data-primitive="component-pad"]').click();
   assert.equal(await page.locator('#component-query').inputValue(), 'C2');
   await page.locator('#measure-btn').click();
-  await body.click();
+  await body.click({ position: { x: 3, y: 3 } });
   assert.equal(await page.locator('#component-query').inputValue(), '');
   assert.equal(await page.locator('#measure line').count(), 1);
-  await body.click();
+  await body.click({ position: { x: 3, y: 3 } });
   assert.equal(await page.locator('#component-query').inputValue(), 'C2');
   assert.equal(await page.locator('#measure line').count(), 1);
 });

@@ -15,7 +15,7 @@
   #warnings { color: #efc578; font-size: 12px; white-space: pre-line; margin-top: 6px; }
   #component-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
                      border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
-  #view svg.layout-selection #scene > :not(#component-highlight):not(#net-highlight) { filter: opacity(0.15); }
+  #view svg.layout-selection #scene > :not(#component-highlight):not(#net-highlight):not(#layout-holes) { filter: opacity(0.15); }
   #view svg.hide-polygons .polygon-copper { display: none !important; }
   button { background: #3a3e45; color: var(--text); border: 1px solid #4a4f58; border-radius: 4px;
            padding: 5px 8px; cursor: pointer; font: inherit; }
@@ -33,10 +33,6 @@
   .count { margin-left: auto; color: var(--muted); font-size: 11px; }
   #net-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
                      border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
-  #scene .sch-component-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #bd6100 !important; stroke-width: 2px !important; }
-  #scene .sch-component-match text { fill: #bd6100 !important; }
-  #scene .sch-net-match [stroke]:not([stroke="none"]):not(.sch-hit) { stroke: #007f9d !important; stroke-width: 3px !important; }
-  #scene .sch-net-match [fill]:not([fill="none"]):not(.sch-hit) { fill: #007f9d !important; }
   #scene .sch-hit { stroke: transparent; fill: none; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
   #scene .sch-component-hit { fill: transparent; stroke: none; pointer-events: all; }
   #schematic-selection-status { white-space: pre-line; overflow-wrap: anywhere; margin-bottom: 6px; }
@@ -73,10 +69,17 @@
                transform: translate(-50%, -50%); pointer-events: none; }
   .copper-label > span { display: block; text-align: center; }
   .pin-label { color: #ffe066; }
-  #measure line, #measure circle { vector-effect: non-scaling-stroke; stroke: var(--accent); stroke-width: 1.5; fill: none; }
-  .measure-label { position: absolute; pointer-events: none; background: var(--accent); color: var(--accent-ink);
-                   font: 12px ui-monospace, Consolas, monospace; padding: 2px 6px; border-radius: 3px;
-                   transform: translate(-50%, -130%); white-space: nowrap; }
+  #measure line, #measure circle, #measure path { vector-effect: non-scaling-stroke; stroke: #fff; stroke-width: 3; fill: none; }
+  #measure .selected { stroke-width: 4; }
+  #measure .measurement-axis, #measure .measurement-preview { stroke-dasharray: 8 5; }
+  #measure .measurement-marker circle { fill: var(--bg); }
+  #measure-label { position: absolute; inset: 0; pointer-events: none; }
+  .measure-label { position: absolute; pointer-events: none; background: #1b1d21ed; color: #fff;
+                   font: 600 18.67px ui-monospace, Consolas, monospace; padding: 3px 6px; border-radius: 3px;
+                   transform: translate(-50%, -50%); white-space: nowrap; }
+  #units-toggle { width: 100%; margin-top: 6px; }
+  #layers .layer-name { flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; color: inherit; padding: 2px 0; }
+  #layers .active-layer { background: #35454d; box-shadow: inset 2px 0 var(--accent); }
   #toast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); background: #b23b3b; color: #fff;
            padding: 8px 14px; border-radius: 6px; display: none; max-width: 70%; }
   #busy { position: absolute; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; }
