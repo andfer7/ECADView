@@ -3104,8 +3104,7 @@ test('opens real KiCad PCB and schematic files, cross-probes, searches pins and 
   await page.locator('#polygons-toggle').click();
   await page.locator('#component-query').fill('R2');
   await page.locator('#component-fit').click();
-  await settleView(page);
-  assert.ok((await page.locator('.pin-label').allTextContents()).includes('A2'));
+  await page.waitForFunction(() => [...document.querySelectorAll('.pin-label')].some(label => label.textContent === 'A2'));
   await page.locator('#component-clear').click();
   await page.locator('#view-fit').click();
   await page.locator('#measure-btn').click();
