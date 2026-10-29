@@ -81,6 +81,7 @@ export class Board3D {
     this.scene = null;
     this.pickMeshes = [];
     this.bodyMeshes = [];
+    this.boardMeshes = [];
     this.renderer.clear();
   }
 
@@ -103,7 +104,21 @@ export class Board3D {
       const shape = new THREE.Shape(data.outline.map(p => new THREE.Vector2(...p)));
       shape.holes = (data.holes || []).map(points => new THREE.Path(points.map(p => new THREE.Vector2(...p))));
       const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
+      if (bodyId === null) {
+        // Give the existing top, bottom and edge their own material. A second
+        // almost-coplanar finish mesh causes depth fighting at grazing angles.
+        geometry.clearGroups();
+        const normals = geometry.attributes.normal;
+        let first = 0, previous = null;
+        for (let i = 0; i < normals.count; i += 3) {
+          const z = normals.getZ(i), current = z > 0.5 ? 0 : z < -0.5 ? 1 : 2;
+          if (current !== previous && previous !== null) { geometry.addGroup(first, i - first, previous); first = i; }
+          previous = current;
+        }
+        if (previous !== null) geometry.addGroup(first, normals.count - first, previous);
+      }
       const material = bodyId === null ? [
+        new THREE.MeshPhysicalMaterial({ color: 0x0e452c, roughness: 0.48, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.34 }),
         new THREE.MeshPhysicalMaterial({ color: 0x0e452c, roughness: 0.48, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.34 }),
         new THREE.MeshStandardMaterial({ color: 0x867552, roughness: 0.85, metalness: 0 }),
       ] : new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0,
@@ -112,6 +127,7 @@ export class Board3D {
       mesh.visible = bodyId === null || !bodies?.deleted.has(bodyId);
       mesh.position.z = z; mesh.name = data.name || 'Board'; this.scene.add(mesh);
       mesh.userData.bodyId = bodyId;
+      if (bodyId === null) this.boardMeshes.push(mesh);
       mesh.castShadow = true; mesh.receiveShadow = true;
       if (opacity > 0) this.pickMeshes.push(mesh);
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25),
@@ -138,27 +154,25 @@ export class Board3D {
   async loadSurfaces(source, model, generation) {
     try {
       const surfaces = await boardSurfaces(source, model, Math.min(2048, this.renderer.capabilities.maxTextureSize));
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || !surfaces.length) return;
+      const [x0, y0, x1, y1] = surfaces[0].bounds;
+      for (const mesh of this.boardMeshes) {
+        const positions = mesh.geometry.attributes.position, uv = new Float32Array(positions.count * 2);
+        for (let i = 0; i < positions.count; i++) {
+          uv[i * 2] = (positions.getX(i) - x0) / (x1 - x0);
+          uv[i * 2 + 1] = (positions.getY(i) - y0) / (y1 - y0);
+        }
+        mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      }
       for (const surface of surfaces) {
         const map = new THREE.CanvasTexture(surface.color); map.colorSpace = THREE.SRGBColorSpace;
         const physical = new THREE.CanvasTexture(surface.physical);
         for (const texture of [map, physical]) texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
         const material = new THREE.MeshPhysicalMaterial({ map, roughnessMap: physical, metalnessMap: physical,
           roughness: 1, metalness: 1, clearcoat: 0.22, clearcoatRoughness: 0.35, side: THREE.DoubleSide });
-        const [x0, y0, x1, y1] = surface.bounds;
-        for (const part of model.board) {
-          const shape = new THREE.Shape(part.outline.map(point => new THREE.Vector2(...point)));
-          shape.holes = (part.holes || []).map(points => new THREE.Path(points.map(point => new THREE.Vector2(...point))));
-          const geometry = new THREE.ShapeGeometry(shape), positions = geometry.attributes.position;
-          const uv = new Float32Array(positions.count * 2);
-          for (let i = 0; i < positions.count; i++) {
-            uv[i * 2] = (positions.getX(i) - x0) / (x1 - x0); uv[i * 2 + 1] = (positions.getY(i) - y0) / (y1 - y0);
-          }
-          geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-          const mesh = new THREE.Mesh(geometry, material);
-          mesh.name = `PCB ${surface.side} finish`; mesh.userData.boardSurface = surface.side;
-          mesh.position.z = (surface.side === 'top' ? 1 : -1) * (model.thickness / 2 + 0.005);
-          mesh.receiveShadow = true; this.scene.add(mesh);
+        const cap = surface.side === 'top' ? 0 : 1;
+        for (const mesh of this.boardMeshes) {
+          mesh.material[cap].dispose(); mesh.material[cap] = material;
         }
       }
       this.render();
@@ -237,13 +251,11 @@ export class Board3D {
   updateBounds() {
     const bounds = new THREE.Box3();
     this.pickMeshes.filter(mesh => mesh.visible).forEach(mesh => bounds.expandByObject(mesh));
+    this.bounds = bounds;
     this.center = bounds.getCenter(new THREE.Vector3());
     this.radius = Math.max(bounds.getSize(new THREE.Vector3()).length() / 2, 0.1);
-    this.camera.near = Math.max(this.radius / 10000, 0.0001);
-    this.camera.far = this.radius * 1000;
     this.controls.minDistance = this.radius * 0.01;
     this.controls.maxDistance = this.radius * 100;
-    this.camera.updateProjectionMatrix();
     for (const [index, light] of (this.studioLights || []).entries()) {
       const r = this.radius, side = index ? -1 : 1;
       light.position.copy(this.center).add(new THREE.Vector3(-r * side, -r * 1.2, r * 2.5 * side));
@@ -305,6 +317,26 @@ export class Board3D {
   }
 
   render() {
-    if (this.scene && !this.host.hidden) this.renderer.render(this.scene, this.camera);
+    if (!this.scene || this.host.hidden) return;
+    // Fit the depth interval to the scene along the current viewing direction,
+    // including after zoom/pan/orbit. A huge far/near ratio quantizes nearby
+    // STEP faces to the same depth and produces stripes across flat surfaces.
+    if (this.bounds && !this.bounds.isEmpty()) {
+      const direction = this.camera.getWorldDirection(new THREE.Vector3()), corner = new THREE.Vector3();
+      let nearest = Infinity, farthest = -Infinity;
+      for (const x of [this.bounds.min.x, this.bounds.max.x])
+        for (const y of [this.bounds.min.y, this.bounds.max.y])
+          for (const z of [this.bounds.min.z, this.bounds.max.z]) {
+            const depth = corner.set(x, y, z).sub(this.camera.position).dot(direction);
+            nearest = Math.min(nearest, depth); farthest = Math.max(farthest, depth);
+          }
+      const margin = this.radius * 0.01;
+      const near = Math.max(this.radius / 1000, nearest - margin, 0.0001);
+      const far = Math.max(near + margin, farthest + margin);
+      if (near !== this.camera.near || far !== this.camera.far) {
+        this.camera.near = near; this.camera.far = far; this.camera.updateProjectionMatrix();
+      }
+    }
+    this.renderer.render(this.scene, this.camera);
   }
 }

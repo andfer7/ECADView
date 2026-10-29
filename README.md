@@ -123,6 +123,9 @@ layers. Studio reflections, softer shadows and tone mapping give components
 more depth. STEP colors are preserved; plastic/metal roughness is inferred from
 color because STEP assets do not provide measured material finishes. Shadows
 are reused during navigation and refreshed when geometry or deletions change.
+The board finish is applied directly to its existing top and bottom faces.
+The camera's depth interval follows the visible board during zoom, pan and orbit
+to keep closely spaced STEP faces distinct and avoid striped depth artifacts.
 Drag to rotate,
 right-drag or Shift-drag to pan, and scroll or pinch to zoom. Top, Bottom,
 Isometric and Fit reset the camera; each tab remembers its camera and mode.

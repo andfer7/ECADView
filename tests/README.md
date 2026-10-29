@@ -119,6 +119,10 @@ mask apertures and silkscreen, exclusion of internal copper and measurement
 overlays, and independence from 2D visibility/highlighting. Browser coverage
 also renders mapped materials and studio shadow maps through WebGL and checks
 texture/shadow cleanup across repeated 3D mounts.
+Depth regressions render two contrasting faces separated by 0.005 mm, checking
+that the foreground face stays solid through top/isometric views, zoom and pan.
+They also check clipping coverage and verify that board finishes reuse the
+original solid's faces instead of adding overlapping surface meshes.
 
 
 Run `npm run test:gpu` for real Chrome/Chromium WebGL 2 compilation and pixel

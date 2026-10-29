@@ -2569,10 +2569,12 @@ test('3D studio shadows and mapped finishes render through WebGL and release the
     const viewer = new Board3D(host, () => {});
     viewer.show(model, null, null, source);
     const deadline = performance.now() + 5000;
-    while (!viewer.scene.children.some(child => child.userData.boardSurface) && performance.now() < deadline)
+    while (!viewer.boardMeshes[0]?.material[1].map && performance.now() < deadline)
       await new Promise(resolve => setTimeout(resolve, 20));
-    const surfaces = viewer.scene.children.filter(child => child.userData.boardSurface);
-    const maps = surfaces.map(surface => [surface.material.map.image.width, surface.material.roughnessMap === surface.material.metalnessMap]);
+    const surfaces = viewer.boardMeshes.flatMap(mesh => mesh.material.slice(0, 2));
+    const maps = surfaces.map(material => [material.map.image.width, material.roughnessMap === material.metalnessMap]);
+    const boardSolids = viewer.scene.children.filter(child => child.isMesh && child.userData.bodyId === null).length;
+    const capGroups = viewer.boardMeshes[0].geometry.groups.map(group => group.materialIndex);
     const lit = viewer.studioLights.every(light => light.shadow.map && light.castShadow);
     viewer.clear();
     const texturesAfterClear = viewer.renderer.info.memory.textures;
@@ -2580,12 +2582,60 @@ test('3D studio shadows and mapped finishes render through WebGL and release the
     await new Promise(resolve => setTimeout(resolve, 100)); viewer.clear();
     const stableResources = viewer.renderer.info.memory.textures === texturesAfterClear;
     viewer.observer.disconnect(); viewer.environment.dispose(); viewer.renderer.dispose(); host.remove();
-    return { surfaces: surfaces.length, maps, lit, stableResources };
+    return { surfaces: surfaces.length, maps, lit, stableResources, boardSolids, capGroups };
   });
   assert.equal(result.surfaces, 2); assert.equal(result.lit, true);
+  assert.equal(result.boardSolids, 1, 'finishes belong to the original solid, without overlapping cap meshes');
+  assert.deepEqual([...new Set(result.capGroups)].sort(), [0,1,2]);
   assert.ok(result.maps.every(([size, shared]) => size === 2048 && shared));
   assert.equal(result.stableResources, true, 'repeated 3D mounts must release surface maps and shadow targets');
   assert.deepEqual(shaderErrors, []);
+});
+
+test('3D keeps close STEP-like faces depth-separated while zooming, orbiting and panning', async t => {
+  const { page } = await openPage(t);
+  const result = await page.evaluate(async () => {
+    const THREE = await import('/static/three.module.min.js');
+    const { Board3D } = await import('/static/viewer-3d.js');
+    const host = document.createElement('div'); Object.assign(host.style, { width: '500px', height: '400px' }); document.body.append(host);
+    const viewer = new Board3D(host, () => {});
+    viewer.show({ board: [{ outline: [[-10,-10],[10,-10],[10,10],[-10,10]], holes: [] }], thickness: 1.6, bodies: [] });
+    for (const [z, color] of [[1, 0xff0000], [1.005, 0x0000ff]]) {
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(12, 8), new THREE.MeshBasicMaterial({ color, toneMapped: false }));
+      mesh.position.z = z; viewer.scene.add(mesh); viewer.pickMeshes.push(mesh);
+    }
+    viewer.updateBounds();
+    const stages = [];
+    function sample(name) {
+      viewer.controls.update(); viewer.render();
+      const gl = viewer.renderer.getContext(), pixels = [];
+      for (const x of [-3,-1,1,3]) for (const y of [-2,0,2]) {
+        const point = new THREE.Vector3(x, y, 1.005).project(viewer.camera), rgba = new Uint8Array(4);
+        gl.readPixels(Math.round((point.x + 1) / 2 * gl.drawingBufferWidth),
+          Math.round((point.y + 1) / 2 * gl.drawingBufferHeight), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+        pixels.push([...rgba]);
+      }
+      const corners = [];
+      for (const x of [-10,10]) for (const y of [-10,10]) for (const z of [-0.8,1.005]) {
+        const depth = -new THREE.Vector3(x,y,z).applyMatrix4(viewer.camera.matrixWorldInverse).z;
+        if (depth > 0) corners.push(depth >= viewer.camera.near && depth <= viewer.camera.far);
+      }
+      stages.push({ name, pixels, inside: corners.every(Boolean), ratio: viewer.camera.far / viewer.camera.near });
+    }
+    viewer.fit('top'); sample('top');
+    viewer.fit('iso'); sample('isometric');
+    viewer.zoom(2); sample('zoomed out');
+    const delta = new THREE.Vector3(2, 1, 0); viewer.camera.position.add(delta); viewer.controls.target.add(delta); sample('panned');
+    viewer.fit('iso'); viewer.zoom(0.6); sample('closer');
+    viewer.clear(); viewer.controls.dispose(); viewer.observer.disconnect(); viewer.environment.dispose(); viewer.renderer.dispose(); host.remove();
+    return stages;
+  });
+  for (const stage of result) {
+    assert.equal(stage.inside, true, `${stage.name}: board stays inside the depth interval`);
+    assert.ok(stage.ratio < 20, `${stage.name}: depth precision stays appropriate for the board`);
+    assert.ok(stage.pixels.every(([r,g,b]) => b > 240 && r < 10 && g < 10),
+      `${stage.name}: the foreground face must consistently hide the face 0.005 mm behind it: ${JSON.stringify(stage.pixels)}`);
+  }
 });
 
 test('embedded STEP bodies load lazily through local WASM, share assets, and retain picking and delete/undo', async t => {
