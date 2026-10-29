@@ -30,6 +30,8 @@ before(async () => {
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
   });
+  // Keep the shared test server alive between independent viewer pages.
+  const keeper = await browser.newPage(); await keeper.goto(origin);
 });
 after(async () => {
   await browser?.close();

@@ -3,13 +3,39 @@
 import json
 import struct
 import subprocess
+import sys
+import threading
 import unittest
 from unittest.mock import patch
 
-from pcbvisualizer.web_geometry import encode_scene, prepare_geometry, _compiler
+from pcbvisualizer.web_geometry import encode_scene, prepare_geometry, _compiler, _run_worker
 
 
 class WebGeometryTests(unittest.TestCase):
+    def test_shutdown_cancels_and_reaps_an_inflight_worker(self):
+        stopping = threading.Event()
+        started = threading.Timer(.1, stopping.set)
+        started.start()
+        original = subprocess.Popen
+        children = []
+        def launch(*args, **kwargs):
+            child = original(*args, **kwargs)
+            children.append(child)
+            return child
+        try:
+            with patch("pcbvisualizer.web_geometry.subprocess.Popen", side_effect=launch):
+                with self.assertRaisesRegex(ValueError, "Viewer closed"):
+                    _run_worker([sys.executable, "-c", "import time; time.sleep(60)"], stopping)
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0].poll(), "The compiler child must not be orphaned")
+        finally:
+            started.cancel()
+            started.join()
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait()
+
     def test_binary_header_and_buffers_are_aligned(self):
         data = encode_scene({"supported": True, "vertices": b"v" * 80,
                              "indices": b"i" * 12, "object_nets": {"A": {3, 1}}})

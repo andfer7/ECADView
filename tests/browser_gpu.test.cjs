@@ -20,6 +20,7 @@ before(async () => {
     server.on('error', reject);
   });
   browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) });
+  const keeper = await browser.newPage(); await keeper.goto(origin);
 });
 after(async () => {
   await browser?.close();

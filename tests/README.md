@@ -119,3 +119,12 @@ Quit tests verify the viewer-only shutdown request, stopped page and error recov
 Packaged smoke validation must also exercise the bundled offscreen worker and
 Quit viewer, checking that the backend process exits. Build and smoke-test on
 each target OS; a macOS build does not validate Windows/Linux packaging.
+
+
+The browser lifetime suite starts a separate backend per case. It checks actual
+last-tab and whole-browser closure, refreshes, replacement viewers during the
+3-second reconnect grace, multiple viewer pages, a renderer with blocked JS,
+pagehide/pageshow restoration, and closure when pagehide handlers are suppressed.
+Python tests exercise connection races, real stream disconnects, request-origin
+validation, explicit shutdown and cancellation/reaping of an active compiler.
+The shared regression-server harness holds one viewer open between cases.

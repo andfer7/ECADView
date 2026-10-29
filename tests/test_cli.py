@@ -13,7 +13,7 @@ class BrowserLaunchTests(unittest.TestCase):
         server.server_address = ('127.0.0.1', 12345)
         server.serve_forever.side_effect = KeyboardInterrupt
         with (patch.object(sys, 'argv', ['pcbvisualizer', *map(str, args)]),
-              patch.object(cli, 'ThreadingHTTPServer', return_value=server) as factory,
+              patch.object(cli, 'ViewerServer', return_value=server) as factory,
               patch.object(cli.threading, 'Timer') as timer,
               patch.object(cli, 'render_file', return_value={'name': FIXTURE.name, 'svg': '<svg/>'}) as render):
             cli.main()
@@ -49,7 +49,7 @@ class BrowserLaunchTests(unittest.TestCase):
         server = Mock(server_address=('127.0.0.1', 12345))
         server.serve_forever.side_effect = RuntimeError('serving failed')
         with (patch.object(sys, 'argv', ['pcbvisualizer', '--no-open']),
-              patch.object(cli, 'ThreadingHTTPServer', return_value=server)):
+              patch.object(cli, 'ViewerServer', return_value=server)):
             with self.assertRaisesRegex(RuntimeError, 'serving failed'):
                 cli.main()
         server.server_close.assert_called_once()
@@ -57,7 +57,7 @@ class BrowserLaunchTests(unittest.TestCase):
     def test_geometry_worker_dispatch_never_starts_a_server_or_browser(self):
         with (patch.object(sys, 'argv', ['PCBVisualizer', '--web-geometry-worker', 'input.json', 'scene.bin']),
               patch('pcbvisualizer.web_geometry.worker') as worker,
-              patch.object(cli, 'ThreadingHTTPServer') as server,
+              patch.object(cli, 'ViewerServer') as server,
               patch.object(cli.threading, 'Timer') as timer):
             cli.main()
         worker.assert_called_once_with('input.json', 'scene.bin')
