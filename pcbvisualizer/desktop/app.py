@@ -117,6 +117,7 @@ class DocumentTab(QWidget):
 
     def shutdown(self):
         self.canvas.timer.stop()
+        self.canvas.release_graphics()
         if self.thread.isRunning():
             self.stop_requested.emit()
         # A renderer never outlives its thread/window, including a tab closed

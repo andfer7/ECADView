@@ -1,4 +1,4 @@
-"""Cached native viewport: navigation paints images, never an SVG DOM."""
+"""Cached viewport and input controller shared by GPU and raster rendering."""
 
 import math
 from bisect import bisect_left, bisect_right
@@ -17,8 +17,11 @@ class BoardCanvas(QWidget):
     selection_changed = Signal()
     measurement_changed = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, opengl=True):
         super().__init__(parent)
+        self.opengl_view = None
+        self.opengl_error = ""
+        self._opengl_requested = opengl
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
@@ -71,6 +74,58 @@ class BoardCanvas(QWidget):
         self.layer_order = [layer["id"] for layer in info["layers"]]
         self.active_layer = None
         self.fit()
+        if info["kind"] == "pcb":
+            self.enable_opengl()
+        else:
+            self.release_graphics()
+
+    def enable_opengl(self):
+        # Headless Qt plugins have no compositing/context support. Keep the
+        # existing raster canvas usable for these platforms and explicit tests.
+        if (
+            not self._opengl_requested
+            or self.opengl_view is not None
+            or QApplication.platformName() in {"offscreen", "minimal"}
+        ):
+            return
+        try:
+            from .opengl import LayoutOpenGLView
+
+            view = LayoutOpenGLView(self)
+            self.opengl_view = view
+            view.failed.connect(
+                self.fallback_opengl, Qt.ConnectionType.QueuedConnection
+            )
+            view.setGeometry(self.rect())
+            view.show()
+            QTimer.singleShot(1000, self.check_opengl)
+        except Exception as exc:  # noqa: BLE001 - preserve raster view on unavailable drivers
+            self.fallback_opengl(str(exc))
+
+    def check_opengl(self):
+        view = self.opengl_view
+        if view is not None and view.isVisible() and not view.isValid():
+            self.fallback_opengl("Could not create an OpenGL layout context")
+
+    @Slot(str)
+    def fallback_opengl(self, message):
+        self.opengl_error = message
+        self._opengl_requested = False
+        self.release_graphics()
+        self.update()
+
+    def release_graphics(self):
+        view, self.opengl_view = self.opengl_view, None
+        if view is not None:
+            view.hide()
+            view.cleanup()
+            view.deleteLater()
+
+    def update(self, *args):
+        super().update(*args)
+        view = getattr(self, "opengl_view", None)
+        if view is not None:
+            view.update()
 
     def raise_layer(self, identifier):
         if self.info and self.info["kind"] == "pcb" and identifier in self.layer_order:
@@ -114,6 +169,7 @@ class BoardCanvas(QWidget):
             self.fit(bounds.adjusted(-1, -1, 1, 1))
 
     def zoom_at(self, point, factor):
+        point = QPointF(point)
         before = self.to_world(point)
         self.scale = max(0.001, min(100000, self.scale * factor))
         self.camera += before - self.to_world(point)
@@ -257,25 +313,35 @@ class BoardCanvas(QWidget):
         self.selection_changed.emit()
 
     def paintEvent(self, event):
+        if self.opengl_view is not None:
+            return
         self.paint_count += 1
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#1b1d21"))
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        if self.frame:
-            frames = [self.frame]
-            if (
-                self.overview
-                and self.overview is not self.frame
-                and not self.frame["rect"].contains(self.viewport())
-            ):
-                frames.insert(0, self.overview)
-            for frame in frames:
-                rect = frame["rect"]
-                target = QRectF(
-                    self.to_screen(rect.topLeft()), self.to_screen(rect.bottomRight())
-                )
-                painter.drawImage(target, frame["image"])
-        else:
+        for frame in self.display_frames():
+            rect = frame["rect"]
+            target = QRectF(
+                self.to_screen(rect.topLeft()), self.to_screen(rect.bottomRight())
+            )
+            painter.drawImage(target, frame["image"])
+        self.paint_overlays(painter)
+        painter.end()
+
+    def display_frames(self):
+        if not self.frame:
+            return []
+        frames = [self.frame]
+        if (
+            self.overview
+            and self.overview is not self.frame
+            and not self.frame["rect"].contains(self.viewport())
+        ):
+            frames.insert(0, self.overview)
+        return frames
+
+    def paint_overlays(self, painter):
+        if not self.frame:
             painter.setPen(QColor("#c8d0d8"))
             painter.drawText(
                 self.rect(),
@@ -285,7 +351,6 @@ class BoardCanvas(QWidget):
         if self.info:
             self.paint_cached_captions(painter)
         self.paint_measurements(painter)
-        painter.end()
 
     def paint_measurements(self, painter):
         painter.save()
@@ -615,7 +680,19 @@ class BoardCanvas(QWidget):
         return f"{math.hypot(b.x() - a.x(), b.y() - a.y()) * factor:.{digits}f} {self.unit}"
 
     def resizeEvent(self, event):
+        if self.opengl_view is not None:
+            self.opengl_view.setGeometry(self.rect())
         self.schedule()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.opengl_view is not None:
+            QTimer.singleShot(1000, self.check_opengl)
+
+    def closeEvent(self, event):
+        self.timer.stop()
+        self.release_graphics()
+        super().closeEvent(event)
 
     def wheelEvent(self, event):
         if event.modifiers() & (
@@ -638,6 +715,10 @@ class BoardCanvas(QWidget):
             self.zoom_at(event.position(), max(0.01, 1 + event.value()))
             event.accept()
             return True
+        if event.type() == QEvent.Type.DevicePixelRatioChange and getattr(
+            self, "info", None
+        ):
+            self.schedule()
         return super().event(event)
 
     def mousePressEvent(self, event):

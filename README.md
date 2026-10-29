@@ -12,6 +12,11 @@ spatial indexing and vector refinements run in a worker thread per document.
 Repeated pan and zoom input coalesces into one pending refinement instead of
 queuing redraws for thousands of individual graphics. Cached images follow input
 immediately with smooth scaling; a sharp refinement follows when a gesture pauses.
+The 2D layout keeps its overview and detail images in OpenGL textures, so the GPU
+scales and positions them during navigation without uploading every frame again.
+Captions and measurement overlays use Qt's OpenGL painter. Parsing and detailed
+source rasterization remain on the CPU. If OpenGL is unavailable, the layout
+automatically uses the raster canvas; schematics retain their raster renderer.
 Panning within the cached margin reuses existing detail, and a retained overview
 fills uncovered areas while the next frame arrives. Offscreen pad captions are
 culled before text layout, and text measurements are cached. Small text uses native
@@ -24,8 +29,16 @@ To measure cached navigation at a realistic zoom and display density:
 uv run python scripts/benchmark_native.py board.kicad_pcb --zoom 4 --dpr 2 --motion zoom
 ```
 
-The benchmark reports cached paint latency separately from vector rendering; it
-does not measure display refresh rate or input latency.
+This benchmark measures the raster fallback's cached painting separately from
+vector rendering. To compare raster and OpenGL presentation on a live desktop:
+
+```bash
+uv run python scripts/benchmark_layout_gpu.py board.PcbDoc --renderer both --zoom 4 --motion zoom
+```
+
+The desktop comparison reports the graphics renderer, paint submission times,
+input timer cadence and texture upload counts. Paint submission time does not
+include all asynchronous GPU execution or display latency.
 
 PCB tabs also offer a **2D / 3D** toggle. The 3D preview shows the board profile,
 curved edges, cutouts, through holes, slots, and simple extruded component bodies
@@ -121,7 +134,7 @@ the document formats listed above. Windows/Linux builds produce the executable
 and its supporting files under `dist/PCBVisualizer/`; keep that folder together.
 Build on each target operating system. The macOS bundle has a local ad-hoc
 signature; release signing/notarization is a separate distribution step.
-Qt Essentials/Addons supply the native widgets, SVG painter and OpenGL view;
+Qt Essentials/Addons supply the native widgets, SVG painter and OpenGL views;
 Qt WebEngine and Chromium are neither dependencies nor bundled runtimes.
 
 ## Optional web viewer
@@ -191,6 +204,7 @@ pcbvisualizer/
     app.py                Native windows, tabs, inspector and worker lifecycle
     canvas.py             Cached viewport, gestures and measurements
     document.py           Worker-owned rasterizer and spatial picking
+    opengl.py             Resident GPU textures for 2D layout presentation
     text.py               Native glyph outlines for small text
     probing.py            Source/pin/name cross-probing
     solid.py              OpenGL meshes, camera, picking and body edits
@@ -209,6 +223,7 @@ pcbvisualizer/
     viewer-3d.js          Local WebGL scene, controls, and camera management
 tests/
   test_desktop.py         Native rendering, tabs, navigation and picking tests
+  test_layout_gpu.py      GPU fidelity, texture reuse and raster fallback tests
   test_rendering.py       Rendering regression tests
   test_kicad.py           KiCad geometry, connectivity, and input tests
   test_server.py          HTTP and launch-command integration tests
@@ -218,6 +233,7 @@ scripts/
   build_app.py            Standalone application build
   PCBVisualizer.spec      Native Qt modules, data and file associations
   benchmark_native.py     Native load, raster and cached paint timings
+  benchmark_layout_gpu.py Live raster/OpenGL navigation comparison
 ```
 
 The server serves frontend resources explicitly. They are included in

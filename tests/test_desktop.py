@@ -1116,12 +1116,12 @@ class NativeNavigationTests(unittest.TestCase):
             self.assertEqual(set(labels), expected)
 
     def test_zoom_stays_cursor_anchored_and_measurements_remain_in_mm(self):
-        point = QPointF(200, 100)
-        before = self.canvas.to_world(point)
-        self.canvas.zoom_at(point, 2)
-        after = self.canvas.to_world(point)
-        self.assertAlmostEqual(before.x(), after.x())
-        self.assertAlmostEqual(before.y(), after.y())
+        for point in (QPointF(200, 100), QPoint(200, 100)):
+            before = self.canvas.to_world(QPointF(point))
+            self.canvas.zoom_at(point, 2)
+            after = self.canvas.to_world(QPointF(point))
+            self.assertAlmostEqual(before.x(), after.x())
+            self.assertAlmostEqual(before.y(), after.y())
         self.assertEqual(self.canvas.distance(QPointF(0, 0), QPointF(3, 4)), "5.000 mm")
         self.canvas.unit = "mil"
         self.assertEqual(

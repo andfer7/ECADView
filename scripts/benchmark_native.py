@@ -51,7 +51,7 @@ if __name__ == "__main__":
         "native_index_seconds": round(indexed - source_ready, 3),
         "metadata_seconds": round(metadata_seconds, 3),
     }
-    canvas = BoardCanvas()
+    canvas = BoardCanvas(opengl=False)
     canvas.resize(1000, 700)
     canvas.set_document(info)
     canvas.zoom_at(QPointF(500, 350), args.zoom)
