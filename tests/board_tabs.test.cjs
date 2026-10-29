@@ -718,6 +718,13 @@ test('hollow rotated and mirrored symbol bodies select components without captur
   assert.equal(await schematicStatus(page), 'Components: R1, U[2]"<test>');
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('.sch-component-match').count(), 0);
+  const outside = await page.locator('#component-1').evaluate(el => {
+    // Inside the rotated body's axis-aligned envelope, outside the body itself.
+    const p = new DOMPoint(-3, 11).matrixTransform(el.getScreenCTM());
+    return { x: p.x, y: p.y };
+  });
+  await page.mouse.click(outside.x, outside.y);
+  assert.equal(await schematicStatus(page), 'Nothing selected.', 'rotated bounds must not capture unrelated empty corners');
   await clickSchematicGraphic(page, page.locator('#pin-1 .sch-hit'));
   assert.equal(await schematicStatus(page), 'Nets: GND', 'the external pin remains a net target');
   const blank = await page.locator('#view > svg').evaluate(svg => {
@@ -732,6 +739,47 @@ test('hollow rotated and mirrored symbol bodies select components without captur
   await page.getByRole('tab', { name: 'Symbols.SchDoc', exact: true }).click();
   assert.equal(await page.locator('.sch-component-hit').count(), 2, 'remounting must not duplicate targets');
   assert.equal(await schematicStatus(page), 'Components: R1');
+});
+
+test('selects empty symbol interiors from an Altium file with anonymous body graphics', async t => {
+  const source = execFileSync(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'), ['-B', '-c', `
+import sys, tempfile
+from pathlib import Path
+from altium_monkey import AltiumSchDoc, AltiumSchComponent, AltiumSchDesignator, SchRectMils, make_sch_rectangle
+sheet = AltiumSchDoc()
+for index in range(2):
+    component = AltiumSchComponent(); sheet.add_object(component)
+    designator = AltiumSchDesignator(); designator.text = f'U{index + 1}'
+    sheet.add_object(designator, owner=component)
+    body = make_sch_rectangle(bounds_mils=SchRectMils(1000 + index * 1500, 1000, 2000 + index * 1500, 2000))
+    sheet.add_object(body, owner=component); body.unique_id = None
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / 'Anonymous.SchDoc'; sheet.save(path)
+    sys.stdout.buffer.write(path.read_bytes())
+`]);
+  const { page } = await openPage(t); await page.unroute('**/render');
+  await page.locator('#file').setInputFiles({ name: 'Anonymous.SchDoc', mimeType: 'application/octet-stream', buffer: source });
+  await page.waitForFunction(() => document.querySelector('#filename').textContent === 'Anonymous.SchDoc' && document.querySelector('#busy').style.display === 'none');
+  assert.equal(await page.locator('.sch-component-hit').count(), 2);
+  const bodies = page.locator('.sch-component-hit');
+  await clickSchematicGraphic(page, bodies.first());
+  assert.equal(await schematicStatus(page), 'Components: U1');
+  await clickSchematicGraphic(page, bodies.nth(1), true);
+  assert.equal(await schematicStatus(page), 'Components: U1, U2');
+  await clickSchematicGraphic(page, bodies.first());
+  assert.equal(await schematicStatus(page), 'Components: U2');
+});
+
+test('a symbol body that also carries net metadata selects the component while its pin selects the net', async t => {
+  const data = selectableSchematicData('Power.SchDoc');
+  data.selection.nets[0].elements.push('body-1');
+  data.svg = data.svg.replace(/<rect id="body-1"([^>]+)\/>/, '<g id="body-1"><rect$1/></g>');
+  const { page } = await openPage(t, { initial: data });
+  await loaded(page, 'Power.SchDoc');
+  await clickSchematicGraphic(page, page.locator('#component-1 .sch-component-hit'));
+  assert.equal(await schematicStatus(page), 'Components: R1');
+  await clickSchematicGraphic(page, page.locator('#pin-1 .sch-hit'));
+  assert.equal(await schematicStatus(page), 'Nets: GND');
 });
 
 test('cross-probes multiple schematic selections using source IDs and pin connectivity, reveals and fits layout matches', async t => {
@@ -1340,7 +1388,7 @@ test('loads and uploads a real schematic through the Python server', {
   const netIds = await pin.evaluate(el => JSON.parse(el.closest('[data-sch-nets]').dataset.schNets));
   await clickSchematicGraphic(page, pin, true);
   assert.match(await schematicStatus(page), /Components: .*\nNets: /);
-  const expected = await page.locator('[data-sch-nets]').evaluateAll((els, ids) =>
+  const expected = await page.locator('[data-sch-nets]:not(.sch-hit)').evaluateAll((els, ids) =>
     els.filter(el => JSON.parse(el.dataset.schNets).some(id => ids.includes(id))).length, netIds);
   assert.equal(await page.locator('.sch-net-match').count(), expected);
   assert.ok(expected > 1, 'clicking actual pin or wire highlights connected graphics');

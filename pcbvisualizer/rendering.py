@@ -69,12 +69,20 @@ def resolve_polygon_nets(pcb: AltiumPcbDoc) -> None:
                 primitive.net_index = net_index
 
 
-def schematic_selection(schematic: AltiumSchDoc) -> dict:
+def schematic_selection(schematic: AltiumSchDoc, svg: str) -> dict:
     """Link selectable source components and compiled nets to their SVG groups."""
+    # Imported graphics often have no saved UniqueID. The renderer's local
+    # source-to-group map supplies the actual IDs without changing the document.
+    rendered_ids = set(re.findall(r'\bid\s*=\s*[\'"]([^\'"]+)[\'"]', svg))
+    generated_ids = getattr(schematic, "_geometry_render_group_ids", {})
+    def body_ids(component):
+        ids = (graphic.unique_id or generated_ids.get(id(graphic)) for graphic in component.record.graphics)
+        # Multi-part symbols include graphics for parts/styles not drawn here.
+        return list(dict.fromkeys(identifier for identifier in ids if identifier in rendered_ids))
     components = [
         {"id": component.record.unique_id, "name": component.designator or component.record.unique_id,
          "elements": [component.record.unique_id],
-         "body_elements": [graphic.unique_id for graphic in component.record.graphics]}
+         "body_elements": body_ids(component)}
         for component in schematic.get_components()
     ]
     nets = []
@@ -142,11 +150,12 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         return render_legacy_schematic(path)
     if path.suffix.lower() == ".schdoc":
         schematic = AltiumSchDoc(path)
+        svg = schematic.to_svg(options=SchSvgRenderOptions(embed_bundled_fallback_fonts=True))
         return {
-            "svg": schematic.to_svg(options=SchSvgRenderOptions(embed_bundled_fallback_fonts=True)),
+            "svg": svg,
             "name": path.name,
             "kind": "schematic",
-            "selection": schematic_selection(schematic),
+            "selection": schematic_selection(schematic, svg),
             "warnings": [],
             "stats": {
                 "components": len(schematic.components),

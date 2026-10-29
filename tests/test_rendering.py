@@ -154,6 +154,38 @@ class PadMetadataTests(unittest.TestCase):
 
 
 class SchematicTests(unittest.TestCase):
+    def test_symbol_bodies_without_saved_ids_use_the_rendered_ids(self):
+        schematic = AltiumSchDoc()
+        component = AltiumSchComponent()
+        component.set_part_count(2)
+        schematic.add_object(component)
+        designator = AltiumSchDesignator(); designator.text = "U1"
+        schematic.add_object(designator, owner=component)
+        body = make_sch_rectangle(bounds_mils=SchRectMils(500, 500, 700, 700))
+        schematic.add_object(body, owner=component)
+        # Real Altium symbols often omit IDs on their individual graphics.
+        body.unique_id = None
+        inactive = make_sch_rectangle(bounds_mils=SchRectMils(1500, 1500, 1700, 1700))
+        schematic.add_object(inactive, owner=component)
+        inactive.owner_part_id = 2
+        inactive.unique_id = None
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "anonymous-body.SchDoc"
+            schematic.save(path)
+            original = path.read_bytes()
+            saved = AltiumSchDoc(path)
+            self.assertIsNone(saved.get_components()[0].record.graphics[0].unique_id)
+            data = render_file(path)
+            self.assertEqual(path.read_bytes(), original)
+        row, = data["selection"]["components"]
+        body_id, = row["body_elements"]
+        self.assertTrue(body_id)
+        root = ET.fromstring(data["svg"])
+        symbol = root.find(f".//*[@id='{component.unique_id}']")
+        rendered_body = symbol.find(f".//*[@id='{body_id}']")
+        self.assertIsNotNone(rendered_body)
+        self.assertIsNotNone(rendered_body.find(".//{http://www.w3.org/2000/svg}rect"))
+
     def test_selection_follows_connected_nets_and_source_components(self):
         schematic = AltiumSchDoc()
         component = AltiumSchComponent()
