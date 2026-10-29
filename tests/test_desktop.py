@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -70,6 +70,48 @@ def paint_at(document, x, y, nets=(), components=(), visible=None, layer_order=(
 
 
 class NativeRenderingTests(unittest.TestCase):
+    def test_embedded_schematic_images_survive_conversion_zoom_and_style_reload(self):
+        pixels = QImage(8, 4, QImage.Format.Format_ARGB32)
+        pixels.fill(QColor("red"))
+        painter = QPainter(pixels)
+        painter.fillRect(QRectF(4, 0, 4, 4), QColor("blue"))
+        painter.end()
+        encoded = QByteArray()
+        buffer = QBuffer(encoded)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        self.assertTrue(pixels.save(buffer, "PNG"))
+        buffer.close()
+        uri = "data:image/png;base64," + bytes(encoded.toBase64()).decode("ascii")
+        for prefix in ("xlink", "asset"):
+            with self.subTest(prefix=prefix):
+                svg = (
+                    '<svg xmlns="http://www.w3.org/2000/svg" '
+                    f'xmlns:{prefix}="http://www.w3.org/1999/xlink" viewBox="0 0 10 10">'
+                    '<rect width="10" height="10" fill="#fffcf8"/>'
+                    '<g id="scene" transform="translate(1 2)">'
+                    f'<image x="2" y="1" width="4" height="2" {prefix}:href="{uri}"/>'
+                    '<path data-net="N" d="M0 6H8" stroke="black"/>'
+                    "</g></svg>"
+                )
+                document = NativeDocument(
+                    {"name": "diagram", "kind": "schematic", "svg": svg}
+                )
+                for nets in ((), ("N",), ()):
+                    request = {
+                        "token": 1,
+                        "rect": document.home,
+                        "width": 200,
+                        "height": 200,
+                        "style": (set(), True, set(), set(nets), ()),
+                    }
+                    image = document.raster(request)["image"]
+                    self.assertEqual(image.pixelColor(80, 80).name(), "#ff0000")
+                    self.assertEqual(image.pixelColor(120, 80).name(), "#0000ff")
+                    self.assertEqual(image.pixelColor(40, 80).name(), "#fffcf8")
+                    self.assertEqual(paint_at(document, 4, 4, nets=nets), "#ff0000")
+                    self.assertEqual(paint_at(document, 6, 4, nets=nets), "#0000ff")
+                self.assertEqual(document.data["svg"], svg)
+
     def test_repeated_style_changes_restore_original_attributes_order_and_pixels(self):
         import xml.etree.ElementTree as etree
 
