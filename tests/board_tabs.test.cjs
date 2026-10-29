@@ -2513,6 +2513,105 @@ const image3D = async page => {
   return page.locator('#three-view canvas').screenshot();
 };
 
+test('embedded STEP bodies load lazily through local WASM, share assets, and retain picking and delete/undo', async t => {
+  const source = execFileSync(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'), ['-B', '-c', `
+import sys, tempfile
+from pathlib import Path
+from altium_monkey import AltiumPcbDoc
+from altium_monkey.altium_board import AltiumBoardOutline
+from altium_monkey.altium_pcb_enums import PcbBodyProjection
+p = AltiumPcbDoc()
+p.set_board_outline(AltiumBoardOutline.from_points_mils([(0,0),(50/.0254,0),(50/.0254,30/.0254),(0,30/.0254)]))
+m = p.add_embedded_model(name='box.step', model_data=Path('tests/fixtures/step/box.step').read_bytes())
+for index, (x,y,side) in enumerate([(13,11,PcbBodyProjection.TOP),(37,21,PcbBodyProjection.BOTTOM)]):
+ p.add_component(designator=f'U{index+1}', footprint='TEST', position_mils=(x/.0254,y/.0254))
+ body = p.add_embedded_3d_model(m, location_mils=(x/.0254,y/.0254),
+   bounds_mils=((x-5)/.0254,(y-5)/.0254,(x+5)/.0254,(y+5)/.0254),
+   overall_height_mils=3/.0254, side=side)
+ body.component_index=index; p.shapebased_component_bodies[-1].component_index=index
+with tempfile.TemporaryDirectory() as tmp:
+ path=Path(tmp)/'Models.PcbDoc'; p.save(path); sys.stdout.buffer.write(path.read_bytes())
+`]);
+  const { page } = await openPage(t); await page.unroute('**/render');
+  const resources = []; page.on('request', request => resources.push(request.url()));
+  await page.locator('#file').setInputFiles({ name: 'Models.PcbDoc', mimeType: 'application/octet-stream', buffer: source });
+  await page.waitForFunction(() => document.querySelector('#filename').textContent === 'Models.PcbDoc' && document.querySelector('#busy').style.display === 'none');
+  assert.ok(!resources.some(url => url.includes('occt-import-js')), '2D never starts the STEP converter');
+  const svgBefore = await page.locator('#scene').evaluate(el => el.outerHTML);
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  await page.waitForFunction(() => document.querySelector('#step-status').textContent === 'STEP models: 1/1 loaded');
+  assert.equal(resources.filter(url => url.endsWith('occt-import-js.wasm')).length, 1);
+  assert.equal(await page.locator('#three-body-list option').count(), 2);
+  await page.locator('#three-top').click();
+  await click3D(page, 0.35, 0.55);
+  assert.deepEqual(await selected3DBodies(page), ['body-0']);
+  const selected = await image3D(page);
+  await page.keyboard.press('Delete');
+  assert.equal(await page.locator('#three-body-list option').count(), 1);
+  assert.ok(!(await image3D(page)).equals(selected), 'deletion hides the actual STEP mesh');
+  await page.locator('#three-undo').click();
+  assert.deepEqual(await selected3DBodies(page), ['body-0']);
+  await page.locator('#three-clear').click();
+  await page.locator('#three-bottom').click();
+  await click3D(page, 0.65, 0.58);
+  assert.deepEqual(await selected3DBodies(page), ['body-1']);
+  await page.locator('#mode-2d').click();
+  assert.equal(await page.locator('#scene').evaluate(el => el.outerHTML), svgBefore);
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  await page.waitForFunction(() => document.querySelector('#step-status').textContent === 'STEP models: 1/1 loaded');
+  assert.deepEqual(await selected3DBodies(page), ['body-1']);
+  assert.equal(resources.filter(url => url.endsWith('occt-import-js.wasm')).length, 1, 'converted model is reused after remount');
+});
+
+test('missing KiCad STEP references can be supplied locally without changing the board or losing body edits', async t => {
+  const source = `(kicad_pcb (version 20240108) (generator pcbvisualizer)
+    (general (thickness 1.6)) (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
+    (gr_rect (start 0 0) (end 50 30) (stroke (width .1) (type default)) (fill none) (layer "Edge.Cuts"))
+    (footprint "TEST" (layer "F.Cu") (at 13 19) (property "Reference" "U1")
+      (model "models/box.step" (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))))`;
+  const { page } = await openPage(t); await page.unroute('**/render');
+  await page.locator('#file').setInputFiles({ name: 'External.kicad_pcb', mimeType: 'application/octet-stream', buffer: Buffer.from(source) });
+  await loadedDocument(page, 'External.kicad_pcb');
+  const svgBefore = await page.locator('#scene').evaluate(el => el.outerHTML);
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  await page.waitForFunction(() => document.querySelector('#step-status').textContent.includes('Missing STEP file'));
+  const before = await image3D(page);
+  await page.locator('#step-files').setInputFiles(resolve(__dirname, 'fixtures/step/box.step'));
+  await page.waitForFunction(() => document.querySelector('#step-status').textContent === 'STEP models: 1/1 loaded');
+  assert.ok(!(await image3D(page)).equals(before), 'the supplied model adds visible geometry');
+  await page.locator('#three-top').click(); await click3D(page, 0.35, 0.55);
+  assert.deepEqual(await selected3DBodies(page), ['kc-body-0-0']);
+  await page.keyboard.press('Delete');
+  await page.locator('#step-files').setInputFiles(resolve(__dirname, 'fixtures/step/box.step'));
+  await page.waitForFunction(() => document.querySelector('#step-status').textContent === 'STEP models: 1/1 loaded');
+  assert.equal(await page.locator('#three-body-list option').count(), 0, 'reloading STEP data preserves deletions');
+  await page.locator('#three-undo').click(); assert.equal(await page.locator('#three-body-list option').count(), 1);
+  await page.locator('#mode-2d').click();
+  assert.equal(await page.locator('#scene').evaluate(el => el.outerHTML), svgBefore);
+});
+
+test('failed STEP conversion retains extruded bodies and leaving 3D cancels pending conversion', async t => {
+  const data = threeBoardData('Fallback.PcbDoc');
+  data.scene3d.bodies[0] = { ...data.scene3d.bodies[0], model: 'invalid', id: 'body-0',
+    matrix: [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1] };
+  data.scene3d.step_models = { invalid: { name: 'invalid.step', data: Buffer.from('not STEP').toString('base64') } };
+  const { page } = await openPage(t, { initial: data });
+  await loaded(page, 'Fallback.PcbDoc');
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  await page.waitForFunction(() => document.querySelector('#step-status').textContent.includes('1 unavailable'));
+  await page.locator('#three-top').click(); await click3D(page, 0.35, 0.56);
+  assert.deepEqual(await selected3DBodies(page), ['body-0'], 'failed model retains selectable extrusion');
+  await page.locator('#mode-2d').click();
+  let pending;
+  const requested = new Promise(resolve => { pending = resolve; });
+  await page.route('**/occt-import-js.wasm', route => { pending(); return new Promise(() => {}); });
+  await page.locator('#mode-3d').click(); await requested;
+  await page.locator('#mode-2d').click();
+  assert.equal(await page.locator('#three-view').isHidden(), true);
+  assert.equal(await page.locator('#view > svg').isVisible(), true);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
 test('3D renders local solids, preserves 2D measurements and layers, and remembers cameras across tabs', async t => {
   const { page, requests } = await openPage(t, { render: (route, name) => reply(route,
     name.endsWith('.SchDoc') ? schematicData(name) : threeBoardData(name)) });
@@ -2819,7 +2918,7 @@ test('opens real KiCad PCB and schematic files, cross-probes, searches pins and 
   await page.keyboard.press('Escape');
   if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'pcb.png') });
   await page.locator('#mode-3d').click(); await wait3D(page);
-  assert.match(await page.locator('#three-status').textContent(), /external STEP\/VRML/);
+  assert.match(await page.locator('#three-status').textContent(), /no usable STEP model references/);
   assert.equal(await page.locator('#three-body-list option').count(), 0);
   if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'board-3d.png') });
   await page.locator('#mode-2d').click();

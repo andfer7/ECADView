@@ -105,6 +105,16 @@ Delete/Backspace, grouped undo, tab isolation, and unchanged 2D/source geometry.
 Python coverage verifies that split solids share one body identity while distinct
 bodies retain separate identities even when their names match.
 
+STEP coverage uses the repository's authored 6 × 4 × 2 mm box fixture, embedded
+in generated Altium boards and referenced by generated KiCad boards. It checks
+compressed asset deduplication, authoritative body placements, bottom-side
+mirroring, rotation, offset, nonuniform scale, models without extrusion outlines,
+local/project path resolution and unchanged source files. Browser tests execute
+the bundled OpenCascade WASM in a worker, check lazy loading and reuse, actual
+STEP picking and deletion/undo, missing external model uploads, invalid-model
+fallback and cancellation when leaving 3D. The runtime is served locally with
+the correct WebAssembly MIME type and is included in the Python package.
+
 
 Run `npm run test:gpu` for real Chrome/Chromium WebGL 2 compilation and pixel
 coverage. It checks retained geometry reuse, highlights, holes, layer ordering,

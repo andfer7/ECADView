@@ -110,8 +110,13 @@ PLAYWRIGHT_CHANNEL=chrome node scripts/benchmark_browser_layout.cjs path/to/boar
 ## 3D preview
 
 PCB tabs offer a **2D / 3D** toggle. The local WebGL preview shows the board
-profile, curved edges, cutouts, through holes, slots and simple extruded
-component bodies when the document provides outlines and heights. Drag to rotate,
+profile, curved edges, cutouts, through holes, slots and component STEP models.
+Embedded Altium STEP assets load automatically when entering 3D. Models retain
+their colors, rotations, offsets and board side; repeated models share geometry.
+Conversion runs in a browser worker using bundled OpenCascade WebAssembly, so
+2D loading never waits for tessellation and the viewer stays usable while models
+appear. The sidebar reports loading progress and any unavailable models.
+Drag to rotate,
 right-drag or Shift-drag to pan, and scroll or pinch to zoom. Top, Bottom,
 Isometric and Fit reset the camera; each tab remembers its camera and mode.
 
@@ -121,8 +126,13 @@ restores them. The body list also selects bodies behind the board. These edits
 last for the session and never modify the source document or 2D geometry.
 
 The preview uses the first physical stack's thickness, or reports a 1.6 mm
-fallback. Components without usable body geometry are omitted; detailed STEP
-models use simplified outlines. Copper, silkscreen, blind/buried via bores and
+fallback. Missing, invalid or unsupported models retain an extruded outline when
+one is available; components without either a model or body geometry are omitted.
+Use **Add STEP models…** to supply missing `.step`/`.stp` references by filename.
+STEP assets are limited to 32 MB (64 MB after decompression), 250,000 triangles
+per model and a 45-second conversion deadline; converted CPU data uses a bounded
+64 MB cache. Leaving 3D cancels outstanding conversion and releases GPU geometry.
+Copper, silkscreen, blind/buried via bores and
 rigid-flex folding are not represented. Applicable approximations appear in
 the sidebar.
 
@@ -183,9 +193,14 @@ individually; uploading a parent sheet does not load its project files.
 
 KiCad 3D previews show closed Edge.Cuts board profiles, cutouts, through drills,
 slots, and the saved board thickness. Tiny outline endpoint gaps up to 0.002 mm
-are joined when constructing the profile. External STEP/VRML component models
-are not loaded, so KiCad's 3D preview currently shows the board only. Source
-files are never modified.
+are joined when constructing the profile. STEP component references opened from
+the command line resolve relative to the board directory, `${KIPRJMOD}` and
+configured environment variables such as `${KICAD9_3DMODEL_DIR}`. Model scale,
+rotation and offsets are respected, including legacy KiCad 5 model offsets.
+Browser uploads cannot access adjacent files: use **Add STEP models…** to select
+the referenced files. Matching uses filenames; give models distinct filenames
+when different reference paths share a name. VRML and other non-STEP component
+models remain unsupported. Source files are never modified.
 
 ## Project layout
 
@@ -199,7 +214,8 @@ pcbvisualizer/
   server.py               Loopback HTTP endpoints, uploads and viewer connections
   session_lifetime.py     Last-viewer shutdown and reconnect grace
   kicad_*.py              KiCad geometry, connectivity and input support
-  scene3d.py              Board/simple-body geometry in millimetres
+  scene3d.py              Board/body fallbacks and STEP placements in millimetres
+  step_models.py          Embedded/external STEP assets and model transforms
   static/                 Browser interface, WebGL renderers and bundled assets
 scripts/
   build_app.py            Packaged local backend/browser launcher
@@ -211,6 +227,12 @@ tests/                    Python geometry/parser/server and browser regressions
 Frontend resources ship with the Python package. Launching does not depend on
 the current directory. Three.js 0.180.0 and OrbitControls are bundled under the
 MIT license in `pcbvisualizer/static/THREE-LICENSE.txt`.
+STEP conversion uses [occt-import-js 0.0.23](https://github.com/kovacsv/occt-import-js)
+and OpenCascade, with LGPL 2.1 license texts in `static/OCCT-IMPORT-LICENSE.txt`
+and `static/OCCT-LICENSE.txt`. The importer is separately replaceable; its source,
+build instructions and upstream releases are available in that repository.
+After `npm ci`, run `python scripts/vendor_step_importer.py` to reproduce the
+bundled JavaScript, WebAssembly and license files from the pinned npm package.
 The [historical feature audit](docs/browser-native-parity.md) records how the
 former desktop features were brought into the browser before its retirement.
 

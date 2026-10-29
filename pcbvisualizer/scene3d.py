@@ -1,5 +1,6 @@
-"""Build a small, millimetre-based solid model without converting STEP assets."""
+"""Build millimetre-based board solids, body fallbacks and STEP placements."""
 
+import hashlib
 import math
 
 from altium_monkey.altium_board import BoardOutlineVertex, resolve_outline_arc_segment
@@ -8,6 +9,8 @@ from altium_monkey.altium_resolved_layer_stack import resolved_layer_stack_from_
 from shapely import make_valid, union_all
 from shapely.affinity import rotate, translate
 from shapely.geometry import LineString, Point, Polygon, box
+
+from .step_models import altium_assets, altium_placement
 
 MIL_MM = 0.0254
 IU_MM = MIL_MM / 10000
@@ -111,6 +114,7 @@ def build_scene(pcb):
         profile = profile.difference(union_all(voids))
 
     bodies = []
+    assets, model_references = altium_assets(pcb)
     covered_components = set()
     # Both streams commonly contain the same body. Prefer the standard stream,
     # and use shape-based records only for owners without standard bodies.
@@ -121,8 +125,6 @@ def build_scene(pcb):
     for body_number, body in enumerate(records):
         points = contour(body.outline)
         low, high = body.standoff_height * IU_MM, body.overall_height * IU_MM
-        if len(points) < 3 or high <= low:
-            continue
         index = body.component_index
         component = pcb.components[index] if isinstance(index, int) and 0 <= index < len(pcb.components) else None
         projection = int(body.body_projection)
@@ -133,18 +135,28 @@ def build_scene(pcb):
         z = -thickness / 2 - high if bottom else thickness / 2 + low
         color = body.body_color_3d
         rgb = ((color & 255) << 16) | (color & 0x00FF00) | ((color >> 16) & 255)
-        for shape in solid_shapes(make_valid(Polygon(points, [contour(h) for h in body.holes])), origin):
-            bodies.append({**shape, "id": f"body-{body_number}", "z": z, "height": high - low, "color": rgb,
+        model = model_references.get(str(body.model_id).upper()) if body.model_type != 0 else None
+        if not model and body.model_type != 0 and str(body.model_name).lower().endswith((".step", ".stp")):
+            model = "external-" + hashlib.sha256(body.model_name.encode()).hexdigest()
+            assets.setdefault(model, {"name": body.model_name})
+        placement = {"model": model, "matrix": altium_placement(body, origin, thickness, bottom)} if model else {}
+        shapes = solid_shapes(make_valid(Polygon(points, [contour(h) for h in body.holes])), origin) if len(points) >= 3 and high > low else []
+        if not shapes and not model:
+            continue
+        for shape in shapes or [{}]:
+            bodies.append({**shape, **placement, "id": f"body-{body_number}", "z": z, "height": high - low, "color": rgb,
                            "opacity": max(0, min(1, body.body_opacity_3d)),
                            "name": component.designator if component else body.name.strip() or "Body"})
         if component:
             covered_components.add(index)
-        if body.model_type != 0:
+        if body.model_type != 0 and not model:
             approximated += 1
     if approximated:
-        notes.append("Detailed models are shown as extruded body outlines; STEP geometry is not loaded.")
+        notes.append(f"{approximated} body model(s) are missing or unsupported; showing extruded outlines.")
     missing = len(pcb.components) - len(covered_components)
     if missing:
         notes.append(f"{missing} component(s) have no usable body geometry and are omitted.")
+    used = {body["model"] for body in bodies if body.get("model")}
     return {"board": solid_shapes(profile, origin), "thickness": thickness, "bodies": bodies,
+            "step_models": {key: assets[key] for key in used},
             "notes": notes, "units": "mm"}

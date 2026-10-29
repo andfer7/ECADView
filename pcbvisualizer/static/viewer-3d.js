@@ -1,10 +1,12 @@
 import * as THREE from './three.module.min.js';
 import { OrbitControls } from './OrbitControls.js';
+import { StepLoader } from './step-loader.js';
 
 // One WebGL context is shared by all tabs. Geometry is released on every switch.
 export class Board3D {
-  constructor(host, onError, onPick) {
+  constructor(host, onError, onPick, onModels) {
     this.host = host;
+    this.onModels = onModels;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setClearColor(0x1b1d21);
@@ -52,13 +54,17 @@ export class Board3D {
   }
 
   clear() {
+    this.generation = (this.generation || 0) + 1;
+    this.stepLoader?.close(); this.stepLoader = null;
     this.cancelPick();
     this.controls.enabled = false;
+    const geometries = new Set();
     this.scene?.traverse(object => {
-      object.geometry?.dispose();
+      if (object.geometry) geometries.add(object.geometry);
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       materials.forEach(material => material?.dispose());
     });
+    geometries.forEach(geometry => geometry.dispose());
     this.scene = null;
     this.pickMeshes = [];
     this.bodyMeshes = [];
@@ -74,6 +80,7 @@ export class Board3D {
     const bottomLight = new THREE.DirectionalLight(0xc5dfff, 2);
     bottomLight.position.set(30, 50, -100); this.scene.add(bottomLight);
     const addSolid = (data, z, height, color, opacity = 1, edgeColor = 0x182323, bodyId = null) => {
+      if (!data.outline?.length) return;
       const shape = new THREE.Shape(data.outline.map(p => new THREE.Vector2(...p)));
       shape.holes = (data.holes || []).map(points => new THREE.Path(points.map(p => new THREE.Vector2(...p))));
       const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
@@ -101,6 +108,71 @@ export class Board3D {
       this.controls.target.fromArray(state.target); this.controls.update();
     } else this.fit();
     this.updateBodies(bodies);
+    this.loadSteps(model, this.generation);
+  }
+
+  async loadSteps(model, generation) {
+    const assets = model.step_models || {};
+    const requests = new Map();
+    for (const body of model.bodies) if (body.model) {
+      if (!requests.has(body.model)) requests.set(body.model, new Map());
+      requests.get(body.model).set(body.id, body);
+    }
+    let loaded = 0; const failed = [];
+    const progress = () => this.onModels?.({ loaded, total: requests.size, failed: [...failed] });
+    progress();
+    if (!requests.size) return;
+    this.stepLoader = new StepLoader();
+    for (const [key, bodies] of requests) {
+      try {
+        const parts = await this.stepLoader.load(key, assets[key]);
+        if (generation !== this.generation) return;
+        this.addStepBodies([...bodies.values()], parts);
+        loaded++;
+      } catch (error) {
+        if (generation !== this.generation) return;
+        failed.push(`${assets[key]?.name || 'Model'}: ${error.message}`);
+      }
+      progress();
+      // Give orbit/pan and tab controls a turn between converted assets.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (generation !== this.generation) return;
+    }
+  }
+
+  addStepBodies(bodies, parts) {
+    const ids = new Set(bodies.map(body => body.id));
+    const replaced = this.bodyMeshes.filter(entry => ids.has(entry.id));
+    const removed = new Set(replaced.map(entry => entry.mesh));
+    for (const { mesh, edges } of replaced) {
+      this.scene.remove(mesh, edges);
+      mesh.geometry.dispose(); mesh.material.dispose();
+      edges?.geometry.dispose(); edges?.material.dispose();
+    }
+    this.pickMeshes = this.pickMeshes.filter(mesh => !removed.has(mesh));
+    this.bodyMeshes = this.bodyMeshes.filter(entry => !ids.has(entry.id));
+    const geometries = parts.map(part => {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(part.position, 3));
+      geometry.setIndex(new THREE.BufferAttribute(part.index, 1));
+      if (part.normal) geometry.setAttribute('normal', new THREE.BufferAttribute(part.normal, 3));
+      else geometry.computeVertexNormals();
+      if (part.color) geometry.setAttribute('color', new THREE.BufferAttribute(part.color, 3));
+      geometry.computeBoundingBox(); geometry.computeBoundingSphere();
+      return geometry;
+    });
+    for (const body of bodies) for (const [index, geometry] of geometries.entries()) {
+      const material = new THREE.MeshStandardMaterial({ color: parts[index].color ? 0xffffff : body.color,
+        vertexColors: Boolean(parts[index].color), roughness: 0.65, metalness: 0.12,
+        opacity: body.opacity, transparent: body.opacity < 1, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = body.name; mesh.userData.bodyId = body.id; mesh.userData.step = true;
+      mesh.matrixAutoUpdate = false; mesh.matrix.fromArray(body.matrix);
+      this.scene.add(mesh);
+      if (body.opacity > 0) this.pickMeshes.push(mesh);
+      this.bodyMeshes.push({ id: body.id, mesh });
+    }
+    this.updateBodies(this.bodyState);
   }
 
   updateBounds() {
@@ -116,12 +188,16 @@ export class Board3D {
   }
 
   updateBodies(state) {
+    this.bodyState = state;
     for (const { id, mesh, edges, edgeColor, edgeOpacity } of this.bodyMeshes) {
-      mesh.visible = edges.visible = !state?.deleted.has(id);
+      mesh.visible = !state?.deleted.has(id);
+      if (edges) edges.visible = mesh.visible;
       const selected = Boolean(state?.selected.has(id));
       mesh.material.emissive.setHex(selected ? 0x147b8a : 0);
-      edges.material.color.setHex(selected ? 0x35c2d8 : edgeColor);
-      edges.material.opacity = selected ? 1 : edgeOpacity;
+      if (edges) {
+        edges.material.color.setHex(selected ? 0x35c2d8 : edgeColor);
+        edges.material.opacity = selected ? 1 : edgeOpacity;
+      }
     }
     this.updateBounds();
     this.render();

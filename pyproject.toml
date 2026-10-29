@@ -23,7 +23,7 @@ build-backend = "setuptools.build_meta"
 include = ["pcbvisualizer*"]
 
 [tool.setuptools.package-data]
-pcbvisualizer = ["static/*.html", "static/*.css", "static/*.js", "static/*.txt"]
+pcbvisualizer = ["static/*.html", "static/*.css", "static/*.js", "static/*.txt", "static/*.wasm"]
 
 [dependency-groups]
 build = [
