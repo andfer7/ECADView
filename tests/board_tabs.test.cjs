@@ -2965,3 +2965,21 @@ test('rectangle cancellation, click threshold, outside release and Space panning
   assert.equal(await page.locator('#selection-rectangle').isHidden(), true);
   assert.equal(await schematicStatus(page), 'Nothing selected.', 'zoom cancels an in-progress rectangle');
 });
+
+test('Quit viewer stops the session through the local endpoint and reports failures without losing the document', async t => {
+  const { page } = await openPage(t, { initial: boardData('Session.PcbDoc') });
+  await loaded(page, 'Session.PcbDoc');
+  await page.route('**/shutdown', route => reply(route, { error: 'failure' }, 500));
+  await page.locator('#quit').click();
+  await page.waitForFunction(() => !document.querySelector('#quit').disabled);
+  assert.equal(await page.locator('#session-stopped').isHidden(), true);
+  assert.equal(await activeName(page), 'Session.PcbDoc');
+  await page.unroute('**/shutdown');
+  let request;
+  await page.route('**/shutdown', route => { request = route.request(); return reply(route, { stopped: true }); });
+  await page.locator('#quit').click();
+  await page.locator('#session-stopped').waitFor({ state: 'visible' });
+  assert.equal(request.method(), 'POST');
+  assert.equal(request.headers()['x-viewer-request'], 'shutdown');
+  assert.equal(await page.locator('#session-stopped').textContent(), 'Viewer stopped. You can close this tab.');
+});

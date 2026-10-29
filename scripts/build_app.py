@@ -1,4 +1,4 @@
-"""Build a local, self-contained app: uv run --group build python scripts/build_app.py."""
+"""Bundle the local backend and browser launcher: uv run --group build python scripts/build_app.py."""
 
 from pathlib import Path
 
@@ -14,6 +14,6 @@ if __name__ == "__main__":
             "--distpath",
             str(root / "dist"),
             "--workpath",
-            str(root / "build" / "native"),
+            str(root / "build" / "browser"),
         ]
     )

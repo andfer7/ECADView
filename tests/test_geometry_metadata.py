@@ -1,4 +1,4 @@
-"""Interaction metadata survives compact native painting and text batching."""
+"""Interaction metadata survives compact SVG painting and text batching."""
 
 import os
 import unittest
@@ -6,16 +6,16 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QGuiApplication
 
-from pcbvisualizer.desktop.document import NativeDocument
+from pcbvisualizer.geometry.document import GeometryDocument
 
-APP = QApplication.instance() or QApplication([])
+APP = QGuiApplication.instance() or QGuiApplication([])
 
 
-class NativeMetadataTests(unittest.TestCase):
+class GeometryMetadataTests(unittest.TestCase):
     def test_nearest_metadata_and_all_selection_ancestors_survive_compact_paint(self):
-        document = NativeDocument(
+        document = GeometryDocument(
             {
                 "name": "metadata",
                 "polygon_elements": ["outer"],
@@ -51,7 +51,7 @@ class NativeMetadataTests(unittest.TestCase):
         self.assertAlmostEqual(primitive.bounds.center().y(), 3)
 
     def test_text_group_is_one_exact_hit_target_with_click_through_empty_space(self):
-        document = NativeDocument(
+        document = GeometryDocument(
             {
                 "name": "text",
                 "svg": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">'

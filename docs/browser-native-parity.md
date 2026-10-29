@@ -1,4 +1,10 @@
-# Browser / standalone feature audit
+# Historical browser / standalone feature audit
+
+The web viewer is now the only supported interface (issue #96). This document
+records the earlier parity work; references to an unchanged or separately
+maintained standalone viewer describe the state before its retirement.
+Native-only follow-ups #87–#90 are no longer planned.
+
 
 Issue [#92](https://github.com/andfer7/PCB_Visualizer/issues/92) compares the
 browser viewer against the 40 closed repository issues available on 2026-10-29,

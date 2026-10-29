@@ -1,4 +1,4 @@
-// Analytic primitive coverage shared with desktop/gpu_mesh.py.
+// Analytic coverage for the retained WebGL layout primitives.
 // tests/test_web_geometry.py checks parity, including the browser net color.
 export const vertexShader = `#version 300 es
 precision highp float;

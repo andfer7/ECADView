@@ -1,4 +1,4 @@
-"""Launch the native desktop app, or the explicitly requested web viewer."""
+"""Launch the local browser viewer and its isolated geometry worker."""
 
 import argparse
 import base64
@@ -45,20 +45,17 @@ def main() -> None:
         from .web_geometry import worker
         worker(sys.argv[2], sys.argv[3])
         return
-    ap = argparse.ArgumentParser(description="Standalone Altium and KiCad PCB and schematic viewer")
+    ap = argparse.ArgumentParser(description="Local browser-based Altium and KiCad PCB and schematic viewer")
     ap.add_argument("documents", nargs="*", type=Path, help="Altium or KiCad documents to open in tabs")
-    ap.add_argument("--web", action="store_true", help="run the optional browser viewer instead of the native application")
-    ap.add_argument("--port", type=int, default=None, help="web server port (implies --web; default: random free port)")
-    ap.add_argument("--browser", default=None, help="web browser to use (implies --web): chrome, firefox, safari, default, ...")
-    ap.add_argument("--no-open", action="store_true", help="run the web server without opening a browser (implies --web)")
+    ap.add_argument("--web", action="store_true", help="compatibility option; the browser viewer is now the default")
+    ap.add_argument("--port", type=int, default=None, help="local server port (default: random free port)")
+    ap.add_argument("--browser", default=None, help="browser to use: chrome (default), firefox, safari, default, ...")
+    ap.add_argument("--no-open", action="store_true", help="run the local server without opening a browser")
     args = ap.parse_args()
 
     for path in args.documents:
         if not path.is_file():
             ap.error(f"File not found: {path}")
-    if not (args.web or args.no_open or args.browser is not None or args.port is not None):
-        from .desktop.app import run
-        sys.exit(run(args.documents))
     Handler.initial = None
     initial = []
     for path in args.documents:
@@ -69,7 +66,7 @@ def main() -> None:
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port or 0), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
-    print(f"PCB viewer running at {url}   (Ctrl+C to stop)")
+    print(f"PCB viewer running at {url}   (Quit viewer in the browser or Ctrl+C to stop)")
 
     if not args.no_open:
         threading.Timer(0.3, open_in_browser, args=(url, args.browser or "chrome")).start()

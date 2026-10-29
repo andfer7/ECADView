@@ -1,7 +1,6 @@
-"""Browser transport, isolated Qt preparation and shader parity."""
+"""Browser transport, isolated Qt preparation and resource limits."""
 
 import json
-from pathlib import Path
 import struct
 import subprocess
 import unittest
@@ -54,13 +53,6 @@ class WebGeometryTests(unittest.TestCase):
         self.assertTrue(_compiler.acquire(blocking=False))
         _compiler.release()
 
-    def test_webgl_shader_matches_native_coverage(self):
-        from pcbvisualizer.desktop.gpu_mesh import VERTEX_SHADER, FRAGMENT_SHADER
-        source = (Path(__file__).resolve().parents[1] / "pcbvisualizer/static/layout-shaders.js").read_text()
-        for shader in (VERTEX_SHADER, FRAGMENT_SHADER):
-            converted = shader.replace("#version 150", "#version 300 es\nprecision highp float;\nprecision highp int;")
-            converted = converted.replace("vec3(57.0, 224.0, 243.0)", "vec3(104.0, 224.0, 255.0)")
-            self.assertIn(converted, source)
 
 
 if __name__ == "__main__":
