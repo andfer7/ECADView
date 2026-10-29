@@ -2,7 +2,7 @@ import * as THREE from './three.module.min.js';
 import { OrbitControls } from './OrbitControls.js';
 import { StepLoader } from './step-loader.js';
 import { boardSurfaces } from './board-surface.js';
-import { studioEnvironment, stepFinish, stepMaterial } from './studio-3d.js';
+import { studioEnvironment, stepFinish, bodyMaterial, stepMaterial } from './studio-3d.js';
 
 // One WebGL context is shared by all tabs. Geometry is released on every switch.
 export class Board3D {
@@ -131,7 +131,7 @@ export class Board3D {
         new THREE.MeshPhysicalMaterial({ color: 0x0e452c, roughness: 0.48, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.34 }),
         new THREE.MeshPhysicalMaterial({ color: 0x0e452c, roughness: 0.48, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.34 }),
         new THREE.MeshStandardMaterial({ color: 0x867552, roughness: 0.85, metalness: 0 }),
-      ] : new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0,
+      ] : bodyMaterial({ color, roughness: 0.6, metalness: 0,
         opacity, transparent: opacity < 1 });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.visible = bodyId === null || !bodies?.deleted.has(bodyId);
@@ -273,7 +273,7 @@ export class Board3D {
       mesh.visible = !state?.deleted.has(id);
       if (edges) edges.visible = mesh.visible;
       const selected = Boolean(state?.selected.has(id));
-      mesh.material.emissive.setHex(selected ? 0x147b8a : 0);
+      mesh.material.userData.highlight.value = selected ? 1 : 0;
       if (edges) {
         edges.material.color.setHex(selected ? 0x35c2d8 : edgeColor);
         edges.material.opacity = selected ? 1 : edgeOpacity;

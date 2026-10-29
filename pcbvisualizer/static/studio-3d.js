@@ -38,15 +38,34 @@ export function stepFinish(geometry, part, fallback) {
   geometry.setAttribute('physicalFinish', new THREE.BufferAttribute(finish, 2));
 }
 
-export function stepMaterial(parameters) {
+export function bodyMaterial(parameters) {
   const material = new THREE.MeshStandardMaterial(parameters);
+  // A uniform tint stays visible on black plastics and reflective metals,
+  // including vertex-colored STEP faces. It does not alter source colors or
+  // require coplanar overlay geometry or shader recompilation on selection.
+  material.userData.highlight = { value: 0 };
   material.onBeforeCompile = shader => {
+    shader.uniforms.bodyHighlight = material.userData.highlight;
+    shader.uniforms.bodyHighlightColor = { value: new THREE.Color(0x35c2d8) };
+    shader.fragmentShader = 'uniform float bodyHighlight; uniform vec3 bodyHighlightColor;\n' + shader.fragmentShader;
+    // Apply after tone mapping so bright metal reflections cannot wash it out.
+    shader.fragmentShader = shader.fragmentShader.replace('#include <tonemapping_fragment>',
+      '#include <tonemapping_fragment>\ngl_FragColor.rgb = mix(gl_FragColor.rgb, bodyHighlightColor, bodyHighlight * 0.8);');
+  };
+  material.customProgramCacheKey = () => 'body-highlight-v1';
+  return material;
+}
+
+export function stepMaterial(parameters) {
+  const material = bodyMaterial(parameters), highlight = material.onBeforeCompile;
+  material.onBeforeCompile = shader => {
+    highlight(shader);
     shader.vertexShader = 'attribute vec2 physicalFinish; varying vec2 vPhysicalFinish;\n' + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvPhysicalFinish = physicalFinish;');
     shader.fragmentShader = 'varying vec2 vPhysicalFinish;\n' + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vPhysicalFinish.x;');
     shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = vPhysicalFinish.y;');
   };
-  material.customProgramCacheKey = () => 'step-physical-finish-v1';
+  material.customProgramCacheKey = () => 'step-physical-finish-highlight-v2';
   return material;
 }

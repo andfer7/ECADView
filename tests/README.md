@@ -104,6 +104,10 @@ highlight restoration, drag suppression, Shift selections, duplicate names,
 Delete/Backspace, grouped undo, tab isolation, and unchanged 2D/source geometry.
 Python coverage verifies that split solids share one body identity while distinct
 bodies retain separate identities even when their names match.
+Highlight pixel coverage checks dark fallback bodies, black and metallic STEP
+parts, and independent instances sharing geometry. It verifies exact finish
+restoration, deletion/undo and highlights retained through STEP replacement and
+remounting, with no extra geometry or shader compilation on selection.
 
 STEP coverage uses the repository's authored 6 × 4 × 2 mm box fixture, embedded
 in generated Altium boards and referenced by generated KiCad boards. It checks

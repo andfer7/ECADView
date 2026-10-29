@@ -130,7 +130,9 @@ Drag to rotate,
 right-drag or Shift-drag to pan, and scroll or pinch to zoom. Top, Bottom,
 Isometric and Fit reset the camera; each tab remembers its camera and mode.
 
-Click a body to select it, Shift-click for multiple bodies, and use Delete /
+Click a body to select it; its visible parts turn cyan, including dark plastics
+and reflective metal. Clear the selection to restore its original finish.
+Shift-click for multiple bodies, and use Delete /
 Backspace or **Delete selected** to hide them. **Undo delete** or Cmd/Ctrl+Z
 restores them. The body list also selects bodies behind the board. These edits
 last for the session and never modify the source document or 2D geometry.
