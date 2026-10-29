@@ -24,7 +24,7 @@ class WebGeometryTests(unittest.TestCase):
     def test_isolated_worker_compiles_and_preserves_selection(self):
         result = prepare_geometry(json.dumps({"svg": '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
           <g id="scene"><g id="layer-top" data-layer-role="copper">
-          <rect data-net="GND" data-component="U1" width="10" height="10" fill="red"/>
+          <rect data-net="GND" data-component="U1" data-primitive="pad" width="10" height="10" fill="red"/>
           </g></g></svg>'''}).encode())
         length, = struct.unpack_from("<I", result)
         header = json.loads(result[4:4 + length])
@@ -32,6 +32,7 @@ class WebGeometryTests(unittest.TestCase):
         self.assertTrue(header["object_nets"]["GND"])
         self.assertEqual(header["object_nets"]["GND"], header["object_components"]["U1"])
         self.assertEqual(list(header["caption_bounds"].values()), [[0.0, 0.0, 10.0, 10.0]])
+        self.assertEqual(header["snap_points"], [{"x": 5.0, "y": 5.0, "layers": ["layer-top"]}])
         self.assertGreater(header["vertex_bytes"], 0)
         self.assertEqual(len(result), 4 + length + header["vertex_bytes"] + header["index_bytes"])
 

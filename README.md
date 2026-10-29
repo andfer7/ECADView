@@ -159,6 +159,7 @@ The previous web interface remains available explicitly:
 
 ```sh
 python pcb_viewer_gui.py --web board.PcbDoc
+python pcb_viewer_gui.py --web board.PcbDoc sheet.SchDoc
 python pcb_viewer_gui.py --web sheet.SchDoc --browser default
 python pcb_viewer_gui.py --web --no-open --port 8000
 ```
@@ -166,6 +167,21 @@ python pcb_viewer_gui.py --web --no-open --port 8000
 For existing scripts, `--no-open`, `--browser` and `--port` also imply web mode.
 The server listens on `127.0.0.1`; stop it with Ctrl+C. Web-only route/via caption
 placement and browser gestures remain available in this mode.
+
+The browser also provides the standalone viewer's measurement and selection
+behaviors: Command (macOS) / Control (Windows/Linux) snaps measurement points to
+visible pad/via centres; clicking a saved measurement shows dashed X/Y legs;
+Q switches metric/imperial while remembering mil/in per tab. Measurement graphics
+are white with larger labels placed clear of their segments. Schematics use
+green contours and net highlights with faded context and retain searchable
+component/net controls. The layer list follows the physical copper stack, and
+clicking a layer name raises it without toggling visibility.
+
+Multiple startup files, file drops throughout the app, draggable tabs,
+Alt+Shift+Left/Right tab reordering, Shift-click PCB selections, F to fit,
+`+` / `-` to zoom and Cmd/Ctrl+O to open files are supported. See the
+[closed-issue parity audit](docs/browser-native-parity.md) for the complete
+feature mapping and verification details.
 
 PCB layouts automatically switch from their initial SVG preview to WebGL 2
 after local geometry preparation. Static vertex/index buffers handle drawing;

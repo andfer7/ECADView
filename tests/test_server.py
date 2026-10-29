@@ -65,6 +65,8 @@ class ServerTests(unittest.TestCase):
             ("/static/viewer-3d.js", "viewer-3d.js", "text/javascript"),
             ("/static/layout-webgl.js", "layout-webgl.js", "text/javascript"),
             ("/static/layout-shaders.js", "layout-shaders.js", "text/javascript"),
+            ("/static/schematic-style.js", "schematic-style.js", "text/javascript"),
+            ("/static/measurement-tools.js", "measurement-tools.js", "text/javascript"),
             ("/static/three.module.min.js", "three.module.min.js", "text/javascript"),
             ("/static/three.core.min.js", "three.core.min.js", "text/javascript"),
             ("/static/OrbitControls.js", "OrbitControls.js", "text/javascript"),
@@ -172,6 +174,43 @@ class ServerTests(unittest.TestCase):
 
 
 class LaunchTests(unittest.TestCase):
+    def test_web_startup_opens_multiple_documents_in_one_session(self):
+        paths = [ROOT / "tests/fixtures/kicad" / name for name in ("demo.kicad_pcb", "demo.kicad_sch")]
+        process = subprocess.Popen([sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py"), "--web", "--no-open", *map(str, paths)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        output = queue.Queue()
+        def read_output():
+            for line in process.stdout:
+                output.put(line)
+            output.put(None)
+        reader = threading.Thread(target=read_output, daemon=True); reader.start()
+        try:
+            while True:
+                line = output.get(timeout=20)
+                self.assertIsNotNone(line, "Viewer exited before startup")
+                match = re.search(r"http://127\.0\.0\.1:\d+/", line)
+                if match:
+                    break
+            url = urlsplit(match[0])
+            connection = HTTPConnection(url.hostname, url.port, timeout=10)
+            try:
+                connection.request("GET", "/initial")
+                documents = json.loads(connection.getresponse().read())["documents"]
+                self.assertEqual([data["kind"] for data in documents], ["pcb", "schematic"])
+                self.assertEqual([data["name"] for data in documents], [path.name for path in paths])
+                self.assertEqual([base64.b64decode(data["source"]) for data in documents], [path.read_bytes() for path in paths])
+                connection.request("GET", "/initial")
+                self.assertEqual(json.loads(connection.getresponse().read()), {})
+            finally:
+                connection.close()
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=5)
+            reader.join(timeout=5); process.stdout.close()
+
     def test_kicad_startup_document_is_available_without_a_kicad_installation(self):
         command = [sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py"),
                    str(ROOT / "tests" / "fixtures" / "kicad" / "demo.kicad_pcb"), "--no-open"]

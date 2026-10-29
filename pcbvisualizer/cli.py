@@ -46,7 +46,7 @@ def main() -> None:
         worker(sys.argv[2], sys.argv[3])
         return
     ap = argparse.ArgumentParser(description="Standalone Altium and KiCad PCB and schematic viewer")
-    ap.add_argument("documents", nargs="*", type=Path, help="Altium or KiCad documents to open in native tabs")
+    ap.add_argument("documents", nargs="*", type=Path, help="Altium or KiCad documents to open in tabs")
     ap.add_argument("--web", action="store_true", help="run the optional browser viewer instead of the native application")
     ap.add_argument("--port", type=int, default=None, help="web server port (implies --web; default: random free port)")
     ap.add_argument("--browser", default=None, help="web browser to use (implies --web): chrome, firefox, safari, default, ...")
@@ -59,13 +59,13 @@ def main() -> None:
     if not (args.web or args.no_open or args.browser is not None or args.port is not None):
         from .desktop.app import run
         sys.exit(run(args.documents))
-    if len(args.documents) > 1:
-        ap.error("Web mode accepts one startup document. Use the native application for multiple startup files.")
     Handler.initial = None
-    if args.documents:
-        path = args.documents[0]
+    initial = []
+    for path in args.documents:
         print(f"Loading {path.name} ...")
-        Handler.initial = {**render_file(path, native=True), "source": base64.b64encode(path.read_bytes()).decode("ascii"), "webgl": True}
+        initial.append({**render_file(path, native=True), "source": base64.b64encode(path.read_bytes()).decode("ascii"), "webgl": True})
+    if initial:
+        Handler.initial = initial[0] if len(initial) == 1 else {"documents": initial}
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port or 0), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"

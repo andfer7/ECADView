@@ -22,7 +22,7 @@ _compiler = threading.BoundedSemaphore(1)
 def encode_scene(scene):
     """A padded JSON header followed by two aligned binary GPU buffers."""
     keys = ("supported", "reason", "origin", "entries", "object_components",
-            "object_nets", "object_count", "drill_layers", "stats", "stride", "caption_bounds")
+            "object_nets", "object_count", "drill_layers", "stats", "stride", "caption_bounds", "snap_points")
     header = {key: scene[key] for key in keys if key in scene}
     vertices, indices = scene.get("vertices", b""), scene.get("indices", b"")
     header.update(version=1, vertex_bytes=len(vertices), index_bytes=len(indices))
@@ -51,6 +51,10 @@ def worker(input_path, output_path):
             p.id: [p.bounds.x(), p.bounds.y(), p.bounds.width(), p.bounds.height()]
             for p in document.primitives if (p.net or p.pin) and not p.hole
         }
+        scene["snap_points"] = [
+            {"x": point.x(), "y": point.y(), "layers": sorted(layers)}
+            for point, layers in document.snap_points
+        ]
     Path(output_path).write_bytes(encode_scene(scene))
     # Retain the application until all Qt objects have finished their work.
     del app
