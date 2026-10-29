@@ -1,93 +1,17 @@
-Native desktop tests exercise Qt rasterization and exact picking, holes and
-polygon/layer visibility, Altium and KiCad documents, source/pin cross-probing,
-cursor-anchored zoom, millimetre measurements, repeated selections, asynchronous
-tabs and errors, closing during a load, and worker shutdown. They also verify a
-selected net's rendered colors on tracks, arcs, pads, vias, schematic wires,
-pins and legacy junctions, including deselection and inherited paint styles;
-drill holes and open paths remain unfilled. Selection tests verify fading of other
-geometry while preserving paper backgrounds, picking, multiselection, layer
-visibility and routes at layer crossings. Schematic component tests verify
-green contours, shared 45% context contrast for component/net selections, preserved
-interior fills and readable text while PCB
-component fills retain their highlighting. Net stroke tests check 3.5× schematic
-widths, inherited/inline units, deselection, and unchanged PCB/component widths.
-Navigation tests check a
-fixed cache pixel bound and coalescing hundreds of navigation events while a
-renderer is busy. Zoom-out waits for the gesture to pause even beyond overscan;
-long pans still refresh uncovered areas. Returning worker results preserve the
-latest input deadline and cannot restore an older selection. Pad captions reuse
-their recorded layout during movement and refresh at idle, with matching pixels
-across logical display resolutions. 3D tests check constrained triangle areas,
-board occlusion, hole/side ray intersections and body deletion/undo without a GL context.
+# Testing the browser application
+
+The Python suite covers format parsing, compact SVG metadata, physical copper
+stacks, 3D geometry, offscreen font/bounds processing, retained WebGL compilation,
+reference raster comparisons, isolated compiler limits, HTTP resources and
+browser startup. The native Qt window/canvas tests and benchmarks were retired
+with that interface. Reference raster code lives in `pcbvisualizer/geometry/`;
+it validates compiler geometry and does not create viewer windows.
 
 ```sh
-QT_QPA_PLATFORM=offscreen uv run python -B -m unittest discover -s tests -v
-uv run python scripts/benchmark_native.py /path/to/board.kicad_pcb
-uv run python scripts/benchmark_native.py /path/to/large.PcbDoc --dpr 2 --zoom 4 --motion zoom --styles --snapshot /tmp/board.png
+QT_QPA_PLATFORM=offscreen uv run --locked python -B -m unittest discover -s tests -v
 ```
 
-The benchmark reports source rendering, native indexing and metadata time, time
-to the first frame, initial and unchanged-style vector-raster time,
-median/p95 cached paint times, and the number of vector renders during its
-navigation loop. `--styles` measures first selection, switching nets, revisiting
-a cached selection, clearing, and layer reordering separately. `--snapshot`
-saves the final navigation image for visual comparison. The loop starts with a
-resting caption layout and measures replaying it during pan/zoom movement.
-Navigation timings measure cached painting, not the asynchronous refinement rate
-or end-to-end input latency. Compare fresh processes with the same viewport,
-zoom, pixel density and filesystem-cache conditions.
-
-Altium optimization tests compare complete SVG output against the upstream
-renderer, including original IDs, V7 layers, clipping and multilayer pads/vias.
-Native rendering additionally batches stroke text into independent path
-segments, inherits shared metadata, and emits each physical drill once. Tests
-compare expanded geometry and effective relationships against upstream output;
-the source document and browser SVG output remain unchanged. Antialiasing at
-coincident drill edges or crossing glyph strokes can differ slightly after
-removing duplicated paint operations.
-Set `PERF_TEST_FILE` to a local large `.PcbDoc` (such as
-`LimeSDR-USB_1v4s.PcbDoc`) to run that exact-output comparison on a reference board
-and verify its source checksum. The file stays outside this repository.
-Native tests also check restoration of attributes, layer order and pixels after
-repeated selections, and caption-index culling without changing label priority.
-Large synthetic PCB tests require selection changes to avoid full SVG
-serialization, renderer reloads and full-board repaint. They check drill
-cutouts, selected crossings, layer and polygon visibility, camera invalidation,
-and direct native masks against Qt SVG. At a fixed view, the last two selected
-images are cached with a combined 64 MiB bound; camera/layer/polygon changes
-invalidate them. Schematic contour and selection styling uses its existing path.
-
-Layout GPU tests run separately on a live desktop, since the offscreen Qt plugin
-cannot create a GL context. On macOS:
-
-```sh
-PCB_GPU_TESTS=1 QT_QPA_PLATFORM=cocoa uv run python -B -m unittest tests.test_layout_gpu tests.test_gpu_scene -v
-uv run python scripts/benchmark_layout_gpu.py /path/to/large.PcbDoc --renderer both --zoom 4 --motion zoom
-```
-
-The GPU checks require a valid context and report the OpenGL renderer. They
-compare image orientation, color, transparency, camera transforms and overlays,
-verify texture reuse and bounded residency, and release resources on cleanup.
-Retained-scene tests also compare GPU geometry against the SVG raster reference
-for copper voids, drill holes, layer order, polygon visibility and selections.
-They require camera changes to reuse static geometry, selection changes to update
-only the object lookup, and neither to emit CPU refinement requests. CPU compiler
-tests check transforms, caption/hole paths, finite indexed buffers and whole-scene
-fallback for unsupported composition.
-The ordinary offscreen suite covers the raster fallback. GPU framebuffer captures
-use `grabFramebuffer()`; ordinary `QWidget.render()` does not capture GL contents.
-The live comparison reports CPU paint submission times and event timer cadence,
-separately from source loading and geometry preparation/upload. It does not
-measure total GPU execution or end-to-end display latency.
-`scripts/benchmark_layout_interaction.py` instead keeps the real document worker
-connected during a timed zoom/pause/pan workload. Compare its default retained
-mode with `--renderer textures` to include asynchronous SVG refinements. It
-reports scripted camera-to-Qt-presentation callback times, event-loop cadence,
-loading/preparation milestones and raster/upload counts. It does not measure
-physical trackpad or display latency. The standalone bundle and real 3D output
-also require a live desktop smoke check.
-
-The optional browser regression tests launch the real Python server and load its HTML,
+The browser regression tests launch the real Python server and load its HTML,
 CSS, and JavaScript, with small SVG fixtures in place of the Altium renderer.
 They require the project's Python environment, Node.js 20 or newer, and Playwright. Install
 the locked test dependencies from the project root:
@@ -180,3 +104,18 @@ highlight restoration, drag suppression, Shift selections, duplicate names,
 Delete/Backspace, grouped undo, tab isolation, and unchanged 2D/source geometry.
 Python coverage verifies that split solids share one body identity while distinct
 bodies retain separate identities even when their names match.
+
+
+Run `npm run test:gpu` for real Chrome/Chromium WebGL 2 compilation and pixel
+coverage. It checks retained geometry reuse, highlights, holes, layer ordering,
+SVG fallback, context loss/recovery, resource cleanup and mixed rectangle
+selection. Rectangle tests cover both drag directions, additive selection,
+hidden layers/polygons, cancellation and separate pan/measurement gestures.
+
+Launcher tests require every entry point to start the local browser server by
+default, preserve `--web` compatibility, `--no-open`, browser choice and startup
+files, and dispatch frozen geometry workers without starting another server.
+Quit tests verify the viewer-only shutdown request, stopped page and error recovery.
+Packaged smoke validation must also exercise the bundled offscreen worker and
+Quit viewer, checking that the backend process exits. Build and smoke-test on
+each target OS; a macOS build does not validate Windows/Linux packaging.

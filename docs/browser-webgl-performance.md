@@ -1,13 +1,13 @@
 # Browser 2D WebGL renderer
 
-Issue #86 adds a retained WebGL 2 layout renderer to `--web`. Schematics and
+Issue #86 adds a retained WebGL 2 layout renderer to the browser viewer. Schematics and
 the separate 3D renderer keep their existing paths. Parsing and geometry
 preparation run locally; no CAD data goes to an external service.
 
 ## Design and limits
 
 The browser first displays the SVG preview. An isolated offscreen Qt process
-then uses the native SVG geometry compiler to prepare analytic primitives and
+then uses the offscreen SVG geometry compiler to prepare analytic primitives and
 tessellated paths. A padded JSON header and binary float32/uint32 buffers cross
 the loopback connection. Geometry is uploaded once when a document becomes
 resident. Navigation updates camera uniforms; component/net selection updates
@@ -38,8 +38,8 @@ may finish before its temporary files are removed; it is bounded by the same
 timeout. There is no persistent generated-board cache.
 
 The WebGL interface follows the [Khronos WebGL 2 specification](https://registry.khronos.org/webgl/specs/2.0/).
-Analytic coverage matches the native renderer; a regression test checks shader
-parity while allowing the existing browser net-highlight color.
+The renderer uses analytic coverage for simple primitives; GPU integration tests
+compare the resulting pixels with SVG and verify selection colors and holes.
 
 ## Representative LimeSDR result
 

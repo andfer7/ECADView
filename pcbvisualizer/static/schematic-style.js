@@ -1,4 +1,4 @@
-// Keep browser schematic selection aligned with desktop/document.py.
+// Schematic contour, net and context styling for the browser viewer.
 const NS = 'http://www.w3.org/2000/svg';
 const GREEN = '#008a3b', BACKGROUND = [255, 252, 248], CONTRAST = .45;
 const paints = new WeakMap();

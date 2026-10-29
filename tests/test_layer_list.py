@@ -5,7 +5,6 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import tempfile
-import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -14,15 +13,13 @@ from unittest.mock import patch
 import sexpdata
 from altium_monkey import AltiumPcbDoc
 from altium_monkey.altium_pcbdoc_layer_stack_builder import PcbDocLayerStackTemplate
-from PySide6.QtCore import QEventLoop, Qt, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QGuiApplication
 
-from pcbvisualizer.desktop.app import MainWindow
-from pcbvisualizer.desktop.document import NativeDocument
+from pcbvisualizer.geometry.document import GeometryDocument
 from pcbvisualizer.kicad_common import form, load
 from pcbvisualizer.rendering import copper_layer_order, render_file
 
-APP = QApplication.instance() or QApplication([])
+APP = QGuiApplication.instance() or QGuiApplication([])
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad" / "demo.kicad_pcb"
 
 
@@ -71,7 +68,7 @@ class LayerListTests(unittest.TestCase):
             self.assertEqual(
                 data["copper_layer_order"], ["TOP", "MID9", "PLANE1", "MID1", "BOTTOM"]
             )
-            document = NativeDocument(data)
+            document = GeometryDocument(data)
             info = document.info()
             expected = [
                 "layer-TOP",
@@ -89,7 +86,7 @@ class LayerListTests(unittest.TestCase):
                 [row for row in info["layer_list"] if row["id"] not in expected],
                 [row for row in info["layers"] if row["id"] not in expected],
             )
-            control = NativeDocument({**data, "copper_layer_order": []})
+            control = GeometryDocument({**data, "copper_layer_order": []})
             self.assertEqual(info["layers"], control.info()["layers"])
             self.assertEqual(document.source, control.source)
             request = {
@@ -114,7 +111,7 @@ class LayerListTests(unittest.TestCase):
         data = render_file(FIXTURE)
         for order in ([], ["unavailable-layer"]):
             with self.subTest(order=order):
-                document = NativeDocument({**data, "copper_layer_order": order})
+                document = GeometryDocument({**data, "copper_layer_order": order})
                 self.assertEqual(
                     document.info()["layer_list"], document.info()["layers"]
                 )
@@ -141,7 +138,7 @@ class LayerListTests(unittest.TestCase):
             path.write_text(sexpdata.dumps(root))
             data = render_file(path)
         self.assertEqual(data["copper_layer_order"], ["TOP", "MID1", "MID2", "BOTTOM"])
-        document = NativeDocument(data)
+        document = GeometryDocument(data)
         source = document.info()["layers"]
         displayed = document.info()["layer_list"]
         copper_ids = {
@@ -158,69 +155,6 @@ class LayerListTests(unittest.TestCase):
             ["BOTTOM", "MID2", "MID1", "TOP"],
         )
 
-    def test_sidebar_refreshes_and_tabs_preserve_drawing_order_and_active_layer(self):
-        def wait_for(predicate):
-            loop, timer = QEventLoop(), QTimer()
-            deadline = time.monotonic() + 10
-            timer.timeout.connect(
-                lambda: (
-                    loop.quit() if predicate() or time.monotonic() > deadline else None
-                )
-            )
-            timer.start(10)
-            if not predicate():
-                loop.exec()
-            timer.stop()
-            self.assertTrue(predicate())
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "stack.PcbDoc"
-            save_stack(path)
-            window = MainWindow()
-            try:
-                window.open_files([path, path])
-                wait_for(lambda: all(window.tabs.widget(i).info for i in range(2)))
-                first, second = [window.tabs.widget(i) for i in range(2)]
-                original = list(first.canvas.layer_order)
-                window.tabs.setCurrentWidget(first)
-                self.assertEqual(first.canvas.layer_order, original)
-                expected = [row["id"] for row in first.info["layer_list"]]
-
-                def list_ids():
-                    return [
-                        window.layers.item(i).data(Qt.ItemDataRole.UserRole)
-                        for i in range(window.layers.count())
-                    ]
-
-                self.assertEqual(list_ids(), expected)
-                item = next(
-                    window.layers.item(i)
-                    for i in range(window.layers.count())
-                    if window.layers.item(i).data(Qt.ItemDataRole.UserRole)
-                    == "layer-MID9"
-                )
-                window.layers.setCurrentItem(item)
-                self.assertEqual(
-                    first.canvas.layer_order,
-                    [key for key in original if key != "layer-MID9"] + ["layer-MID9"],
-                )
-                raised = list(first.canvas.layer_order)
-                window.mount()
-                self.assertEqual(list_ids(), expected)
-                self.assertEqual(first.canvas.layer_order, raised)
-                self.assertEqual(
-                    window.layers.currentItem().data(Qt.ItemDataRole.UserRole),
-                    "layer-MID9",
-                )
-                window.tabs.setCurrentWidget(second)
-                self.assertEqual(second.canvas.layer_order, original)
-                window.tabs.setCurrentWidget(first)
-                window.all_layers(False)
-                window.all_layers(True)
-                self.assertEqual(first.canvas.layer_order, raised)
-                self.assertEqual(list_ids(), expected)
-            finally:
-                window.close()
 
 
 if __name__ == "__main__":

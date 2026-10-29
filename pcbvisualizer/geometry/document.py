@@ -1,20 +1,18 @@
-"""Worker-owned SVG painting and spatial indexes for native document views."""
+"""Offscreen SVG bounds/metadata index and reference rasterization for the compiler."""
 
 import re
-import time
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 
-from PySide6.QtCore import QByteArray, QObject, QPointF, QRectF, Qt, Signal, Slot
+from PySide6.QtCore import QByteArray, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from shapely import box as boxes
 from shapely.geometry import box
 from shapely.strtree import STRtree
 
-from pcbvisualizer.rendering import render_file
 
 SVG = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG)
@@ -107,12 +105,8 @@ class Primitive:
     stroke: bool = False
 
 
-class NativeDocument:
-    """Only constructed/accessed by its document's worker thread.
-
-    The GUI receives plain metadata, bounds and implicitly shared QImages. SVG
-    objects and the spatial index never run on the GUI thread.
-    """
+class GeometryDocument:
+    """Owned by one offscreen compiler process; never creates a viewer window."""
 
     def __init__(self, data):
         self.data, self.root = data, ET.fromstring(data["svg"])
@@ -725,79 +719,3 @@ class NativeDocument:
             if bounds.contains(position):
                 return {"components": [cid], "nets": []}
         return None
-
-
-class DocumentWorker(QObject):
-    loaded = Signal(object)
-    frame = Signal(object)
-    picked = Signal(object)
-    mesh = Signal(object)
-    gpu_scene = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, path):
-        super().__init__()
-        self.path, self.document = path, None
-        self.retained_ready = False
-
-    @Slot()
-    def load(self):
-        try:
-            started = time.perf_counter()
-            self.document = NativeDocument(render_file(self.path, native=True))
-            info = self.document.info()
-            info["load_seconds"] = time.perf_counter() - started
-            self.loaded.emit(info)
-        except Exception as exc:  # noqa: BLE001 - worker boundary reports third-party parser errors to the window
-            self.failed.emit(f"{type(exc).__name__}: {exc}")
-
-    @Slot(object)
-    def render(self, request):
-        try:
-            if self.retained_ready and not request.get("raster_required", True):
-                return
-            if self.document:
-                self.frame.emit(self.document.raster(request))
-        except Exception as exc:  # noqa: BLE001 - keep Qt callbacks from swallowing renderer errors
-            self.failed.emit(f"Rendering failed: {exc}")
-
-    @Slot()
-    def build_gpu_scene(self):
-        if self.document is None:
-            return
-        try:
-            from .gpu_scene import build_scene
-
-            scene = build_scene(self.document)
-            self.retained_ready = bool(scene.get("supported"))
-            if self.retained_ready and hasattr(self.document, "pcb_raster"):
-                # Camera-independent geometry replaces the raster caches. A
-                # later CPU fallback creates its cache again on demand.
-                del self.document.pcb_raster
-        except Exception as exc:  # noqa: BLE001 - retain raster presentation on unsupported inputs
-            scene = {"supported": False, "reason": str(exc)}
-        self.gpu_scene.emit(scene)
-
-    @Slot(object)
-    def pick(self, request):
-        if self.document:
-            self.picked.emit(
-                {
-                    "result": self.document.pick(*request["args"]),
-                    "shift": request["shift"],
-                }
-            )
-
-    @Slot()
-    def build_mesh(self):
-        try:
-            from .solid import build_mesh
-
-            self.mesh.emit(build_mesh(self.document.data.get("scene3d", {})))
-        except Exception as exc:  # noqa: BLE001 - preserve 2D when third-party geometry cannot be meshed
-            self.failed.emit(f"3D is unavailable: {exc}")
-
-    @Slot()
-    def shutdown(self):
-        self.document = None
-        self.thread().quit()

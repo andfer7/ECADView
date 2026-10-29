@@ -1,1 +1,1 @@
-"""Local Altium PCB and schematic viewer."""
+"""Local browser-based Altium and KiCad PCB and schematic viewer."""

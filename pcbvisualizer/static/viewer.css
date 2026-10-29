@@ -63,6 +63,9 @@
   #view.measuring, #view.measuring:active { cursor: crosshair; }
   #view.drop { outline: 3px dashed var(--accent); outline-offset: -3px; }
   #view svg { width: 100%; height: 100%; display: block; user-select: none; }
+  #quit { float: right; margin-bottom: 6px; font-size: 11px; }
+  #session-stopped { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center;
+    justify-content: center; background: var(--bg); font-size: 20px; }
   #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
            color: var(--muted); font-size: 15px; text-align: center; pointer-events: none; }
   #measure { pointer-events: none; }

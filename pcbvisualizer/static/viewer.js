@@ -283,6 +283,16 @@ import { rectangleMatches } from './rectangle-selection.js';
   document.addEventListener('dragleave', e => { if (!e.relatedTarget) view.classList.remove('drop'); });
 
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 5000); }
+  $('quit').onclick = async () => {
+    $('quit').disabled = true;
+    try {
+      const response = await fetch('/shutdown', { method: 'POST', headers: { 'X-Viewer-Request': 'shutdown' } });
+      if (!response.ok) throw new Error('Could not stop the viewer. Please try again.');
+      for (const board of boards) { board.controller?.abort(); board.gpuController?.abort(); }
+      netLabels.cancel(); clearTimeout(labelTimer); cancelViewUpdate(); cancelDrag(); unmount3D(); layoutGPU?.release();
+      $('session-stopped').hidden = false;
+    } catch (error) { $('quit').disabled = false; toast(error.message); }
+  };
 
   // ------------------------------------------------------------ 3D mode
   let threeViewer = null, threeModule = null, threeMount = 0, threeBoard = null;

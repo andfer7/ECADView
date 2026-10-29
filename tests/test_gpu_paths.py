@@ -8,19 +8,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QGuiApplication
 
-from pcbvisualizer.desktop.document import NativeDocument
-from pcbvisualizer.desktop.gpu_scene import build_scene
+from pcbvisualizer.geometry.document import GeometryDocument
+from pcbvisualizer.geometry.gpu_scene import build_scene
 
 
 class RetainedPathTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
 
     def assert_svg_coverage(self, graphic, inside, outside):
-        document = NativeDocument(
+        document = GeometryDocument(
             {
                 "name": "curves",
                 "svg": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">'

@@ -35,14 +35,14 @@ def encode_scene(scene):
 def worker(input_path, output_path):
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     from PySide6.QtGui import QGuiApplication
-    from .desktop.document import NativeDocument
-    from .desktop.gpu_scene import build_scene
+    from .geometry.document import GeometryDocument
+    from .geometry.gpu_scene import build_scene
 
     app = QGuiApplication.instance() or QGuiApplication([])
     data = json.loads(Path(input_path).read_bytes())
     if data.get("kind", "pcb") != "pcb":
         raise ValueError("WebGL geometry is only available for PCB layouts")
-    document = NativeDocument(data)
+    document = GeometryDocument(data)
     scene = build_scene(document)
     if scene.get("supported"):
         # Reuse the worker's world bounds to reject tiny/offscreen captions

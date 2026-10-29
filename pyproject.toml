@@ -7,7 +7,6 @@ dependencies = [
     "altium-monkey>=2026.9.22",
     "freetype-py>=2.5.1",
     "numpy>=1.26,<3",
-    "pyside6-addons>=6.8,<7",
     "pyside6-essentials>=6.8,<7",
     "sexpdata>=1.0.2,<2",
     "shapely>=2.1,<3",

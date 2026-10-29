@@ -5,6 +5,7 @@ from importlib.resources import files
 import json
 from pathlib import Path
 import tempfile
+import threading
 import urllib.parse
 
 from .rendering import render_file
@@ -60,6 +61,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         url = urllib.parse.urlparse(self.path)
+        if url.path == "/shutdown":
+            host = f"127.0.0.1:{self.server.server_address[1]}"
+            if (self.headers.get("Host") != host or self.headers.get("Origin") != f"http://{host}"
+                    or self.headers.get("X-Viewer-Request") != "shutdown"):
+                self._json(403, {"error": "Quit must be requested from this viewer."})
+                return
+            self._json(200, {"stopped": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if url.path == "/geometry":
             try:
                 length = int(self.headers.get("Content-Length", 0))

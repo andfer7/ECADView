@@ -34,6 +34,21 @@ def schematic_bytes():
 
 
 class ServerTests(unittest.TestCase):
+    def test_quit_requires_the_viewer_origin_host_and_request_header(self):
+        host = f"127.0.0.1:{self.server.server_address[1]}"
+        valid = {"Host": host, "Origin": f"http://{host}", "X-Viewer-Request": "shutdown"}
+        for changes in ({"Origin": "https://example.com"}, {"Host": "example.com"},
+                        {"X-Viewer-Request": ""}, {"Origin": "null"}, {"Origin": ""}):
+            with self.subTest(changes=changes):
+                status, _, _ = self.request("POST", "/shutdown", b"", {**valid, **changes})
+                self.assertEqual(status, 403)
+        stopped = threading.Event()
+        with patch.object(self.server, "shutdown", side_effect=stopped.set):
+            status, _, body = self.request("POST", "/shutdown", b"", valid)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {"stopped": True})
+            self.assertTrue(stopped.wait(2))
+
     def setUp(self):
         Handler.initial = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -255,7 +270,7 @@ class LaunchTests(unittest.TestCase):
             path.write_bytes(data)
             commands = (
                 ([sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py")], tmp),
-                ([sys.executable, "-B", "-u", "-m", "pcbvisualizer", "--web"], ROOT),
+                ([sys.executable, "-B", "-u", "-m", "pcbvisualizer"], ROOT),
             )
             for command, cwd in commands:
                 with self.subTest(command=command):
