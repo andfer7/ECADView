@@ -81,7 +81,7 @@ class KiCadBoardTests(unittest.TestCase):
         expected = 40*30 - circle(2, 96) - circle(0.4, 64)*2 - 0.8*0.8 - circle(0.35, 64)
         self.assertAlmostEqual(polygon_area(scene), expected, places=4)
         self.assertEqual(scene['bodies'], [])
-        self.assertIn('external STEP/VRML', ' '.join(scene['notes']))
+        self.assertIn('no usable STEP model references', ' '.join(scene['notes']))
 
     def test_polygon_metadata_identifies_only_saved_pours(self):
         data = render_file(FIXTURES / 'demo.kicad_pcb', polygon_outlines=True)

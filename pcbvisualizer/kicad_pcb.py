@@ -14,6 +14,7 @@ from .kicad_common import (
     angle, draw_text, element, flag, fmt, form, forms, geometry_path, graphic_points,
     load, number, path_points, point, polygon_parts, rotate, scalar, svg_document, value, width,
 )
+from .step_models import kicad_models
 
 
 COLORS = {"F.Cu": "#e64c4c", "B.Cu": "#5088ee", "F.SilkS": "#f5e8a8", "B.SilkS": "#d0b9ed",
@@ -22,7 +23,8 @@ COLORS = {"F.Cu": "#e64c4c", "B.Cu": "#5088ee", "F.SilkS": "#f5e8a8", "B.SilkS":
 
 
 class PcbRenderer:
-    def __init__(self, root, side, clip, pour_color, polygon_outlines):
+    def __init__(self, root, side, clip, pour_color, polygon_outlines, directory=None):
+        self.directory = directory
         self.root, self.side, self.clip = root, side, clip
         self.pour_color, self.polygon_outlines = pour_color, polygon_outlines
         self.layers, self.names = [], {}
@@ -306,8 +308,7 @@ class PcbRenderer:
         thickness = scalar(form(self.root, "general"), "thickness")
         if thickness <= 0:
             thickness = 1.6; notes.append("Board thickness is unavailable; showing 1.6 mm.")
-        if self.stats["components"]:
-            notes.append("KiCad external STEP/VRML component models are not loaded; the 3D view shows the board only.")
+        assets, bodies = {}, []
         shapes = []
         if not profile.is_empty:
             center = profile.centroid
@@ -315,6 +316,14 @@ class PcbRenderer:
             def ring(coords):
                 return [[round(x-center.x, 6), round(center.y-y, 6)] for x, y in list(coords)[:-1]]
             shapes = [{"outline": ring(p.exterior.coords), "holes": [ring(h.coords) for h in p.interiors]} for p in polygon_parts(solid)]
+            try:
+                assets, bodies, missing = kicad_models(self.root, self.directory, (center.x, center.y), thickness)
+                if missing:
+                    notes.append("For unavailable external STEP/VRML models, use Add STEP models to supply .step/.stp files.")
+            except (OSError, TypeError, ValueError) as error:
+                notes.append(f"Component STEP placements could not be read: {error}")
+        if self.stats["components"] and not bodies:
+            notes.append("Components have no usable STEP model references; showing the board only.")
         if self.side == "bottom":
             self.scene.set("transform", f"translate({fmt(bounds[0]+bounds[2])} 0) scale(-1 1)")
         svg = svg_document(self.scene, bounds, defs)
@@ -333,8 +342,9 @@ class PcbRenderer:
         return {"svg": svg, "kind": "pcb", "warnings": sorted(self.warnings), "stats": self.stats,
                 "copper_layer_order": copper_order,
                 "polygon_elements": self.polygon_ids, "layout_components": self.layout_components,
-                "scene3d": {"board": shapes, "thickness": thickness, "bodies": [], "notes": notes, "units": "mm"}}
+                "scene3d": {"board": shapes, "thickness": thickness, "bodies": bodies, "step_models": assets, "notes": notes, "units": "mm",
+                            **({"surface_origin": [center.x, center.y]} if not profile.is_empty else {})}}
 
 
 def render_pcb(path, side="all", clip=False, pour_color=None, polygon_outlines=False):
-    return {"name": path.name, **PcbRenderer(load(path, "kicad_pcb"), side, clip, pour_color, polygon_outlines).render()}
+    return {"name": path.name, **PcbRenderer(load(path, "kicad_pcb"), side, clip, pour_color, polygon_outlines, path.parent).render()}

@@ -339,8 +339,13 @@ import { trackViewerSession } from './viewer-session.js';
       if (request !== threeMount || board !== activeBoard || !is3D()) return;
       threeViewer ||= new Board3D($('three-view'), message => {
         $('three-status').hidden = false; $('three-status').textContent = message;
-      }, pickBody);
-      threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board));
+      }, pickBody, ({ loaded, total, failed, surfaceError }) => {
+        if (threeBoard && threeBoard !== activeBoard) return;
+        if (surfaceError) { $('three-status').hidden = false; $('three-status').textContent += '\n' + surfaceError; return; }
+        $('step-status').textContent = total ? `STEP models: ${loaded}/${total} loaded` +
+          (failed.length ? ` · ${failed.length} unavailable; using body outlines where available.\n${failed.join('\n')}` : '') : '';
+      });
+      threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board), board.svg);
       threeBoard = board;
       updateBodyControls();
     } catch (error) {
@@ -362,6 +367,37 @@ import { trackViewerSession } from './viewer-session.js';
   }
   $('mode-2d').onclick = () => setViewMode('2d');
   $('mode-3d').onclick = () => setViewMode('3d');
+  $('step-add').onclick = () => $('step-files').click();
+  $('step-files').onchange = event => {
+    const board = activeBoard, files = [...event.target.files]; event.target.value = '';
+    addStepFiles(board, files).catch(error => toast('Could not load STEP file: ' + error.message));
+  };
+  async function addStepFiles(board, files) {
+    if (!board?.scene3d) return;
+    const assets = board.scene3d.step_models || {}, unmatched = [];
+    const basename = name => name.replaceAll('\\', '/').split('/').at(-1).toLowerCase();
+    for (const file of files) {
+      const matches = Object.entries(assets).filter(([, asset]) => basename(asset.name) === basename(file.name));
+      if (!matches.length) { unmatched.push(file.name); continue; }
+      if (file.size > 32 * 1024 * 1024) { toast(`${file.name} exceeds the 32 MB STEP limit.`); continue; }
+      // Two different reference paths with the same filename are ambiguous.
+      const names = new Set(matches.map(([, asset]) => asset.name));
+      if (names.size > 1) { toast(`Several models are named ${file.name}; use distinct filenames in the board.`); continue; }
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
+      });
+      const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      const key = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+      for (const [oldKey, asset] of matches) {
+        assets[key] = { name: asset.name, data, compressed: false };
+        for (const body of board.scene3d.bodies) if (body.model === oldKey) body.model = key;
+        if (oldKey !== key) delete assets[oldKey];
+      }
+    }
+    if (board === activeBoard && is3D()) { unmount3D(); mountViewMode(); }
+    if (unmatched.length) toast('No model reference matches: ' + unmatched.join(', '));
+  }
   for (const preset of ['top', 'bottom', 'iso']) $('three-' + preset).onclick = () => threeViewer?.fit(preset);
 
   function bodyEdits(board) {

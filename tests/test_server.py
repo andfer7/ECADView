@@ -78,6 +78,13 @@ class ServerTests(unittest.TestCase):
             ("/static/viewer.js", "viewer.js", "text/javascript"),
             ("/static/net-labels.js", "net-labels.js", "text/javascript"),
             ("/static/viewer-3d.js", "viewer-3d.js", "text/javascript"),
+            ("/static/board-surface.js", "board-surface.js", "text/javascript"),
+            ("/static/studio-3d.js", "studio-3d.js", "text/javascript"),
+            ("/static/step-loader.js", "step-loader.js", "text/javascript"),
+            ("/static/step-worker.js", "step-worker.js", "text/javascript"),
+            ("/static/occt-import-js.js", "occt-import-js.js", "text/javascript"),
+            ("/static/OCCT-LICENSE.txt", "OCCT-LICENSE.txt", "text/plain"),
+            ("/static/OCCT-IMPORT-LICENSE.txt", "OCCT-IMPORT-LICENSE.txt", "text/plain"),
             ("/static/layout-webgl.js", "layout-webgl.js", "text/javascript"),
             ("/static/layout-shaders.js", "layout-shaders.js", "text/javascript"),
             ("/static/schematic-style.js", "schematic-style.js", "text/javascript"),
@@ -98,6 +105,13 @@ class ServerTests(unittest.TestCase):
         html = self.request("GET", "/")[2].decode()
         self.assertIn('href="/static/viewer.css"', html)
         self.assertIn('src="/static/viewer.js"', html)
+
+    def test_step_wasm_is_bundled_and_served_as_binary(self):
+        status, headers, body = self.request("GET", "/static/occt-import-js.wasm")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/wasm")
+        self.assertTrue(body.startswith(b"\0asm"))
+        self.assertEqual(body, files("pcbvisualizer").joinpath("static", "occt-import-js.wasm").read_bytes())
 
     def test_unknown_and_unlisted_resource_paths_return_404(self):
         for path in ("/missing", "/static/../rendering.py", "/static/%2e%2e/server.py", "/static/index.html"):
