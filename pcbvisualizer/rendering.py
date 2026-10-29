@@ -175,15 +175,21 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         include_polygon_definition_overlays=polygon_outlines,
         svg_display_scale=4.0,
     )
+    renderer = None
     if side == "top":
         svg = pcb.to_surface_svg(PCB_SurfaceSide.TOP, options=options)
     elif side == "bottom":
         svg = pcb.to_surface_svg(PCB_SurfaceSide.BOTTOM, options=options)
     else:
-        svg = IndexedPcbSvgRenderer(pcb, options, compact_metadata=native).render_board(pcb)
+        renderer = IndexedPcbSvgRenderer(pcb, options, compact_metadata=native)
+        svg = renderer.render_board(pcb)
     # An unsupported 3D record must not prevent opening the existing 2D view.
     try:
         scene = build_scene(pcb)
+        if renderer is not None and scene.get("board"):
+            ctx = renderer.context
+            x, y = scene["origin"]
+            scene["surface_origin"] = [ctx.x_to_svg(x / 0.0254), ctx.y_to_svg(y / 0.0254)]
     except Exception as exc:  # noqa: BLE001 - preserve 2D when optional 3D geometry is unsupported
         scene = {"board": [], "notes": [f"3D is unavailable for this document: {type(exc).__name__}: {exc}"]}
     return {

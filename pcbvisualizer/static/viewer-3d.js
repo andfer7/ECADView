@@ -1,6 +1,8 @@
 import * as THREE from './three.module.min.js';
 import { OrbitControls } from './OrbitControls.js';
 import { StepLoader } from './step-loader.js';
+import { boardSurfaces } from './board-surface.js';
+import { studioEnvironment, stepFinish, stepMaterial } from './studio-3d.js';
 
 // One WebGL context is shared by all tabs. Geometry is released on every switch.
 export class Board3D {
@@ -10,6 +12,11 @@ export class Board3D {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setClearColor(0x1b1d21);
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.95;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.domElement.setAttribute('aria-label', '3D PCB view');
     this.renderer.domElement.setAttribute('role', 'region');
     this.renderer.domElement.tabIndex = 0;
@@ -56,46 +63,62 @@ export class Board3D {
   clear() {
     this.generation = (this.generation || 0) + 1;
     this.stepLoader?.close(); this.stepLoader = null;
+    this.shadowDirty = true; this.shadowKey = null;
     this.cancelPick();
     this.controls.enabled = false;
-    const geometries = new Set();
+    const geometries = new Set(), textures = new Set();
     this.scene?.traverse(object => {
+      object.shadow?.dispose();
       if (object.geometry) geometries.add(object.geometry);
       const materials = Array.isArray(object.material) ? object.material : [object.material];
-      materials.forEach(material => material?.dispose());
+      materials.forEach(material => {
+        for (const value of Object.values(material || {})) if (value?.isTexture) textures.add(value);
+        material?.dispose();
+      });
     });
     geometries.forEach(geometry => geometry.dispose());
+    textures.forEach(texture => texture.dispose());
     this.scene = null;
     this.pickMeshes = [];
     this.bodyMeshes = [];
     this.renderer.clear();
   }
 
-  show(model, state, bodies) {
+  show(model, state, bodies, sourceSVG) {
     this.clear();
     this.scene = new THREE.Scene();
-    this.scene.add(new THREE.AmbientLight(0xffffff, 1.8));
-    const light = new THREE.DirectionalLight(0xffffff, 3);
-    light.position.set(-30, -50, 100); this.scene.add(light);
-    const bottomLight = new THREE.DirectionalLight(0xc5dfff, 2);
-    bottomLight.position.set(30, 50, -100); this.scene.add(bottomLight);
+    this.environment ||= studioEnvironment(this.renderer);
+    this.scene.environment = this.environment.texture; this.scene.environmentIntensity = 0.5;
+    this.scene.background = new THREE.Color(0x242a32);
+    const ambient = new THREE.HemisphereLight(0xe8f1ff, 0x8b8173, 0.35);
+    ambient.up.set(0, 0, 1); ambient.position.set(0, 0, 1); this.scene.add(ambient);
+    this.studioLights = [new THREE.DirectionalLight(0xfff4e5, 2), new THREE.DirectionalLight(0xc8ddff, 1.6)];
+    for (const light of this.studioLights) {
+      light.castShadow = true; light.shadow.mapSize.set(2048, 2048);
+      light.shadow.bias = -0.00015; light.shadow.normalBias = 0.025;
+      this.scene.add(light, light.target);
+    }
     const addSolid = (data, z, height, color, opacity = 1, edgeColor = 0x182323, bodyId = null) => {
       if (!data.outline?.length) return;
       const shape = new THREE.Shape(data.outline.map(p => new THREE.Vector2(...p)));
       shape.holes = (data.holes || []).map(points => new THREE.Path(points.map(p => new THREE.Vector2(...p))));
       const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
-      const material = new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.05,
+      const material = bodyId === null ? [
+        new THREE.MeshPhysicalMaterial({ color: 0x0e452c, roughness: 0.48, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.34 }),
+        new THREE.MeshStandardMaterial({ color: 0x867552, roughness: 0.85, metalness: 0 }),
+      ] : new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0,
         opacity, transparent: opacity < 1 });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.visible = bodyId === null || !bodies?.deleted.has(bodyId);
       mesh.position.z = z; mesh.name = data.name || 'Board'; this.scene.add(mesh);
       mesh.userData.bodyId = bodyId;
+      mesh.castShadow = true; mesh.receiveShadow = true;
       if (opacity > 0) this.pickMeshes.push(mesh);
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25),
-        new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.45 * opacity }));
+        new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: (bodyId === null ? 0.07 : 0.14) * opacity }));
       edges.position.z = z; this.scene.add(edges);
       edges.visible = mesh.visible;
-      if (bodyId !== null) this.bodyMeshes.push({ id: bodyId, mesh, edges, edgeColor, edgeOpacity: 0.45 * opacity });
+      if (bodyId !== null) this.bodyMeshes.push({ id: bodyId, mesh, edges, edgeColor, edgeOpacity: 0.14 * opacity });
     };
     model.board.forEach(part => addSolid(part, -model.thickness / 2, model.thickness, 0x16764f, 1, 0xbcc28a));
     model.bodies.forEach((body, index) => addSolid(body, body.z, body.height, body.color, body.opacity,
@@ -109,6 +132,39 @@ export class Board3D {
     } else this.fit();
     this.updateBodies(bodies);
     this.loadSteps(model, this.generation);
+    this.loadSurfaces(sourceSVG, model, this.generation);
+  }
+
+  async loadSurfaces(source, model, generation) {
+    try {
+      const surfaces = await boardSurfaces(source, model, Math.min(2048, this.renderer.capabilities.maxTextureSize));
+      if (generation !== this.generation) return;
+      for (const surface of surfaces) {
+        const map = new THREE.CanvasTexture(surface.color); map.colorSpace = THREE.SRGBColorSpace;
+        const physical = new THREE.CanvasTexture(surface.physical);
+        for (const texture of [map, physical]) texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+        const material = new THREE.MeshPhysicalMaterial({ map, roughnessMap: physical, metalnessMap: physical,
+          roughness: 1, metalness: 1, clearcoat: 0.22, clearcoatRoughness: 0.35, side: THREE.DoubleSide });
+        const [x0, y0, x1, y1] = surface.bounds;
+        for (const part of model.board) {
+          const shape = new THREE.Shape(part.outline.map(point => new THREE.Vector2(...point)));
+          shape.holes = (part.holes || []).map(points => new THREE.Path(points.map(point => new THREE.Vector2(...point))));
+          const geometry = new THREE.ShapeGeometry(shape), positions = geometry.attributes.position;
+          const uv = new Float32Array(positions.count * 2);
+          for (let i = 0; i < positions.count; i++) {
+            uv[i * 2] = (positions.getX(i) - x0) / (x1 - x0); uv[i * 2 + 1] = (positions.getY(i) - y0) / (y1 - y0);
+          }
+          geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+          const mesh = new THREE.Mesh(geometry, material);
+          mesh.name = `PCB ${surface.side} finish`; mesh.userData.boardSurface = surface.side;
+          mesh.position.z = (surface.side === 'top' ? 1 : -1) * (model.thickness / 2 + 0.005);
+          mesh.receiveShadow = true; this.scene.add(mesh);
+        }
+      }
+      this.render();
+    } catch (error) {
+      if (generation === this.generation) this.onModels?.({ surfaceError: 'Board finish unavailable: ' + error.message });
+    }
   }
 
   async loadSteps(model, generation) {
@@ -138,6 +194,7 @@ export class Board3D {
       await new Promise(resolve => setTimeout(resolve, 0));
       if (generation !== this.generation) return;
     }
+    this.renderer.shadowMap.needsUpdate = true; this.render();
   }
 
   addStepBodies(bodies, parts) {
@@ -158,21 +215,23 @@ export class Board3D {
       if (part.normal) geometry.setAttribute('normal', new THREE.BufferAttribute(part.normal, 3));
       else geometry.computeVertexNormals();
       if (part.color) geometry.setAttribute('color', new THREE.BufferAttribute(part.color, 3));
+      stepFinish(geometry, part, bodies[0].color);
       geometry.computeBoundingBox(); geometry.computeBoundingSphere();
       return geometry;
     });
     for (const body of bodies) for (const [index, geometry] of geometries.entries()) {
-      const material = new THREE.MeshStandardMaterial({ color: parts[index].color ? 0xffffff : body.color,
-        vertexColors: Boolean(parts[index].color), roughness: 0.65, metalness: 0.12,
+      const material = stepMaterial({ color: parts[index].color ? 0xffffff : body.color,
+        vertexColors: Boolean(parts[index].color),
         opacity: body.opacity, transparent: body.opacity < 1, side: THREE.DoubleSide });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.name = body.name; mesh.userData.bodyId = body.id; mesh.userData.step = true;
       mesh.matrixAutoUpdate = false; mesh.matrix.fromArray(body.matrix);
+      mesh.castShadow = true; mesh.receiveShadow = true;
       this.scene.add(mesh);
       if (body.opacity > 0) this.pickMeshes.push(mesh);
       this.bodyMeshes.push({ id: body.id, mesh });
     }
-    this.updateBodies(this.bodyState);
+    this.shadowDirty = true; this.updateBodies(this.bodyState);
   }
 
   updateBounds() {
@@ -185,6 +244,14 @@ export class Board3D {
     this.controls.minDistance = this.radius * 0.01;
     this.controls.maxDistance = this.radius * 100;
     this.camera.updateProjectionMatrix();
+    for (const [index, light] of (this.studioLights || []).entries()) {
+      const r = this.radius, side = index ? -1 : 1;
+      light.position.copy(this.center).add(new THREE.Vector3(-r * side, -r * 1.2, r * 2.5 * side));
+      light.target.position.copy(this.center);
+      const camera = light.shadow.camera;
+      camera.left = camera.bottom = -r * 1.1; camera.right = camera.top = r * 1.1;
+      camera.near = Math.max(0.01, r / 100); camera.far = r * 6; camera.updateProjectionMatrix();
+    }
   }
 
   updateBodies(state) {
@@ -200,6 +267,9 @@ export class Board3D {
       }
     }
     this.updateBounds();
+    const key = [...(state?.deleted || [])].sort().join(',');
+    if (this.shadowDirty || key !== this.shadowKey) this.renderer.shadowMap.needsUpdate = true;
+    this.shadowDirty = false; this.shadowKey = key;
     this.render();
   }
 

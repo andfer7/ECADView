@@ -114,6 +114,11 @@ the bundled OpenCascade WASM in a worker, check lazy loading and reuse, actual
 STEP picking and deletion/undo, missing external model uploads, invalid-model
 fallback and cancellation when leaving 3D. The runtime is served locally with
 the correct WebAssembly MIME type and is included in the Python package.
+Realistic board-finish tests check source-to-3D alignment, both sides' copper,
+mask apertures and silkscreen, exclusion of internal copper and measurement
+overlays, and independence from 2D visibility/highlighting. Browser coverage
+also renders mapped materials and studio shadow maps through WebGL and checks
+texture/shadow cleanup across repeated 3D mounts.
 
 
 Run `npm run test:gpu` for real Chrome/Chromium WebGL 2 compilation and pixel

@@ -339,12 +339,13 @@ import { trackViewerSession } from './viewer-session.js';
       if (request !== threeMount || board !== activeBoard || !is3D()) return;
       threeViewer ||= new Board3D($('three-view'), message => {
         $('three-status').hidden = false; $('three-status').textContent = message;
-      }, pickBody, ({ loaded, total, failed }) => {
+      }, pickBody, ({ loaded, total, failed, surfaceError }) => {
         if (threeBoard && threeBoard !== activeBoard) return;
+        if (surfaceError) { $('three-status').hidden = false; $('three-status').textContent += '\n' + surfaceError; return; }
         $('step-status').textContent = total ? `STEP models: ${loaded}/${total} loaded` +
           (failed.length ? ` · ${failed.length} unavailable; using body outlines where available.\n${failed.join('\n')}` : '') : '';
       });
-      threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board));
+      threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board), board.svg);
       threeBoard = board;
       updateBodyControls();
     } catch (error) {

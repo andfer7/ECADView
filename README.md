@@ -116,6 +116,13 @@ their colors, rotations, offsets and board side; repeated models share geometry.
 Conversion runs in a browser worker using bundled OpenCascade WebAssembly, so
 2D loading never waits for tessellation and the viewer stays usable while models
 appear. The sidebar reports loading progress and any unavailable models.
+The 3D finish includes outer copper relief, exposed pads and silkscreen taken
+from the PCB layers on both sides, with a satin solder mask and an FR4-colored
+board edge. These details stay aligned regardless of 2D selections or hidden
+layers. Studio reflections, softer shadows and tone mapping give components
+more depth. STEP colors are preserved; plastic/metal roughness is inferred from
+color because STEP assets do not provide measured material finishes. Shadows
+are reused during navigation and refreshed when geometry or deletions change.
 Drag to rotate,
 right-drag or Shift-drag to pan, and scroll or pinch to zoom. Top, Bottom,
 Isometric and Fit reset the camera; each tab remembers its camera and mode.
@@ -132,8 +139,9 @@ Use **Add STEP models…** to supply missing `.step`/`.stp` references by filena
 STEP assets are limited to 32 MB (64 MB after decompression), 250,000 triangles
 per model and a 45-second conversion deadline; converted CPU data uses a bounded
 64 MB cache. Leaving 3D cancels outstanding conversion and releases GPU geometry.
-Copper, silkscreen, blind/buried via bores and
-rigid-flex folding are not represented. Applicable approximations appear in
+Outer copper and printing are rasterized into maps up to 2048 pixels per side;
+these are visual finishes rather than additional editable solids. Blind/buried
+via bores and rigid-flex folding are not represented. Applicable approximations appear in
 the sidebar.
 
 ## Packaged browser launcher

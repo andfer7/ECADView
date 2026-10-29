@@ -342,7 +342,8 @@ class PcbRenderer:
         return {"svg": svg, "kind": "pcb", "warnings": sorted(self.warnings), "stats": self.stats,
                 "copper_layer_order": copper_order,
                 "polygon_elements": self.polygon_ids, "layout_components": self.layout_components,
-                "scene3d": {"board": shapes, "thickness": thickness, "bodies": bodies, "step_models": assets, "notes": notes, "units": "mm"}}
+                "scene3d": {"board": shapes, "thickness": thickness, "bodies": bodies, "step_models": assets, "notes": notes, "units": "mm",
+                            **({"surface_origin": [center.x, center.y]} if not profile.is_empty else {})}}
 
 
 def render_pcb(path, side="all", clip=False, pour_color=None, polygon_outlines=False):

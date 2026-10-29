@@ -150,6 +150,7 @@ class IndexedPcbSvgRenderer(PcbSvgRenderer):
 
     def _build_context(self, pcbdoc, project_parameters=None):
         ctx = super()._build_context(pcbdoc, project_parameters)
+        self.context = ctx
         # The context is immutable during a render. Return fresh lists so an
         # upstream emitter can safely append its own per-element attributes.
         for name in (

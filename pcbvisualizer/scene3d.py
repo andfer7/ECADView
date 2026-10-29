@@ -158,5 +158,6 @@ def build_scene(pcb):
         notes.append(f"{missing} component(s) have no usable body geometry and are omitted.")
     used = {body["model"] for body in bodies if body.get("model")}
     return {"board": solid_shapes(profile, origin), "thickness": thickness, "bodies": bodies,
+            "origin": list(origin),
             "step_models": {key: assets[key] for key in used},
             "notes": notes, "units": "mm"}

@@ -2513,6 +2513,81 @@ const image3D = async page => {
   return page.locator('#three-view canvas').screenshot();
 };
 
+test('3D board finishes use actual outer copper, mask and silkscreen on both sides independently of selection and hidden layers', async t => {
+  const { page } = await openPage(t);
+  const result = await page.evaluate(async () => {
+    const { boardSurfaces } = await import('/static/board-surface.js');
+    const source = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">
+      <defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="2" height="2"><rect width="1" height="2" fill="white"/></pattern></defs><g id="scene">
+      <g data-layer-token="TOP" style="display:none;opacity:0.1"><rect x="12" y="12" width="6" height="6" fill="red"/>
+        <rect x="20" y="18" width="8" height="4" fill="url(#hatch)"/></g>
+      <g data-layer-token="TOPSOLDER"><rect x="13" y="13" width="4" height="4" fill="red"/><rect x="19" y="24" width="2" height="2"/></g>
+      <g data-layer-token="TOPOVERLAY" class="component-match"><rect x="24" y="12" width="4" height="3" fill="yellow"/></g>
+      <g data-layer-token="BOTTOM"><rect x="24" y="24" width="4" height="4"/></g>
+      <g data-layer-token="BOTTOMSOLDER"><rect x="24" y="24" width="4" height="4"/></g>
+      <g data-layer-token="MID1"><rect x="10" y="10" width="20" height="20"/></g>
+      <g id="measurement"><rect x="10" y="10" width="20" height="20"/></g>
+    </g></svg>`, 'image/svg+xml').documentElement;
+    const before = source.outerHTML;
+    const finishes = await boardSurfaces(source, { surface_origin: [20, 20],
+      board: [{ outline: [[-10,-10],[10,-10],[10,10],[-10,10]] }] }, 200);
+    const pixel = (canvas, x, y) => [...canvas.getContext('2d').getImageData((x-10)*10, (y-10)*10, 1, 1).data];
+    return { unchanged: before === source.outerHTML, topPad: pixel(finishes[0].color, 15, 15),
+      bottomPad: pixel(finishes[1].color, 25, 25), silk: pixel(finishes[0].color, 25, 13),
+      hiddenCopper: pixel(finishes[0].color, 12.5, 12.5), noCopper: pixel(finishes[0].color, 20, 25),
+      otherSide: pixel(finishes[1].color, 15, 15), metal: pixel(finishes[0].physical, 15, 15),
+      mask: pixel(finishes[0].physical, 20, 25), hatchCopper: pixel(finishes[0].color, 20.5, 19),
+      hatchGap: pixel(finishes[0].color, 21.5, 19) };
+  });
+  assert.equal(result.unchanged, true);
+  assert.deepEqual(result.topPad, [184,170,126,255]);
+  assert.deepEqual(result.bottomPad, [184,170,126,255]);
+  assert.deepEqual(result.silk, [238,234,222,255]);
+  assert.deepEqual(result.hiddenCopper, [16,76,48,255]);
+  assert.deepEqual(result.noCopper, [14,69,44,255], 'mask openings with no copper must not become metallic');
+  assert.deepEqual(result.otherSide, [14,69,44,255], 'top copper must not leak onto the bottom');
+  assert.deepEqual(result.metal, [0,72,235,255]);
+  assert.deepEqual(result.mask, [0,145,0,255]);
+  assert.deepEqual(result.hatchCopper, [16,76,48,255]);
+  assert.deepEqual(result.hatchGap, [14,69,44,255], 'hatched copper paint servers retain their physical gaps');
+});
+
+test('3D studio shadows and mapped finishes render through WebGL and release their resources', async t => {
+  const { page } = await openPage(t);
+  const shaderErrors = [];
+  page.on('console', message => { if (message.type() === 'error' && /THREE|shader|WebGL/i.test(message.text())) shaderErrors.push(message.text()); });
+  const result = await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js');
+    const host = document.createElement('div'); Object.assign(host.style, { width: '400px', height: '300px' });
+    document.body.append(host);
+    const source = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg"><g id="scene">
+      <g data-layer-token="TOP"><rect x="1" y="1" width="4" height="4"/></g>
+      <g data-layer-token="TOPSOLDER"><rect x="1" y="1" width="4" height="4"/></g>
+    </g></svg>`, 'image/svg+xml').documentElement;
+    const model = { board: [{ outline: [[-10,-10],[10,-10],[10,10],[-10,10]], holes: [] }],
+      thickness: 1.6, bodies: [], surface_origin: [10,10] };
+    const viewer = new Board3D(host, () => {});
+    viewer.show(model, null, null, source);
+    const deadline = performance.now() + 5000;
+    while (!viewer.scene.children.some(child => child.userData.boardSurface) && performance.now() < deadline)
+      await new Promise(resolve => setTimeout(resolve, 20));
+    const surfaces = viewer.scene.children.filter(child => child.userData.boardSurface);
+    const maps = surfaces.map(surface => [surface.material.map.image.width, surface.material.roughnessMap === surface.material.metalnessMap]);
+    const lit = viewer.studioLights.every(light => light.shadow.map && light.castShadow);
+    viewer.clear();
+    const texturesAfterClear = viewer.renderer.info.memory.textures;
+    viewer.show(model, null, null, source);
+    await new Promise(resolve => setTimeout(resolve, 100)); viewer.clear();
+    const stableResources = viewer.renderer.info.memory.textures === texturesAfterClear;
+    viewer.observer.disconnect(); viewer.environment.dispose(); viewer.renderer.dispose(); host.remove();
+    return { surfaces: surfaces.length, maps, lit, stableResources };
+  });
+  assert.equal(result.surfaces, 2); assert.equal(result.lit, true);
+  assert.ok(result.maps.every(([size, shared]) => size === 2048 && shared));
+  assert.equal(result.stableResources, true, 'repeated 3D mounts must release surface maps and shadow targets');
+  assert.deepEqual(shaderErrors, []);
+});
+
 test('embedded STEP bodies load lazily through local WASM, share assets, and retain picking and delete/undo', async t => {
   const source = execFileSync(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'), ['-B', '-c', `
 import sys, tempfile

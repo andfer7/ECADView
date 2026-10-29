@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 from altium_monkey import AltiumPcbDoc
@@ -26,6 +27,21 @@ def area(scene):
 
 
 class Scene3DTests(unittest.TestCase):
+    def test_surface_origin_aligns_svg_pads_with_the_3d_board(self):
+        pcb = board()
+        pcb.add_pad(designator='1', position_mils=(1000, 500), width_mils=60, height_mils=60)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'surface.PcbDoc'; pcb.save(path)
+            original = path.read_bytes()
+            data = render_file(path, native=True)
+            self.assertEqual(path.read_bytes(), original)
+        root = ET.fromstring(data['svg'])
+        pad = next(element for element in root.iter() if element.get('data-primitive') == 'pad')
+        x, y = data['scene3d']['surface_origin']
+        self.assertAlmostEqual(float(pad.get('x')) + float(pad.get('width')) / 2, x, places=3)
+        self.assertAlmostEqual(float(pad.get('y')) + float(pad.get('height')) / 2, y, places=3)
+        self.assertEqual(data['scene3d']['origin'], [1000 * MIL_MM, 500 * MIL_MM])
+
     def test_round_trip_retains_cutouts_dimensions_body_heights_and_source_file(self):
         pcb = board()
         pcb.add_region(outline_points_mils=[(900, 400), (1100, 400), (1100, 600), (900, 600)],

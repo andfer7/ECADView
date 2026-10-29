@@ -78,6 +78,8 @@ class ServerTests(unittest.TestCase):
             ("/static/viewer.js", "viewer.js", "text/javascript"),
             ("/static/net-labels.js", "net-labels.js", "text/javascript"),
             ("/static/viewer-3d.js", "viewer-3d.js", "text/javascript"),
+            ("/static/board-surface.js", "board-surface.js", "text/javascript"),
+            ("/static/studio-3d.js", "studio-3d.js", "text/javascript"),
             ("/static/step-loader.js", "step-loader.js", "text/javascript"),
             ("/static/step-worker.js", "step-worker.js", "text/javascript"),
             ("/static/occt-import-js.js", "occt-import-js.js", "text/javascript"),
