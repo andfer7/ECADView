@@ -177,6 +177,11 @@ green contours and net highlights with faded context and retain searchable
 component/net controls. The layer list follows the physical copper stack, and
 clicking a layer name raises it without toggling visibility.
 
+In 2D, left-drag draws a dashed rectangle and selects the nets and symbols/components
+whose graphics overlap it. Shift-drag adds to the current selection. Pan with
+middle-drag, Space-drag or two-finger scrolling. In measurement mode left-drag
+continues to pan. Escape cancels a rectangle and clears the selection.
+
 Multiple startup files, file drops throughout the app, draggable tabs,
 Alt+Shift+Left/Right tab reordering, Shift-click PCB selections, F to fit,
 `+` / `-` to zoom and Cmd/Ctrl+O to open files are supported. See the

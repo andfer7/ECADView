@@ -527,8 +527,8 @@ test('mixes PCB and schematic tabs while preserving the view and PCB measurement
   assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
   await page.locator('#view').dispatchEvent('wheel', { ctrlKey: true, deltaY: -250, clientX: 600, clientY: 400 });
   await settleView(page);
-  await page.mouse.move(600, 400); await page.mouse.down();
-  await page.mouse.move(630, 420); await page.mouse.up();
+  await page.mouse.move(600, 400); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(630, 420); await page.mouse.up({ button: 'middle' });
   const zoom = await page.locator('#view > svg').getAttribute('viewBox');
   assert.notEqual(zoom, '0 0 1700 1100');
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
@@ -651,8 +651,8 @@ test('schematic selections survive tabs and pans; Escape clears only the active 
   await clickSchematicGraphic(page, symbolBodies(page).first());
   await clickSchematicGraphic(page, page.locator('#wire-1 .sch-hit'), true);
   const selection = await schematicStatus(page);
-  await page.mouse.move(600, 400); await page.mouse.down();
-  await page.mouse.move(640, 420); await page.mouse.up();
+  await page.mouse.move(600, 400); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(640, 420); await page.mouse.up({ button: 'middle' });
   assert.equal(await schematicStatus(page), selection);
   await page.locator('#file').setInputFiles(file('B.SchDoc')); await loaded(page, 'B.SchDoc');
   assert.equal(await schematicStatus(page), 'Nothing selected.');
@@ -1032,8 +1032,9 @@ test('drag panning follows screen distance through letterboxing and supports the
     { ...boardData(name), svg: boardData(name).svg.replace('viewBox="0 0 100 80"', 'viewBox="0 0 20 100"') }) });
   await page.locator('#file').setInputFiles(file('Tall.PcbDoc')); await loaded(page, 'Tall.PcbDoc');
   const point = await pointOnScreen(page, 10, 50);
+  await page.keyboard.down('Space');
   await page.mouse.move(point.clientX, point.clientY); await page.mouse.down();
-  await page.mouse.move(point.clientX + 40, point.clientY + 30); await page.mouse.up(); await settleView(page);
+  await page.mouse.move(point.clientX + 40, point.clientY + 30); await page.mouse.up(); await page.keyboard.up('Space'); await settleView(page);
   const moved = await pointOnScreen(page, 10, 50);
   near(moved.clientX - point.clientX, 40, 'drag X distance'); near(moved.clientY - point.clientY, 30, 'drag Y distance');
   await page.locator('#measure-btn').click();
@@ -1142,8 +1143,8 @@ test('preserves each board’s layers, zoom, pan, measurements, and units', asyn
   await page.locator('#layers input').first().uncheck();
   await page.locator('#view').dispatchEvent('wheel', { ctrlKey: true, deltaY: -250, clientX: 600, clientY: 400 });
   await settleView(page);
-  await page.mouse.move(600, 400); await page.mouse.down();
-  await page.mouse.move(630, 420); await page.mouse.up();
+  await page.mouse.move(600, 400); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(630, 420); await page.mouse.up({ button: 'middle' });
   const viewBox = await page.locator('#view > svg').getAttribute('viewBox');
   await page.locator('[data-unit="mil"]').click();
   await page.locator('#measure-btn').click();
@@ -1955,14 +1956,14 @@ test('panning and measurements do not change the selected net, and later clicks 
   const track = await page.locator('[data-primitive="track"]').boundingBox();
   const x = track.x + track.width / 2, y = track.y + track.height / 2;
   const before = await page.locator('#view > svg').getAttribute('viewBox');
-  await page.mouse.move(x, y); await page.mouse.down();
-  await page.mouse.move(x + 30, y + 20); await page.mouse.up();
+  await page.mouse.move(x, y); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(x + 30, y + 20); await page.mouse.up({ button: 'middle' });
   assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), before);
   assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'finishing a drag over copper does not select it');
   const via = await page.locator('[data-primitive="via"]').boundingBox();
   const vx = via.x + via.width / 2, vy = via.y + via.height / 2;
-  await page.mouse.move(vx, vy); await page.mouse.down();
-  await page.mouse.move(vx + 30, vy); await page.mouse.move(vx, vy); await page.mouse.up();
+  await page.mouse.move(vx, vy); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(vx + 30, vy); await page.mouse.move(vx, vy); await page.mouse.up({ button: 'middle' });
   assert.equal(await page.locator('#net-query').inputValue(), 'VCC', 'a drag returning to its start remains a pan');
   await page.locator('[data-primitive="via"]').click();
   assert.equal(await page.locator('#net-query').inputValue(), 'GND');
@@ -2076,8 +2077,8 @@ test('repeated layout component clicks toggle selection, highlighting and dimmin
   }
   await body.click();
   const b = await body.boundingBox(), x = b.x + b.width / 2, y = b.y + b.height / 2;
-  await page.mouse.move(x, y); await page.mouse.down();
-  await page.mouse.move(x + 30, y + 10); await page.mouse.move(x, y); await page.mouse.up();
+  await page.mouse.move(x, y); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(x + 30, y + 10); await page.mouse.move(x, y); await page.mouse.up({ button: 'middle' });
   assert.equal(await page.locator('#component-query').inputValue(), 'C2');
   await page.locator('#measure-btn').click();
   await body.click(); await page.locator('[data-primitive="component-pad"]').click();
@@ -2130,8 +2131,8 @@ test('component selection ignores pans and measurement clicks and remains local 
   await page.locator('[data-primitive="component-pad"]').click();
   const body = await page.locator('[data-primitive="component-body"]').boundingBox();
   const x = body.x + body.width / 2, y = body.y + body.height / 2;
-  await page.mouse.move(x, y); await page.mouse.down();
-  await page.mouse.move(x + 30, y + 20); await page.mouse.up();
+  await page.mouse.move(x, y); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(x + 30, y + 20); await page.mouse.up({ button: 'middle' });
   assert.equal(await page.locator('#component-query').inputValue(), 'R1');
   await page.locator('#measure-btn').click();
   await page.locator('[data-primitive="component-body"]').click();
@@ -2848,4 +2849,119 @@ test('opens the reported co60 legacy files through the real server', {
   assert.match(await page.locator('#component-status').textContent(), /1 component highlighted/);
   await page.locator('#mode-3d').click(); await wait3D(page);
   if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-3d.png') });
+});
+
+async function rectangleDrag(page, a, b, { shift = false, release = true } = {}) {
+  const start = await pointOnScreen(page, ...a), end = await pointOnScreen(page, ...b);
+  if (shift) await page.keyboard.down('Shift');
+  await page.mouse.move(start.clientX, start.clientY); await page.mouse.down();
+  await page.mouse.move(end.clientX, end.clientY, { steps: 5 });
+  if (release) await page.mouse.up();
+  if (shift) await page.keyboard.up('Shift');
+}
+
+test('rectangle selects multiple schematic symbols and nets in either direction with dashed live feedback', async t => {
+  const { page } = await openSelectableSchematic(t);
+  const camera = await currentViewBox(page);
+  for (const [a, b] of [[[8, 7], [83, 25]], [[83, 25], [8, 7]]]) {
+    await rectangleDrag(page, a, b, { release: false });
+    const rectangle = page.locator('#selection-rectangle');
+    assert.equal(await rectangle.isVisible(), true);
+    assert.equal(await rectangle.evaluate(el => getComputedStyle(el).borderTopStyle), 'dashed');
+    assert.deepEqual(await currentViewBox(page), camera, 'selecting does not move the camera');
+    await page.mouse.up();
+    assert.equal(await rectangle.isHidden(), true);
+    assert.equal(await schematicStatus(page), 'Components: R1, U[2]"<test>\nNets: GND, VCC');
+    assert.equal(await page.locator('.sch-component-match').count(), 2);
+    assert.equal(await page.locator('.sch-net-match').count(), 7);
+    assert.equal(await page.locator('#body-1').evaluate(el => getComputedStyle(el).stroke), 'rgb(0, 138, 59)');
+    assert.equal(await page.locator('#body-1').evaluate(el => getComputedStyle(el).fill), 'rgb(255, 255, 176)');
+  }
+  // A net's aggregate bounds enclose this empty gap; its individual wires do not.
+  await rectangleDrag(page, [35, 23], [48, 26]);
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  await rectangleDrag(page, [12, 12], [20, 19]);
+  assert.equal(await schematicStatus(page), 'Components: R1');
+  await rectangleDrag(page, [33, 60], [48, 62], { shift: true });
+  assert.equal(await schematicStatus(page), 'Components: R1\nNets: VCC');
+  await rectangleDrag(page, [35, 23], [48, 26], { shift: true });
+  assert.equal(await schematicStatus(page), 'Components: R1\nNets: VCC', 'empty additive rectangle preserves the selection');
+  await page.locator('#file').setInputFiles(file('B.SchDoc')); await loaded(page, 'B.SchDoc');
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  await page.getByRole('tab', { name: 'A.SchDoc', exact: true }).click();
+  assert.equal(await schematicStatus(page), 'Components: R1\nNets: VCC');
+  await page.keyboard.press('Escape'); assert.equal(await schematicStatus(page), 'Nothing selected.');
+});
+
+test('SVG rectangle selection respects hidden layers and polygons and keeps exact mixed selections across tabs', async t => {
+  const data = probingLayoutData('Rectangle.PcbDoc');
+  data.polygon_elements = ['area'];
+  data.svg = data.svg.replace('<rect id="pcb-other"', '<rect id="area" data-net="POUR" x="90" y="60" width="5" height="5" fill="red"/><rect id="pcb-other"');
+  const { page } = await openPage(t, { initial: data, render: (route, name) => reply(route, probingLayoutData(name)) });
+  await loaded(page, 'Rectangle.PcbDoc');
+  await rectangleDrag(page, [8, 8], [85, 65]);
+  assert.equal(await page.locator('#component-query').inputValue(), 'R99, R10');
+  assert.equal(await page.locator('#net-query').inputValue(), 'PCB_SIGNAL, GND');
+  await page.locator('#layers label').filter({ hasText: 'Mechanical 1' }).locator('input').check();
+  await rectangleDrag(page, [50, 29], [62, 39], { shift: true });
+  assert.equal(await page.locator('#component-query').inputValue(), 'R99, R10, U7');
+  assert.equal(await page.locator('#net-query').inputValue(), 'PCB_SIGNAL, GND, VCC');
+  await page.locator('#file').setInputFiles(file('Other.PcbDoc')); await loaded(page, 'Other.PcbDoc');
+  await page.getByRole('tab', { name: 'Rectangle.PcbDoc', exact: true }).click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R99, R10, U7');
+  assert.equal(await page.locator('#net-query').inputValue(), 'PCB_SIGNAL, GND, VCC');
+  await rectangleDrag(page, [91, 60], [98, 69]);
+  assert.equal(await page.locator('#net-query').inputValue(), 'POUR');
+  await page.locator('#polygons-toggle').click();
+  await rectangleDrag(page, [91, 60], [98, 69]);
+  assert.equal(await page.locator('#net-query').inputValue(), '', 'hidden polygons are not selected');
+  // Exclude a diagonal wire whose bounds overlap the box but whose line does not.
+  await page.locator('#layer-top').evaluate(layer => {
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    for (const [name, value] of Object.entries({ 'data-net': 'DIAGONAL', x1: 30, y1: 10, x2: 60, y2: 40, stroke: 'red' })) line.setAttribute(name, value);
+    layer.append(line);
+  });
+  // Remount to index the added fixture wire.
+  await page.getByRole('tab', { name: 'Other.PcbDoc', exact: true }).click();
+  await page.getByRole('tab', { name: 'Rectangle.PcbDoc', exact: true }).click();
+  await rectangleDrag(page, [31, 34], [36, 39]);
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  await rectangleDrag(page, [44, 22], [48, 28]);
+  assert.equal(await page.locator('#net-query').inputValue(), 'DIAGONAL');
+});
+
+test('rectangle cancellation, click threshold, outside release and Space panning do not leak selections', async t => {
+  const { page } = await openSelectableSchematic(t);
+  await clickSchematicGraphic(page, symbolBodies(page).first());
+  const body = await pointOnScreen(page, 16, 16);
+  await page.mouse.move(body.clientX, body.clientY); await page.mouse.down();
+  await page.mouse.move(body.clientX + 1, body.clientY + 1); await page.mouse.up();
+  assert.equal(await schematicStatus(page), 'Nothing selected.', 'tiny motion still clicks and toggles the symbol');
+  await rectangleDrag(page, [8, 7], [83, 25], { release: false });
+  await page.keyboard.press('Escape'); await page.mouse.up();
+  assert.equal(await page.locator('#selection-rectangle').isHidden(), true);
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  await rectangleDrag(page, [8, 7], [83, 25], { release: false });
+  await page.evaluate(() => window.dispatchEvent(new Event('blur'))); await page.mouse.up();
+  assert.equal(await page.locator('#selection-rectangle').isHidden(), true);
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  await rectangleDrag(page, [8, 7], [83, 25], { release: false });
+  await page.locator('#file').setInputFiles(file('B.SchDoc')); await loaded(page, 'B.SchDoc'); await page.mouse.up();
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  assert.equal(await page.locator('#selection-rectangle').isHidden(), true);
+  const camera = await currentViewBox(page);
+  await page.keyboard.down('Space'); await rectangleDrag(page, [8, 7], [83, 25]); await page.keyboard.up('Space');
+  assert.notDeepEqual(await currentViewBox(page), camera);
+  assert.equal(await schematicStatus(page), 'Nothing selected.');
+  await page.keyboard.press('f');
+  await rectangleDrag(page, [83, 25], [8, 7], { release: false });
+  await page.mouse.move(200, 0); await page.mouse.up();
+  assert.equal(await page.locator('#selection-rectangle').isHidden(), true);
+  assert.match(await schematicStatus(page), /Components: R1/);
+  await page.locator('#schematic-clear').focus(); await page.keyboard.press('Space');
+  assert.equal(await schematicStatus(page), 'Nothing selected.', 'Space still activates sidebar buttons');
+  await rectangleDrag(page, [83, 25], [8, 7], { release: false });
+  await page.keyboard.press('+'); await page.mouse.up();
+  assert.equal(await page.locator('#selection-rectangle').isHidden(), true);
+  assert.equal(await schematicStatus(page), 'Nothing selected.', 'zoom cancels an in-progress rectangle');
 });

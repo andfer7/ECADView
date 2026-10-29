@@ -54,8 +54,12 @@
   .tab button:hover { background: #474c56; }
   .tab-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 12px; }
   .tab-close { margin-right: 4px; }
-  #view { flex: 1; min-height: 0; overflow: hidden; cursor: grab; position: relative; }
-  #view:active { cursor: grabbing; }
+  #view { flex: 1; min-height: 0; overflow: hidden; cursor: default; position: relative; }
+  #view.pan-ready { cursor: grab; }
+  #view.panning { cursor: grabbing; }
+  #view.selecting { cursor: crosshair; }
+  #selection-rectangle { position: absolute; z-index: 3; pointer-events: none; box-sizing: border-box;
+    border: 2px dashed #008a3b; background: #008a3b18; }
   #view.measuring, #view.measuring:active { cursor: crosshair; }
   #view.drop { outline: 3px dashed var(--accent); outline-offset: -3px; }
   #view svg { width: 100%; height: 100%; display: block; user-select: none; }

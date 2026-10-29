@@ -22,6 +22,7 @@ STATIC_ROUTES = {
     "/static/layout-shaders.js": ("layout-shaders.js", "text/javascript; charset=utf-8"),
     "/static/schematic-style.js": ("schematic-style.js", "text/javascript; charset=utf-8"),
     "/static/measurement-tools.js": ("measurement-tools.js", "text/javascript; charset=utf-8"),
+    "/static/rectangle-selection.js": ("rectangle-selection.js", "text/javascript; charset=utf-8"),
     "/static/three.module.min.js": ("three.module.min.js", "text/javascript; charset=utf-8"),
     "/static/three.core.min.js": ("three.core.min.js", "text/javascript; charset=utf-8"),
     "/static/OrbitControls.js": ("OrbitControls.js", "text/javascript; charset=utf-8"),

@@ -231,3 +231,36 @@ test('closing a tab during preparation cannot mount stale GPU geometry', async t
   await page.locator('#file').setInputFiles({ name: 'Next.PcbDoc', mimeType: 'application/octet-stream', buffer: Buffer.from('test') });
   await ready(page);
 });
+
+test('rectangle selects mixed GPU objects and additive nets without rebuilding retained geometry, including SVG fallback', async t => {
+  const page = await pageFor(t); await ready(page);
+  const start = await dataset(page);
+  const drag = async (a, b, shift = false) => {
+    const p = await point(page, ...a), q = await point(page, ...b);
+    if (shift) await page.keyboard.down('Shift');
+    await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(q.x, q.y, { steps: 5 });
+    assert.equal(await page.locator('#selection-rectangle').isVisible(), true);
+    await page.mouse.up(); if (shift) await page.keyboard.up('Shift');
+  };
+  await drag([50, 12], [65, 25]);
+  assert.equal(await page.locator('#component-query').inputValue(), 'U1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  near((await colors(page, [[54, 15]]))[0], [255, 224, 102]);
+  await drag([44, 32], [50, 42], true);
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND, OTHER');
+  assert.equal((await dataset(page)).geometryUploads, start.geometryUploads);
+  assert.equal(await page.locator('#scene #net-highlight, #scene #component-highlight').count(), 0);
+  near((await colors(page, [[47, 38]]))[0], [104, 224, 255]);
+  // Disabled layers cannot be selected by a rectangle even though their
+  // retained geometry and DOM metadata still exist.
+  await page.locator('#layers label').filter({ hasText: 'Bottom copper' }).locator('input').uncheck();
+  await drag([44, 32], [50, 42]);
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  await page.locator('.layout-webgl').evaluate(canvas => canvas.getContext('webgl2').getExtension('WEBGL_lose_context').loseContext());
+  await page.waitForFunction(() => !document.querySelector('#view').classList.contains('gpu-layout'));
+  await drag([65, 25], [50, 12]);
+  assert.equal(await page.locator('#component-query').inputValue(), 'U1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  assert.equal(await page.locator('#scene #component-highlight').count(), 1);
+  near((await colors(page, [[54, 15]]))[0], [255, 224, 102]);
+});
