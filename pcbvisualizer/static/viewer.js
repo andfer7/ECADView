@@ -471,14 +471,17 @@ import { trackViewerSession } from './viewer-session.js';
     }
   }
   function buildSchematicComponentTargets(board) {
-    // getBBox/CTM require the SVG to be mounted. Work in each component's local
-    // coordinates so rotated/mirrored symbol graphics keep their correct bounds.
+    // Keep the body's own coordinate frame: a screen-aligned bounding box would
+    // also capture empty corners around rotated/mirrored symbols.
     for (const row of board.schematicComponents.values()) for (const component of row.elements) {
       if (component.querySelector('.sch-component-hit')) continue;
+      const bodies = row.bodyElements.filter(graphic => component.contains(graphic));
+      if (!bodies.length) continue;
+      let frame = bodies[0];
+      while (frame !== component && (!frame.matches('g') || !bodies.every(graphic => frame.contains(graphic)))) frame = frame.parentElement;
       const points = [];
-      const inverse = component.getScreenCTM().inverse();
-      for (const graphic of row.bodyElements) {
-        if (!component.contains(graphic)) continue;
+      const inverse = frame.getScreenCTM().inverse();
+      for (const graphic of bodies) {
         const b = graphic.getBBox(), transform = inverse.multiply(graphic.getScreenCTM());
         if (!b.width && !b.height) continue;
         for (const [x, y] of [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]])
@@ -492,8 +495,8 @@ import { trackViewerSession } from './viewer-session.js';
       hit.setAttribute('width', Math.max(Math.max(...xs) - x, 1));
       hit.setAttribute('height', Math.max(Math.max(...ys) - y, 1));
       hit.setAttribute('class', 'sch-component-hit'); hit.setAttribute('aria-hidden', 'true');
-      // Above the symbol's own pin hit targets, within the symbol body only.
-      component.append(hit);
+      // Restrict the target to the body so external pins still select nets.
+      frame.append(hit);
     }
   }
   function updateSchematicSelection() {
@@ -532,7 +535,7 @@ import { trackViewerSession } from './viewer-session.js';
     updateSchematicSelection();
   }
   function selectSchematic(e) {
-    const net = e.target.closest('#scene [data-sch-nets]');
+    const net = e.target.matches('.sch-component-hit') ? null : e.target.closest('#scene [data-sch-nets]');
     const component = e.target.closest('#scene [data-sch-components]');
     activeBoard.probeMessage = ''; activeBoard.probeResult = null; updateProbeResult();
     // A pin selects its net; clicking the symbol body selects the component.
