@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 MAX_INPUT = 128 * 1024 * 1024
 MAX_OUTPUT = 160 * 1024 * 1024
@@ -60,7 +61,35 @@ def worker(input_path, output_path):
     del app
 
 
-def prepare_geometry(body):
+def _run_worker(command, stopping=None):
+    options = {"env": {**os.environ, "QT_QPA_PLATFORM": "offscreen"}}
+    if stopping is None:
+        return subprocess.run(command, capture_output=True, timeout=90, **options)
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options) as child:
+        deadline = time.monotonic() + 90
+        try:
+            while True:
+                if stopping.is_set():
+                    raise ValueError("Viewer closed; WebGL preparation cancelled")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, 90)
+                try:
+                    output, errors = child.communicate(timeout=min(.2, remaining))
+                    return subprocess.CompletedProcess(command, child.returncode, output, errors)
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                try:
+                    child.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.communicate()
+
+
+def prepare_geometry(body, stopping=None):
     if len(body) > MAX_INPUT:
         raise ValueError("Layout exceeds the WebGL preparation limit")
     if not _compiler.acquire(blocking=False):
@@ -72,10 +101,9 @@ def prepare_geometry(body):
             command = ([sys.executable] if getattr(sys, "frozen", False) else
                        [sys.executable, "-m", "pcbvisualizer.cli"])
             try:
-                result = subprocess.run(
+                result = _run_worker(
                     [*command, "--web-geometry-worker", str(source), str(target)],
-                    capture_output=True, timeout=90,
-                    env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                    stopping,
                 )
             except subprocess.TimeoutExpired:
                 raise ValueError("WebGL preparation timed out; using SVG") from None

@@ -3,8 +3,10 @@ import { LayoutWebGL } from './layout-webgl.js';
 import { styleSchematic } from './schematic-style.js';
 import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurement-tools.js';
 import { rectangleMatches } from './rectangle-selection.js';
+import { trackViewerSession } from './viewer-session.js';
 
 (function () {
+  const viewerSession = trackViewerSession();
   const $ = id => document.getElementById(id);
   const view = $('view'), layersEl = $('layers'), readout = $('readout'), label = $('measure-label');
   const NS = 'http://www.w3.org/2000/svg';
@@ -288,6 +290,7 @@ import { rectangleMatches } from './rectangle-selection.js';
     try {
       const response = await fetch('/shutdown', { method: 'POST', headers: { 'X-Viewer-Request': 'shutdown' } });
       if (!response.ok) throw new Error('Could not stop the viewer. Please try again.');
+      viewerSession.stop();
       for (const board of boards) { board.controller?.abort(); board.gpuController?.abort(); }
       netLabels.cancel(); clearTimeout(labelTimer); cancelViewUpdate(); cancelDrag(); unmount3D(); layoutGPU?.release();
       $('session-stopped').hidden = false;

@@ -43,10 +43,17 @@ pcbvisualizer --no-open --port 8000
 ```
 
 `--web` remains accepted for existing scripts, but is no longer needed.
-Open the printed local URL when using `--no-open`. **Quit viewer** in the browser
-stops the local backend; a terminal launch also accepts Ctrl+C. Closing a browser
-tab alone leaves the server running, so you can reopen its URL. Document tabs,
-measurements and preview edits are session state and are lost when the page closes.
+Open the printed local URL when using `--no-open`. Closing the last viewer
+browser tab or window automatically stops the local backend and exits the
+program after a **3-second reconnect grace period**. Refreshing the page or
+keeping another viewer page open keeps the backend running. Background tabs
+also stay connected; shutdown does not depend on JavaScript heartbeat timers.
+A server started with `--no-open` waits for its first viewer indefinitely.
+**Quit viewer** stops it immediately, and a terminal launch also accepts Ctrl+C.
+Active geometry compiler children are cancelled and reaped during shutdown.
+Document tabs, measurements and preview edits are session state and are lost
+when the page closes. After automatic shutdown, launch the program again to
+start a new session.
 
 ## Navigation, selection and measurements
 
@@ -131,7 +138,8 @@ On macOS, open `dist/PCBVisualizer.app`. On Windows/Linux, launch the executable
 under `dist/PCBVisualizer/` and keep its supporting files together. It starts
 the local backend and opens the same browser interface, with no Python or uv
 installation required on the receiving computer. A browser must be installed.
-Use **Quit viewer** to stop it when finished.
+Close the last viewer browser tab/window to stop it automatically, or use
+**Quit viewer** for immediate shutdown.
 
 Build on each target operating system. The macOS bundle uses a local ad-hoc
 signature; release signing/notarization is a separate distribution step. The
@@ -188,7 +196,8 @@ pcbvisualizer/
   rendering.py            Format dispatch and compact SVG/selection metadata
   geometry/               Offscreen document bounds, glyphs and GPU compilation
   web_geometry.py         Bounded isolated compiler and binary transport
-  server.py               Loopback HTTP endpoints, uploads and session shutdown
+  server.py               Loopback HTTP endpoints, uploads and viewer connections
+  session_lifetime.py     Last-viewer shutdown and reconnect grace
   kicad_*.py              KiCad geometry, connectivity and input support
   scene3d.py              Board/simple-body geometry in millimetres
   static/                 Browser interface, WebGL renderers and bundled assets

@@ -1,14 +1,17 @@
 """Local HTTP endpoints for the viewer and document uploads."""
 
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 import json
 from pathlib import Path
+import select
 import tempfile
 import threading
+import time
 import urllib.parse
 
 from .rendering import render_file
+from .session_lifetime import ViewerLifetime
 from .web_geometry import MAX_INPUT, prepare_geometry
 
 
@@ -24,11 +27,27 @@ STATIC_ROUTES = {
     "/static/schematic-style.js": ("schematic-style.js", "text/javascript; charset=utf-8"),
     "/static/measurement-tools.js": ("measurement-tools.js", "text/javascript; charset=utf-8"),
     "/static/rectangle-selection.js": ("rectangle-selection.js", "text/javascript; charset=utf-8"),
+    "/static/viewer-session.js": ("viewer-session.js", "text/javascript; charset=utf-8"),
     "/static/three.module.min.js": ("three.module.min.js", "text/javascript; charset=utf-8"),
     "/static/three.core.min.js": ("three.core.min.js", "text/javascript; charset=utf-8"),
     "/static/OrbitControls.js": ("OrbitControls.js", "text/javascript; charset=utf-8"),
     "/static/THREE-LICENSE.txt": ("THREE-LICENSE.txt", "text/plain; charset=utf-8"),
 }
+
+
+class ViewerServer(ThreadingHTTPServer):
+    def __init__(self, address, handler, *, grace=3.0):
+        super().__init__(address, handler)
+        self.viewer_lifetime = ViewerLifetime(self.shutdown, grace)
+
+    def shutdown(self):
+        self.viewer_lifetime.close()
+        super().shutdown()
+
+    def server_close(self):
+        if lifetime := getattr(self, "viewer_lifetime", None):
+            lifetime.close()
+        super().server_close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -49,7 +68,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         url = urllib.parse.urlparse(self.path)
-        if url.path in STATIC_ROUTES:
+        if url.path == "/session":
+            self._viewer_session()
+        elif url.path in STATIC_ROUTES:
             filename, content_type = STATIC_ROUTES[url.path]
             body = files("pcbvisualizer").joinpath("static", filename).read_bytes()
             self._send(200, body, content_type)
@@ -58,6 +79,46 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, data or {})
         else:
             self._send(404, b"not found", "text/plain")
+
+    def _viewer_session(self):
+        host = self.headers.get("Host")
+        port = self.server.server_address[1]
+        if (host not in {f"127.0.0.1:{port}", f"localhost:{port}"}
+                or self.headers.get("Origin", f"http://{host}") != f"http://{host}"
+                or self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin"
+                or self.headers.get("Accept") != "text/event-stream"):
+            self._json(403, {"error": "A session must connect from this viewer."})
+            return
+        lifetime = getattr(self.server, "viewer_lifetime", None)
+        connection = lifetime.connect() if lifetime else None
+        if connection is None:
+            self._send(204, b"", "text/event-stream")  # Stop EventSource retries.
+            return
+        self.close_connection = True
+        try:
+            self.connection.settimeout(2)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"retry: 500\ndata: connected\n\n")
+            self.wfile.flush()
+            heartbeat = time.monotonic() + 5
+            while not lifetime.stopping.is_set():
+                readable, _, _ = select.select([self.connection], [], [], .5)
+                # This is a one-way HTTP stream. Readability means EOF or an
+                # unexpected pipelined request; neither keeps a viewer alive.
+                if readable:
+                    break
+                if time.monotonic() >= heartbeat:
+                    self.wfile.write(b": alive\n\n")
+                    self.wfile.flush()
+                    heartbeat = time.monotonic() + 5
+        except (OSError, ValueError):
+            pass  # Tab/window closed, browser exited, or backend is stopping.
+        finally:
+            lifetime.disconnect(connection)
 
     def do_POST(self) -> None:
         url = urllib.parse.urlparse(self.path)
@@ -77,7 +138,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.close_connection = True
                     self._json(413, {"error": "Invalid layout geometry request size"})
                     return
-                geometry = prepare_geometry(self.rfile.read(length))
+                body = self.rfile.read(length)
+                lifetime = getattr(self.server, "viewer_lifetime", None)
+                geometry = (prepare_geometry(body, stopping=lifetime.stopping) if lifetime else prepare_geometry(body))
                 if geometry is None:
                     self._json(503, {"error": "Another layout is being prepared"})
                 else:
@@ -85,7 +148,10 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass  # The tab was closed while its isolated compiler finished.
             except Exception as exc:
-                self._json(422, {"error": str(exc)})
+                try:
+                    self._json(422, {"error": str(exc)})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
             return
         if url.path != "/render":
             self._send(404, b"not found", "text/plain")

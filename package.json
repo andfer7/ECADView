@@ -5,7 +5,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests/board_tabs.test.cjs",
+    "test": "node --test tests/board_tabs.test.cjs tests/browser_lifetime.test.cjs",
     "test:gpu": "node --test tests/browser_gpu.test.cjs"
   },
   "devDependencies": {

@@ -83,6 +83,7 @@ class ServerTests(unittest.TestCase):
             ("/static/schematic-style.js", "schematic-style.js", "text/javascript"),
             ("/static/measurement-tools.js", "measurement-tools.js", "text/javascript"),
             ("/static/rectangle-selection.js", "rectangle-selection.js", "text/javascript"),
+            ("/static/viewer-session.js", "viewer-session.js", "text/javascript"),
             ("/static/three.module.min.js", "three.module.min.js", "text/javascript"),
             ("/static/three.core.min.js", "three.core.min.js", "text/javascript"),
             ("/static/OrbitControls.js", "OrbitControls.js", "text/javascript"),

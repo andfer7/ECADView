@@ -2,7 +2,6 @@
 
 import argparse
 import base64
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import sys
@@ -11,7 +10,7 @@ import webbrowser
 
 try:
     from .rendering import render_file
-    from .server import Handler
+    from .server import Handler, ViewerServer
 except ImportError:
     sys.exit("altium-monkey is not installed. Run:  pip install altium-monkey")
 
@@ -64,9 +63,9 @@ def main() -> None:
     if initial:
         Handler.initial = initial[0] if len(initial) == 1 else {"documents": initial}
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port or 0), Handler)
+    server = ViewerServer(("127.0.0.1", args.port or 0), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
-    print(f"PCB viewer running at {url}   (Quit viewer in the browser or Ctrl+C to stop)")
+    print(f"PCB viewer running at {url}   (Close the viewer, Quit viewer, or Ctrl+C to stop)")
 
     if not args.no_open:
         threading.Timer(0.3, open_in_browser, args=(url, args.browser or "chrome")).start()
