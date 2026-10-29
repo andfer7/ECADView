@@ -167,6 +167,29 @@ For existing scripts, `--no-open`, `--browser` and `--port` also imply web mode.
 The server listens on `127.0.0.1`; stop it with Ctrl+C. Web-only route/via caption
 placement and browser gestures remain available in this mode.
 
+PCB layouts automatically switch from their initial SVG preview to WebGL 2
+after local geometry preparation. Static vertex/index buffers handle drawing;
+zoom and pan change camera uniforms, and selection updates an object lookup
+texture. SVG hit targets and measurement annotations stay available above the
+canvas. Captions are refreshed after navigation settles and their work yields
+to input. Schematics continue using SVG and the 3D view remains independent.
+
+The renderer status below the filename shows preparation, WebGL 2, or the
+reason for SVG fallback. Missing WebGL 2, unsupported SVG composition, resource
+limits and context loss leave the SVG viewer usable. Restoring a context
+reuploads the current document automatically. One shared 2D context holds only
+the active tab's GPU resources; switching tabs uploads that tab's retained CPU
+buffers. Closing a tab releases its buffers. Preparation uses one offscreen
+local child process with a 90-second timeout and a 128 MiB geometry budget.
+The browser also retains an SVG interaction tree and a CPU geometry copy, so
+this trades memory and a one-time preparation delay for smoother navigation.
+
+Run `PLAYWRIGHT_CHANNEL=chrome npm run test:gpu` for WebGL integration coverage.
+Use `node scripts/benchmark_browser_layout.cjs path/to/board.PcbDoc result.json`
+to compare SVG and WebGL on the same document. This measures browser animation
+callback cadence, preparation time and memory diagnostics, not completed GPU
+execution or display FPS. See [browser performance notes](docs/browser-webgl-performance.md).
+
 ## KiCad support
 
 KiCad `.kicad_pcb` boards (including KiCad 5) and modern `.kicad_sch` schematics

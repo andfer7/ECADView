@@ -1,0 +1,84 @@
+"""Isolated, bounded SVG-to-WebGL preparation for the local browser viewer.
+
+The HTTP process never creates a Qt application. Fonts and tessellation run in
+an offscreen child, including in the frozen executable. Only plain JSON and
+little-endian buffers cross the boundary; no pickle or uploaded code is used.
+"""
+
+import json
+import os
+from pathlib import Path
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+
+MAX_INPUT = 128 * 1024 * 1024
+MAX_OUTPUT = 160 * 1024 * 1024
+_compiler = threading.BoundedSemaphore(1)
+
+
+def encode_scene(scene):
+    """A padded JSON header followed by two aligned binary GPU buffers."""
+    keys = ("supported", "reason", "origin", "entries", "object_components",
+            "object_nets", "object_count", "drill_layers", "stats", "stride", "caption_bounds")
+    header = {key: scene[key] for key in keys if key in scene}
+    vertices, indices = scene.get("vertices", b""), scene.get("indices", b"")
+    header.update(version=1, vertex_bytes=len(vertices), index_bytes=len(indices))
+    metadata = json.dumps(header, default=lambda value: sorted(value),
+                          separators=(",", ":")).encode()
+    metadata += b" " * (-len(metadata) % 4)
+    return struct.pack("<I", len(metadata)) + metadata + vertices + indices
+
+
+def worker(input_path, output_path):
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtGui import QGuiApplication
+    from .desktop.document import NativeDocument
+    from .desktop.gpu_scene import build_scene
+
+    app = QGuiApplication.instance() or QGuiApplication([])
+    data = json.loads(Path(input_path).read_bytes())
+    if data.get("kind", "pcb") != "pcb":
+        raise ValueError("WebGL geometry is only available for PCB layouts")
+    document = NativeDocument(data)
+    scene = build_scene(document)
+    if scene.get("supported"):
+        # Reuse the worker's world bounds to reject tiny/offscreen captions
+        # before expensive DOM geometry/style queries in a large SVG.
+        scene["caption_bounds"] = {
+            p.id: [p.bounds.x(), p.bounds.y(), p.bounds.width(), p.bounds.height()]
+            for p in document.primitives if (p.net or p.pin) and not p.hole
+        }
+    Path(output_path).write_bytes(encode_scene(scene))
+    # Retain the application until all Qt objects have finished their work.
+    del app
+
+
+def prepare_geometry(body):
+    if len(body) > MAX_INPUT:
+        raise ValueError("Layout exceeds the WebGL preparation limit")
+    if not _compiler.acquire(blocking=False):
+        return None  # A caller may retry; never queue unbounded large documents.
+    try:
+        with tempfile.TemporaryDirectory(prefix="pcb-webgl-") as tmp:
+            source, target = Path(tmp) / "input.json", Path(tmp) / "scene.bin"
+            source.write_bytes(body)
+            command = ([sys.executable] if getattr(sys, "frozen", False) else
+                       [sys.executable, "-m", "pcbvisualizer.cli"])
+            try:
+                result = subprocess.run(
+                    [*command, "--web-geometry-worker", str(source), str(target)],
+                    capture_output=True, timeout=90,
+                    env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                )
+            except subprocess.TimeoutExpired:
+                raise ValueError("WebGL preparation timed out; using SVG") from None
+            if result.returncode or not target.is_file():
+                raise ValueError("Layout geometry could not be prepared; SVG remains available")
+            if target.stat().st_size > MAX_OUTPUT:
+                raise ValueError("Prepared layout exceeds the WebGL memory limit")
+            return target.read_bytes()
+    finally:
+        _compiler.release()
