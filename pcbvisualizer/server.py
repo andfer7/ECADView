@@ -8,6 +8,7 @@ import tempfile
 import urllib.parse
 
 from .rendering import render_file
+from .web_geometry import MAX_INPUT, prepare_geometry
 
 
 # Explicit routes keep package resources private unless listed here.
@@ -17,6 +18,8 @@ STATIC_ROUTES = {
     "/static/viewer.js": ("viewer.js", "text/javascript; charset=utf-8"),
     "/static/net-labels.js": ("net-labels.js", "text/javascript; charset=utf-8"),
     "/static/viewer-3d.js": ("viewer-3d.js", "text/javascript; charset=utf-8"),
+    "/static/layout-webgl.js": ("layout-webgl.js", "text/javascript; charset=utf-8"),
+    "/static/layout-shaders.js": ("layout-shaders.js", "text/javascript; charset=utf-8"),
     "/static/three.module.min.js": ("three.module.min.js", "text/javascript; charset=utf-8"),
     "/static/three.core.min.js": ("three.core.min.js", "text/javascript; charset=utf-8"),
     "/static/OrbitControls.js": ("OrbitControls.js", "text/javascript; charset=utf-8"),
@@ -54,6 +57,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         url = urllib.parse.urlparse(self.path)
+        if url.path == "/geometry":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 < length <= MAX_INPUT:
+                    self.close_connection = True
+                    self._json(413, {"error": "Invalid layout geometry request size"})
+                    return
+                geometry = prepare_geometry(self.rfile.read(length))
+                if geometry is None:
+                    self._json(503, {"error": "Another layout is being prepared"})
+                else:
+                    self._send(200, geometry, "application/octet-stream")
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # The tab was closed while its isolated compiler finished.
+            except Exception as exc:
+                self._json(422, {"error": str(exc)})
+            return
         if url.path != "/render":
             self._send(404, b"not found", "text/plain")
             return
@@ -63,6 +83,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         try:
+            webgl = self.headers.get("X-WebGL") == "1"
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / (Path(name).name or "board.PcbDoc")
                 path.write_bytes(body)
@@ -72,7 +93,10 @@ class Handler(BaseHTTPRequestHandler):
                     clip=get("clip") == "1",
                     pour_color=get("pour") or None,
                     polygon_outlines=get("outlines") == "1",
+                    **({"native": True} if webgl else {}),
                 )
+            if webgl:
+                data["webgl"] = True
             self._json(200, data)
         except Exception as exc:  # report parser/renderer errors to the page
             self._json(500, {"error": f"{type(exc).__name__}: {exc}"})

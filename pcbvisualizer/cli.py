@@ -41,6 +41,10 @@ def open_in_browser(url: str, browser: str = "chrome") -> None:
 
 
 def main() -> None:
+    if len(sys.argv) == 4 and sys.argv[1] == "--web-geometry-worker":
+        from .web_geometry import worker
+        worker(sys.argv[2], sys.argv[3])
+        return
     ap = argparse.ArgumentParser(description="Standalone Altium and KiCad PCB and schematic viewer")
     ap.add_argument("documents", nargs="*", type=Path, help="Altium or KiCad documents to open in native tabs")
     ap.add_argument("--web", action="store_true", help="run the optional browser viewer instead of the native application")
@@ -61,7 +65,7 @@ def main() -> None:
     if args.documents:
         path = args.documents[0]
         print(f"Loading {path.name} ...")
-        Handler.initial = {**render_file(path), "source": base64.b64encode(path.read_bytes()).decode("ascii")}
+        Handler.initial = {**render_file(path, native=True), "source": base64.b64encode(path.read_bytes()).decode("ascii"), "webgl": True}
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port or 0), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
@@ -75,3 +79,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+
+
+if __name__ == "__main__":
+    main()

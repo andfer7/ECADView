@@ -1,4 +1,5 @@
 import { NetLabels } from './net-labels.js';
+import { LayoutWebGL } from './layout-webgl.js';
 
 (function () {
   const $ = id => document.getElementById(id);
@@ -8,6 +9,73 @@ import { NetLabels } from './net-labels.js';
   let svg = null, groups = [], vb = null, home = null;
   const boards = [];
   let activeBoard = null, nextBoardId = 1;
+  let layoutGPU = null, gpuUnavailable = false, labelTimer = 0;
+  let geometryQueue = Promise.resolve();
+  function gpuActive() { return Boolean(layoutGPU && !layoutGPU.lost && activeBoard?.gpuScene && layoutGPU.scene === activeBoard.gpuScene); }
+  function paintGPU() {
+    if (!gpuActive() || is3D()) return;
+    layoutGPU.paint(vb, [...activeBoard.sceneGroup.children].filter(g => groups.includes(g)), !activeBoard.polygonsHidden,
+      activeBoard.gpuComponents || [], activeBoard.gpuNets || []);
+  }
+  function syncGPU() {
+    view.classList.remove('gpu-layout');
+    if (layoutGPU) layoutGPU.canvas.hidden = true;
+    const board = activeBoard;
+    if (board?.gpuScene && !layoutGPU?.lost) {
+      try {
+        layoutGPU.setScene(board.gpuScene);
+        view.classList.toggle('gpu-layout', !is3D());
+        layoutGPU.canvas.hidden = is3D();
+        board.gpuStatus = 'WebGL 2';
+        paintGPU();
+      } catch (error) { board.gpuScene = null; board.gpuStatus = 'SVG: ' + error.message; layoutGPU.release(); }
+    }
+    const status = $('renderer-status');
+    status.hidden = board?.kind !== 'pcb' || is3D();
+    status.textContent = layoutGPU?.lost && board?.gpuScene ? 'SVG: graphics context lost; waiting for recovery.' : board?.gpuStatus || 'SVG';
+  }
+  async function prepareGPU(board, data) {
+    if (data.kind === 'schematic' || !data.webgl || gpuUnavailable) return;
+    try {
+      layoutGPU ||= new LayoutWebGL(view, message => {
+        if (message && activeBoard) activeBoard.gpuStatus = 'SVG: ' + message;
+        syncGPU();
+        if (activeBoard?.svg) { updateComponentStatus(); updateNetStatus(); }
+      });
+    } catch (error) { gpuUnavailable = true; board.gpuStatus = error.message; syncGPU(); return; }
+    const controller = new AbortController(); board.gpuController = controller;
+    const generation = board.request;
+    board.gpuStatus = 'SVG · preparing WebGL…';
+    if (board === activeBoard) syncGPU();
+    // Avoid repeatedly sending several large SVG bodies while the single
+    // isolated compiler is busy. Closed/reloaded tabs skip their queued turn.
+    const previous = geometryQueue;
+    let finished;
+    geometryQueue = new Promise(resolve => { finished = resolve; });
+    try {
+      await previous;
+      if (controller.signal.aborted) return;
+      const body = JSON.stringify({ svg: data.svg, kind: 'pcb', polygon_elements: data.polygon_elements || [] });
+      let response;
+      for (;;) {
+        response = await fetch('/geometry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: controller.signal });
+        if (response.status !== 503) break;
+        await new Promise(resolve => setTimeout(resolve, 750));
+        if (controller.signal.aborted) return;
+      }
+      if (!response.ok) throw new Error((await response.json()).error || 'Geometry preparation failed');
+      const scene = LayoutWebGL.decode(await response.arrayBuffer());
+      if (!boards.includes(board) || board.request !== generation || controller.signal.aborted) return;
+      board.gpuScene = scene; board.gpuStatus = 'WebGL 2';
+      netLabels.setBounds(board.svg, scene.caption_bounds || {});
+      if (board === activeBoard) { syncGPU(); updateComponentStatus(); updateNetStatus(); }
+    } catch (error) {
+      if (error.name !== 'AbortError' && boards.includes(board) && board.request === generation) {
+        board.gpuStatus = 'SVG: ' + error.message;
+        if (board === activeBoard) syncGPU();
+      }
+    } finally { finished(); }
+  }
 
   // ------------------------------------------------------------ board tabs / loading
   function saveBoard() {
@@ -58,6 +126,10 @@ import { NetLabels } from './net-labels.js';
   }
   function mountBoard(board) {
     cancelViewUpdate();
+    clearTimeout(labelTimer);
+    netLabels.cancel();
+    view.classList.remove('gpu-layout');
+    if (layoutGPU) { layoutGPU.canvas.hidden = true; if (board?.gpuScene !== layoutGPU.scene) layoutGPU.release(); }
     unmount3D();
     if (svg) svg.remove();
     activeBoard = board; drag = null; gestureScale = null;
@@ -87,6 +159,9 @@ import { NetLabels } from './net-labels.js';
       view.prepend(svg);
       if (schematic) buildSchematicComponentTargets(board);
       else buildLayers();
+      // Restore retained resources before mounting search/labels. Otherwise a
+      // selected large board would briefly rebuild its expensive SVG overlays.
+      syncGPU();
       apply();
     }
     updatePolygonControl();
@@ -94,7 +169,7 @@ import { NetLabels } from './net-labels.js';
     updateTabs();
     mountComponentSearch();
     updateSchematicSelection();
-    netLabels.update(activeBoard);
+    netLabels.update(activeBoard, gpuActive());
     mountViewMode();
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
     else $('view').removeAttribute('aria-labelledby');
@@ -103,6 +178,7 @@ import { NetLabels } from './net-labels.js';
     const index = boards.indexOf(board);
     if (index < 0) return;
     board.controller?.abort();
+    board.gpuController?.abort(); board.gpuScene = null;
     boards.splice(index, 1);
     if (board === activeBoard) mountBoard(boards[Math.min(index, boards.length - 1)] || null);
     else updateTabs();
@@ -118,13 +194,14 @@ import { NetLabels } from './net-labels.js';
   async function renderBoard(board) {
     if (board === activeBoard) saveBoard();
     board.controller?.abort();
+    board.gpuController?.abort();
     const controller = new AbortController(); board.controller = controller;
     const request = ++board.request;
     board.loading = true;
     updateTabs();
     if (board === activeBoard) $('busy').style.display = 'flex';
     try {
-      const r = await fetch('/render', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(board.file.name) }, body: board.file, signal: controller.signal });
+      const r = await fetch('/render', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(board.file.name), 'X-WebGL': '1' }, body: board.file, signal: controller.signal });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || r.statusText);
       if (boards.includes(board) && request === board.request) show(board, data);
@@ -161,9 +238,11 @@ import { NetLabels } from './net-labels.js';
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
                            layoutComponents: data.layout_components || [], scene3d: data.scene3d, camera3d: null, bodyEdits: null,
-                           home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure });
+                           home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure, sceneGroup: rendered.querySelector('#scene'),
+                           gpuScene: null, gpuStatus: 'SVG', gpuComponents: [], gpuNets: [] });
     if (kind === 'schematic') prepareSchematicSelection(board, data.selection);
     if (board === activeBoard) mountBoard(board);
+    prepareGPU(board, data);
   }
 
   $('open').onclick = () => $('file').click();
@@ -201,6 +280,7 @@ import { NetLabels } from './net-labels.js';
     $('net-labels').hidden = showing; label.hidden = showing;
     view.classList.toggle('measuring', !showing && measuring);
     if (svg) svg.style.display = showing ? 'none' : '';
+    syncGPU();
     updateBodyControls();
     if (showing) show3D();
   }
@@ -565,6 +645,19 @@ import { NetLabels } from './net-labels.js';
     const visibleHits = hits.filter(el => !hiddenPolygon(el));
     const matched = new Set(visibleHits), branches = new Set();
     for (const el of visibleHits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
+    if (gpuActive()) {
+      const visibleLayers = new Set(groups.filter(g => g.style.display !== 'none'));
+      const visible = el => !hiddenPolygon(el) && visibleLayers.has(el.closest('#scene > g'));
+      activeBoard.gpuComponents = [...new Set(componentHits.filter(visible).map(el => el.dataset.component))];
+      activeBoard.gpuNets = [...new Set(netHits.filter(visible).map(el => el.dataset.net))];
+      // IDs in a lookup texture tint the original GPU geometry. Keep the DOM
+      // solely for exact hit testing, search, bounds and cross-probing.
+      svg.querySelectorAll('#component-highlight, #net-highlight').forEach(el => el.remove());
+      svg.classList.toggle('layout-selection', Boolean(activeBoard.gpuComponents.length || activeBoard.gpuNets.length));
+      paintGPU();
+      return { overlay: { childElementCount: groups.filter(g => g.style.display !== 'none' && branches.has(g)).length },
+        hidden: groups.filter(g => g.style.display === 'none' && branches.has(g)).length, hiddenPolygons: hits.some(hiddenPolygon) };
+    }
     function tintedCopy(node) {
       const copy = node.cloneNode(true);
       const originals = [node, ...node.querySelectorAll('*')], copies = [copy, ...copy.querySelectorAll('*')];
@@ -638,7 +731,7 @@ import { NetLabels } from './net-labels.js';
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
       `${count} component${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
       (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
-    netLabels.update(activeBoard);
+    netLabels.update(activeBoard, gpuActive());
   }
   function clearComponent() { resetProbeSelection('probeComponents'); $('component-query').value = ''; searchComponents(); }
   $('component-query').oninput = () => { resetProbeSelection('probeComponents'); searchComponents(); };
@@ -743,7 +836,7 @@ import { NetLabels } from './net-labels.js';
     $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
       `${count} net${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
       (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
-    netLabels.update(activeBoard);
+    netLabels.update(activeBoard, gpuActive());
   }
   function clearNet() { resetProbeSelection('probeNets'); $('net-query').value = ''; searchNets(); }
   $('net-query').oninput = () => { resetProbeSelection('probeNets'); searchNets(); };
@@ -791,7 +884,15 @@ import { NetLabels } from './net-labels.js';
     if (!svg) return;
     svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
     if (redrawMeasurements) draw(); else positionMeasurementLabels();
-    netLabels.update(activeBoard);
+    paintGPU();
+    clearTimeout(labelTimer);
+    if (gpuActive() && !redrawMeasurements) {
+      // Caption placement performs exact DOM hit probes. Keep it off the
+      // navigation frame; refresh once the gesture has settled.
+      $('net-labels').replaceChildren();
+      netLabels.cancel();
+      labelTimer = setTimeout(() => netLabels.update(activeBoard, gpuActive()), 140);
+    } else netLabels.update(activeBoard, gpuActive());
   }
   function queueViewUpdate() {
     if (!viewFrame) viewFrame = requestAnimationFrame(() => { viewFrame = 0; apply(false); });
@@ -949,7 +1050,8 @@ import { NetLabels } from './net-labels.js';
 
   new ResizeObserver(() => {
     positionMeasurementLabels();
-    netLabels.update(activeBoard);
+    paintGPU();
+    netLabels.update(activeBoard, gpuActive());
   }).observe(view);
 
   // ------------------------------------------------------------ board passed on the command line

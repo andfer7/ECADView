@@ -3,16 +3,21 @@ export class NetLabels {
   constructor(container) {
     this.container = container;
     this.candidates = new WeakMap();
+    this.bounds = new WeakMap();
     this.widths = new Map();
     this.context = document.createElement('canvas').getContext('2d');
     const font = getComputedStyle(container);
     this.context.font = `${font.fontWeight} ${font.fontSize} ${font.fontFamily}`;
   }
 
-  index(svg) {
+  setBounds(svg, bounds) { this.bounds.set(svg, bounds); this.candidates.delete(svg); }
+
+  *index(svg) {
     if (this.candidates.has(svg)) return this.candidates.get(svg);
     const candidates = [];
+    let deadline = performance.now() + 4;
     for (const shape of svg.querySelectorAll('#scene path, #scene rect, #scene circle, #scene ellipse, #scene line, #scene polyline, #scene polygon, #scene use')) {
+      if (performance.now() > deadline) { yield; deadline = performance.now() + 4; }
       const net = shape.closest('[data-net]');
       const pad = shape.closest('[data-pad-number], [data-pad-designator]');
       const number = pad?.dataset.padNumber || pad?.dataset.padDesignator || '';
@@ -22,6 +27,12 @@ export class NetLabels {
       if ((!net?.dataset.net && !pin.trim()) || shape.closest('defs, clipPath, mask, [data-hole-owner], [data-primitive$="-hole"], [data-overlay-kind], #component-highlight, #net-highlight')) continue;
       const layer = source.closest('[data-layer-role]');
       if (layer && layer.dataset.layerRole !== 'copper') continue;
+      const worldBounds = this.bounds.get(svg)?.[shape.id];
+      if (worldBounds) {
+        candidates.push({ shape, name: net?.dataset.net || '', pin: pin.trim() ? pin : '', worldBounds,
+          via: source.dataset.primitive === 'via', primitive: source.dataset.primitive });
+        continue;
+      }
       const paint = getComputedStyle(shape), bounds = shape.getBBox();
       if (!bounds.width && !bounds.height || paint.fill === 'none' && paint.stroke === 'none') continue;
       const route = paint.stroke !== 'none' && typeof shape.getTotalLength === 'function' &&
@@ -34,23 +45,63 @@ export class NetLabels {
     return candidates;
   }
 
-  update(board) {
+  cancel() {
+    clearTimeout(this.timer); this.generation = (this.generation || 0) + 1;
+    this.container.dataset.pending = '0';
+  }
+
+  update(board, deferred = false) {
+    this.cancel();
     this.container.replaceChildren();
+    const generation = this.generation, work = this.layout(board);
+    if (!deferred) { while (!work.next().done) { /* SVG compatibility path */ } return; }
+    this.container.dataset.pending = '1';
+    const step = () => {
+      if (generation !== this.generation) return;
+      if (work.next().done) { this.container.dataset.pending = '0'; return; }
+      this.timer = setTimeout(step, 0);
+    };
+    this.timer = setTimeout(step, 0);
+  }
+
+  *layout(board) {
     const svg = board?.svg;
     // At fit-to-board scale the labels would obscure the layout overview.
     if (board?.kind !== 'pcb' || !svg?.isConnected || board.home.w / svg.viewBox.baseVal.width < 2) return;
     const view = this.container.getBoundingClientRect(), occupied = [], fragment = document.createDocumentFragment();
-    for (const item of this.index(svg)) {
+    const candidates = yield* this.index(svg);
+    const rootMatrix = svg.getScreenCTM();
+    let deadline = performance.now() + 4;
+    for (const item of candidates) {
+      if (performance.now() > deadline) { yield; deadline = performance.now() + 4; }
       if (occupied.length >= 150) break;
-      const { shape, name, pin, bounds, route } = item;
+      const { shape, name, pin } = item;
       if (board.polygonsHidden && shape.closest('.polygon-copper') ||
           svg.classList.contains('layout-selection') && !shape.closest('.net-match, .component-match')) continue;
-      const rect = shape.getBoundingClientRect();
+      const world = item.worldBounds;
+      const rect = world ? { left: world[0] * rootMatrix.a + rootMatrix.e, top: world[1] * rootMatrix.d + rootMatrix.f,
+        right: (world[0] + world[2]) * rootMatrix.a + rootMatrix.e, bottom: (world[1] + world[3]) * rootMatrix.d + rootMatrix.f,
+        width: world[2] * rootMatrix.a, height: world[3] * rootMatrix.d } : shape.getBoundingClientRect();
       if (rect.right < view.left || rect.left > view.right || rect.bottom < view.top || rect.top > view.bottom) continue;
+      if (world) {
+        const minimumWidth = Math.min(...[pin, name].filter(Boolean).map(text => {
+          if (!this.widths.has(text)) this.widths.set(text, this.context.measureText(text).width + 4);
+          return this.widths.get(text);
+        }));
+        if (rect.width < minimumWidth || rect.height < 18) continue;
+      }
       const paint = getComputedStyle(shape);
       if (paint.display === 'none' || paint.visibility !== 'visible' || !shape.getClientRects().length) continue;
       const matrix = shape.getScreenCTM();
       if (!matrix) continue;
+      if (world && !item.bounds) {
+        item.bounds = shape.getBBox(); item.stroke = parseFloat(paint.strokeWidth) || 0;
+        item.fixedStroke = paint.vectorEffect === 'non-scaling-stroke';
+        item.route = paint.stroke !== 'none' && typeof shape.getTotalLength === 'function' &&
+          (paint.fill === 'none' || shape.matches('line, polyline') || ['track', 'arc'].includes(item.primitive));
+        item.length = item.route ? shape.getTotalLength() : 0;
+      }
+      const { bounds, route } = item;
       const scale = Math.min(Math.hypot(matrix.a, matrix.b), Math.hypot(matrix.c, matrix.d));
       const pinRow = { text: pin, kind: 'pin-label' }, netRow = { text: name, kind: 'net-label' };
       // Prefer both rows, then preserve the pin number when the pad is cramped.

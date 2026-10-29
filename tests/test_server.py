@@ -63,6 +63,8 @@ class ServerTests(unittest.TestCase):
             ("/static/viewer.js", "viewer.js", "text/javascript"),
             ("/static/net-labels.js", "net-labels.js", "text/javascript"),
             ("/static/viewer-3d.js", "viewer-3d.js", "text/javascript"),
+            ("/static/layout-webgl.js", "layout-webgl.js", "text/javascript"),
+            ("/static/layout-shaders.js", "layout-shaders.js", "text/javascript"),
             ("/static/three.module.min.js", "three.module.min.js", "text/javascript"),
             ("/static/three.core.min.js", "three.core.min.js", "text/javascript"),
             ("/static/OrbitControls.js", "OrbitControls.js", "text/javascript"),
@@ -145,6 +147,28 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 500)
         self.assertEqual(headers["Content-Type"], "application/json")
         self.assertRegex(json.loads(body)["error"], r"ValueError: .*PcbDoc.*SchDoc")
+
+    def test_webgl_upload_requests_compact_geometry_metadata(self):
+        with patch("pcbvisualizer.server.render_file", return_value={"svg": "<svg/>"}) as render:
+            status, _, body = self.request("POST", "/render", b"board", {"X-WebGL": "1"})
+        self.assertEqual(status, 200)
+        self.assertTrue(render.call_args.kwargs["native"])
+        self.assertTrue(json.loads(body)["webgl"])
+
+    def test_geometry_response_busy_and_error_routes(self):
+        with patch("pcbvisualizer.server.prepare_geometry", return_value=b"binary") as prepare:
+            status, headers, body = self.request("POST", "/geometry", b"{}")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/octet-stream")
+        self.assertEqual(body, b"binary")
+        prepare.assert_called_once_with(b"{}")
+        with patch("pcbvisualizer.server.prepare_geometry", return_value=None):
+            self.assertEqual(self.request("POST", "/geometry", b"{}")[0], 503)
+        with patch("pcbvisualizer.server.prepare_geometry", side_effect=ValueError("Unsupported")):
+            status, _, body = self.request("POST", "/geometry", b"{}")
+        self.assertEqual(status, 422)
+        self.assertEqual(json.loads(body), {"error": "Unsupported"})
+        self.assertEqual(self.request("POST", "/geometry", b"")[0], 413)
 
 
 class LaunchTests(unittest.TestCase):
