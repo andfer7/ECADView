@@ -99,12 +99,22 @@ export class Board3D {
       light.shadow.bias = -0.00015; light.shadow.normalBias = 0.025;
       this.scene.add(light, light.target);
     }
+    const surfaceBounds = new THREE.Box2().setFromPoints(model.board.flatMap(part =>
+      part.outline.map(point => new THREE.Vector2(...point))));
+    const surfaceSize = surfaceBounds.getSize(new THREE.Vector2());
     const addSolid = (data, z, height, color, opacity = 1, edgeColor = 0x182323, bodyId = null) => {
       if (!data.outline?.length) return;
       const shape = new THREE.Shape(data.outline.map(p => new THREE.Vector2(...p)));
       shape.holes = (data.holes || []).map(points => new THREE.Path(points.map(p => new THREE.Vector2(...p))));
       const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
       if (bodyId === null) {
+        // Initialize UVs before any shadow or color pass uploads the geometry.
+        // Replacing the attribute after the asynchronous finish load can leave
+        // a cached VAO with no UV buffer when shadow passes skip that upload.
+        const positions = geometry.attributes.position, uv = geometry.attributes.uv;
+        for (let i = 0; i < positions.count; i++) uv.setXY(i,
+          (positions.getX(i) - surfaceBounds.min.x) / (surfaceSize.x || 1),
+          (positions.getY(i) - surfaceBounds.min.y) / (surfaceSize.y || 1));
         // Give the existing top, bottom and edge their own material. A second
         // almost-coplanar finish mesh causes depth fighting at grazing angles.
         geometry.clearGroups();
@@ -155,15 +165,6 @@ export class Board3D {
     try {
       const surfaces = await boardSurfaces(source, model, Math.min(2048, this.renderer.capabilities.maxTextureSize));
       if (generation !== this.generation || !surfaces.length) return;
-      const [x0, y0, x1, y1] = surfaces[0].bounds;
-      for (const mesh of this.boardMeshes) {
-        const positions = mesh.geometry.attributes.position, uv = new Float32Array(positions.count * 2);
-        for (let i = 0; i < positions.count; i++) {
-          uv[i * 2] = (positions.getX(i) - x0) / (x1 - x0);
-          uv[i * 2 + 1] = (positions.getY(i) - y0) / (y1 - y0);
-        }
-        mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-      }
       for (const surface of surfaces) {
         const map = new THREE.CanvasTexture(surface.color); map.colorSpace = THREE.SRGBColorSpace;
         const physical = new THREE.CanvasTexture(surface.physical);

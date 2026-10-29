@@ -119,6 +119,9 @@ mask apertures and silkscreen, exclusion of internal copper and measurement
 overlays, and independence from 2D visibility/highlighting. Browser coverage
 also renders mapped materials and studio shadow maps through WebGL and checks
 texture/shadow cleanup across repeated 3D mounts.
+Repeated-mount coverage compares rendered pixels across twelve returns to 3D
+in top, bottom and isometric views, including interrupted board-finish loads.
+It checks visible copper/silkscreen and bounded GPU resource counts.
 Depth regressions render two contrasting faces separated by 0.005 mm, checking
 that the foreground face stays solid through top/isometric views, zoom and pan.
 They also check clipping coverage and verify that board finishes reuse the
@@ -130,6 +133,10 @@ coverage. It checks retained geometry reuse, highlights, holes, layer ordering,
 SVG fallback, context loss/recovery, resource cleanup and mixed rectangle
 selection. Rectangle tests cover both drag directions, additive selection,
 hidden layers/polygons, cancellation and separate pan/measurement gestures.
+Startup tests hold geometry preparation open to check the “Starting WebGL…”
+message and blocked wheel/pinch, mouse and keyboard navigation. They verify
+recovery after compilation failure, unavailable graphics, suspended animation
+callbacks, tab changes and cancellation.
 
 Launcher tests require every entry point to start the local browser server by
 default, preserve `--web` compatibility, `--no-open`, browser choice and startup

@@ -2592,6 +2592,80 @@ test('3D studio shadows and mapped finishes render through WebGL and release the
   assert.deepEqual(shaderErrors, []);
 });
 
+test('3D realistic appearance survives repeated view remounts and interrupted finish loads', async t => {
+  const { page } = await openPage(t);
+  const graphicsErrors = [];
+  page.on('console', message => {
+    if (message.type() === 'error' && /THREE|shader|WebGL/i.test(message.text())) graphicsErrors.push(message.text());
+  });
+  const result = await page.evaluate(async () => {
+    const THREE = await import('/static/three.module.min.js');
+    const { Board3D } = await import('/static/viewer-3d.js');
+    const host = document.createElement('div'); Object.assign(host.style, { width: '400px', height: '300px' }); document.body.append(host);
+    const source = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg"><g id="scene">
+      <g data-layer-token="TOP"><rect x="1" y="1" width="16" height="16"/></g>
+      <g data-layer-token="TOPSOLDER"><rect x="1" y="1" width="4" height="4"/></g>
+      <g data-layer-token="TOPOVERLAY"><rect x="12" y="12" width="4" height="2"/></g>
+      <g data-layer-token="BOTTOM"><rect x="14" y="4" width="4" height="4"/></g>
+      <g data-layer-token="BOTTOMSOLDER"><rect x="14" y="4" width="4" height="4"/></g>
+      <g data-layer-token="BOTTOMOVERLAY"><rect x="2" y="14" width="3" height="2"/></g>
+    </g></svg>`, 'image/svg+xml').documentElement;
+    const body = { id: 'metal', outline: [[-3,-3],[3,-3],[3,3],[-3,3]], z: 0.8, height: 3,
+      color: 0xbbbbbb, opacity: 1, matrix: new THREE.Matrix4().makeTranslation(0, 0, 2.3).toArray() };
+    const model = { board: [{ outline: [[-10,-10],[10,-10],[10,10],[-10,10]], holes: [] }],
+      thickness: 1.6, bodies: [body], surface_origin: [10,10] };
+    const geometry = new THREE.BoxGeometry(6, 6, 3);
+    const parts = [{ position: geometry.attributes.position.array, normal: geometry.attributes.normal.array, index: geometry.index.array }];
+    const viewer = new Board3D(host, () => {}), stages = [], samples = {};
+    for (let cycle = 0; cycle < 12; cycle++) {
+      // Interrupt a differently mapped board before its SVG textures decode,
+      // as happens with rapid mode/tab changes. Its finish must never leak.
+      if (cycle % 3 === 2) {
+        viewer.show({ ...model, surface_origin: [100,100] }, null, null, source);
+        viewer.clear();
+      }
+      viewer.show(model, null, null, source);
+      viewer.addStepBodies([body], parts);
+      const deadline = performance.now() + 5000;
+      while (!viewer.boardMeshes[0]?.material[1].map && performance.now() < deadline)
+        await new Promise(resolve => setTimeout(resolve, 20));
+      if (!viewer.boardMeshes[0]?.material[1].map) throw new Error('Board finish did not load');
+      for (const preset of ['top', 'bottom', 'iso']) {
+        viewer.fit(preset); viewer.render();
+        const gl = viewer.renderer.getContext(), pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+        gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        stages.push({ cycle, preset, checksum: pixels.reduce((n, v, i) => (n + v * (i % 251)) % 1000000007, 0),
+          textures: viewer.renderer.info.memory.textures, geometries: viewer.renderer.info.memory.geometries });
+        if (!cycle && preset !== 'iso') {
+          const sample = (x, y) => {
+            const point = new THREE.Vector3(x, y, preset === 'top' ? 0.8 : -0.8).project(viewer.camera);
+            const offset = (Math.floor((point.y + 1) / 2 * gl.drawingBufferHeight) * gl.drawingBufferWidth +
+              Math.floor((point.x + 1) / 2 * gl.drawingBufferWidth)) * 4;
+            return [...pixels.slice(offset, offset + 3)];
+          };
+          samples[preset] = preset === 'top' ? { silk: sample(5,-3), mask: sample(7,-8), pad: sample(-7,7) } :
+            { silk: sample(-6.5,-5), mask: sample(7,-8), pad: sample(6,4) };
+        }
+      }
+      viewer.clear();
+    }
+    viewer.controls.dispose(); viewer.observer.disconnect(); viewer.environment.dispose(); viewer.renderer.dispose(); host.remove();
+    return { stages, samples };
+  });
+  for (const stage of result.stages) {
+    const baseline = result.stages.find(first => first.preset === stage.preset);
+    assert.equal(stage.checksum, baseline.checksum, `cycle ${stage.cycle}, ${stage.preset}: rendered pixels retain the original finish`);
+    assert.equal(stage.textures, baseline.textures, 'textures stay bounded across repeated mounts');
+    assert.equal(stage.geometries, baseline.geometries, 'geometry stays bounded across repeated mounts');
+  }
+  for (const [side, { silk, mask, pad }] of Object.entries(result.samples)) {
+    const brightness = rgb => rgb.reduce((sum, channel) => sum + channel, 0);
+    assert.ok(brightness(silk) > brightness(mask) * 1.5, `${side}: silkscreen remains visible`);
+    assert.ok(brightness(pad) > brightness(mask) * 1.2, `${side}: exposed metal remains visible`);
+  }
+  assert.deepEqual(graphicsErrors, []);
+});
+
 test('3D keeps close STEP-like faces depth-separated while zooming, orbiting and panning', async t => {
   const { page } = await openPage(t);
   const result = await page.evaluate(async () => {
@@ -3030,8 +3104,7 @@ test('opens real KiCad PCB and schematic files, cross-probes, searches pins and 
   await page.locator('#polygons-toggle').click();
   await page.locator('#component-query').fill('R2');
   await page.locator('#component-fit').click();
-  await settleView(page);
-  assert.ok((await page.locator('.pin-label').allTextContents()).includes('A2'));
+  await page.waitForFunction(() => [...document.querySelectorAll('.pin-label')].some(label => label.textContent === 'A2'));
   await page.locator('#component-clear').click();
   await page.locator('#view-fit').click();
   await page.locator('#measure-btn').click();
