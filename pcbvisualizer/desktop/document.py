@@ -18,6 +18,9 @@ from pcbvisualizer.rendering import render_file
 
 SVG = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG)
+# Qt SVG expects the literal xlink prefix for image references. ElementTree's
+# generated ns1:href is valid XML but loses embedded images when Qt reloads it.
+ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
 GRAPHICS = {
     "path",
     "rect",
