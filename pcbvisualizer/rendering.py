@@ -15,6 +15,7 @@ from altium_monkey import (
     SchSvgRenderOptions,
 )
 from altium_monkey.altium_pcb_surface import PCB_SurfaceSide
+from altium_monkey.altium_resolved_layer_stack import resolved_layer_stack_from_pcbdoc
 from altium_monkey.altium_ttf_metrics import get_font_path_with_style
 
 from .altium_rendering import IndexedPcbSvgRenderer
@@ -112,6 +113,21 @@ def polygon_element_ids(pcb: AltiumPcbDoc, svg: str) -> list[str]:
             and (match[2], int(match[3])) in linked]
 
 
+def copper_layer_order(pcb: AltiumPcbDoc) -> list[str]:
+    """Read physical copper order for the layer list without changing paint."""
+    try:
+        stack = resolved_layer_stack_from_pcbdoc(pcb)
+    except Exception:  # noqa: BLE001 - optional stack metadata must not prevent 2D viewing
+        return []
+    return [
+        layer.layer_ref.token
+        for layer in stack.layers
+        if layer.stack_index is not None
+        and layer.layer_ref is not None
+        and layer.layer_ref.family.value in ("signal", "internal_plane")
+    ]
+
+
 def render_file(path: Path, side: str = "all", clip: bool = False,
                 pour_color: str | None = None, polygon_outlines: bool = False,
                 *, native: bool = False) -> dict:
@@ -166,6 +182,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         "scene3d": scene,
         "name": path.name,
         "kind": "pcb",
+        "copper_layer_order": copper_layer_order(pcb),
         "polygon_elements": polygon_element_ids(pcb, svg),
         "layout_components": [
             {"name": component.designator, "source_name": component.source_designator,
