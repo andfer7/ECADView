@@ -2,6 +2,7 @@ import { NetLabels } from './net-labels.js';
 import { LayoutWebGL } from './layout-webgl.js';
 import { styleSchematic } from './schematic-style.js';
 import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurement-tools.js';
+import { rectangleMatches } from './rectangle-selection.js';
 
 (function () {
   const $ = id => document.getElementById(id);
@@ -144,6 +145,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
     mountBoard(board);
   }
   function mountBoard(board) {
+    cancelDrag();
     cancelViewUpdate();
     clearTimeout(labelTimer);
     netLabels.cancel();
@@ -340,6 +342,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
   }
   function setViewMode(mode) {
     if (!activeBoard || activeBoard.kind === 'schematic') return;
+    cancelDrag();
     unmount3D(); activeBoard.mode = mode; drag = null; gestureScale = null;
     mountViewMode();
     if (mode === '2d') apply();
@@ -991,7 +994,39 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
   $('none').addEventListener('click', () => updateNetStatus());
 
   // ------------------------------------------------------------ pan / zoom
-  let viewFrame = 0, drag = null, panned = false, gestureScale = null;
+  let viewFrame = 0, drag = null, panned = false, gestureScale = null, spaceHeld = false;
+  function cancelDrag(suppressClick = true) {
+    if (!drag) return;
+    if (drag && suppressClick) panned = true;
+    drag = null;
+    $('selection-rectangle').hidden = true;
+    view.classList.remove('selecting', 'panning');
+  }
+  function dragBox(e) {
+    const bounds = view.getBoundingClientRect();
+    const x = Math.max(bounds.left, Math.min(bounds.right, e.clientX));
+    const y = Math.max(bounds.top, Math.min(bounds.bottom, e.clientY));
+    return { left: Math.min(drag.x, x), right: Math.max(drag.x, x), top: Math.min(drag.y, y), bottom: Math.max(drag.y, y) };
+  }
+  function selectRectangle(box, additive) {
+    const schematic = activeBoard.kind === 'schematic';
+    const matches = rectangleMatches(activeBoard, schematic ? activeBoard.schematicComponents : componentIndex,
+      schematic ? activeBoard.schematicNets : netIndex, box);
+    activeBoard.probeMessage = ''; activeBoard.probeResult = null; updateProbeResult();
+    if (schematic) {
+      if (!additive) { activeBoard.selectedComponents.clear(); activeBoard.selectedNets.clear(); }
+      matches.components.forEach(id => activeBoard.selectedComponents.add(id));
+      matches.nets.forEach(id => activeBoard.selectedNets.add(id));
+      updateSchematicSelection();
+    } else {
+      const components = new Set(additive ? componentHits.map(el => el.dataset.component) : []);
+      const nets = new Set(additive ? netHits.map(el => el.dataset.net) : []);
+      matches.components.forEach(name => components.add(name)); matches.nets.forEach(name => nets.add(name));
+      activeBoard.probeComponents = [...components]; activeBoard.probeNets = [...nets];
+      $('component-query').value = [...components].join(', '); $('net-query').value = [...nets].join(', ');
+      searchComponents(); searchNets();
+    }
+  }
   function cancelViewUpdate() { cancelAnimationFrame(viewFrame); viewFrame = 0; }
   function apply(redrawMeasurements = true) {
     cancelViewUpdate();
@@ -1029,6 +1064,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
   }
   function zoomAt(point, factor) {
     if (!svg || !Number.isFinite(factor) || factor <= 0) return;
+    cancelDrag();
     const span = Math.max(vb.w, vb.h), base = Math.max(home.w, home.h);
     const k = Math.max(base * 0.0001, Math.min(base * 100, span * factor)) / span;
     const anchor = viewPoint(point);
@@ -1036,12 +1072,13 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
            w: vb.w * k, h: vb.h * k };
     queueViewUpdate();
   }
-  function resetView() { if (is3D()) { threeViewer?.fit(); return; } if (svg) { drag = null; vb = { ...home }; apply(); } }
+  function resetView() { if (is3D()) { threeViewer?.fit(); return; } if (svg) { cancelDrag(); vb = { ...home }; apply(); } }
   $('zoom-in').onclick = () => is3D() ? threeViewer?.zoom(1 / 1.25) : zoomAt(centerPoint(), 1 / 1.25);
   $('zoom-out').onclick = () => is3D() ? threeViewer?.zoom(1.25) : zoomAt(centerPoint(), 1.25);
   $('view-fit').onclick = resetView;
   view.addEventListener('wheel', e => {
     if (!svg || is3D()) return;
+    cancelDrag();
     e.preventDefault();
     if (gestureScale !== null || !Number.isFinite(e.deltaX) || !Number.isFinite(e.deltaY)) return;
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? view.clientHeight : 1;
@@ -1055,7 +1092,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
   }, { passive: false });
   // Safari exposes native pinch gestures separately from wheel events.
   view.addEventListener('gesturestart', e => {
-    if (!svg || is3D()) return; e.preventDefault(); gestureScale = e.scale > 0 ? e.scale : 1;
+    if (!svg || is3D()) return; cancelDrag(); e.preventDefault(); gestureScale = e.scale > 0 ? e.scale : 1;
   }, { passive: false });
   view.addEventListener('gesturechange', e => {
     if (!svg || is3D() || gestureScale === null || !Number.isFinite(e.scale) || e.scale <= 0) return;
@@ -1066,9 +1103,11 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
   view.addEventListener('gestureend', e => { if (gestureScale !== null) e.preventDefault(); gestureScale = null; }, { passive: false });
   view.addEventListener('mousedown', e => {
     panned = false;
-    if (!is3D() && svg && (e.button === 1 || e.button === 0)) {
-      if (e.button === 1) e.preventDefault();
-      drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y, scale: screenUnits() };
+    if (!is3D() && svg && !activeBoard.loading && (e.button === 1 || e.button === 0)) {
+      e.preventDefault();
+      view.focus({ preventScroll: true });
+      drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y, scale: screenUnits(), button: e.button,
+        selection: e.button === 0 && !measuring && !spaceHeld, additive: e.shiftKey };
     }
   });
   window.addEventListener('mousemove', e => {
@@ -1076,12 +1115,25 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y, scale = drag.scale;
     if (Math.hypot(dx, dy) > 3) panned = true;
     if (!panned) return;
+    if (drag.selection) {
+      const box = dragBox(e), bounds = view.getBoundingClientRect(), rectangle = $('selection-rectangle');
+      rectangle.hidden = false;
+      Object.assign(rectangle.style, { left: box.left - bounds.left + 'px', top: box.top - bounds.top + 'px',
+        width: box.right - box.left + 'px', height: box.bottom - box.top + 'px' });
+      view.classList.add('selecting');
+      return;
+    }
+    view.classList.add('panning');
     vb.x = drag.vx - scale.a * dx - scale.c * dy; vb.y = drag.vy - scale.b * dx - scale.d * dy;
     queueViewUpdate();
   });
-  window.addEventListener('mouseup', () => { drag = null; });
-  window.addEventListener('blur', () => { drag = null; gestureScale = null; });
-  view.addEventListener('dblclick', e => { if (e.button === 0 && !measuring) resetView(); });
+  window.addEventListener('mouseup', e => {
+    if (!drag || e.button !== drag.button) return;
+    if (drag.selection && panned) selectRectangle(dragBox(e), drag.additive);
+    cancelDrag(false);
+  });
+  window.addEventListener('blur', () => { cancelDrag(); spaceHeld = false; view.classList.remove('pan-ready'); gestureScale = null; });
+  view.addEventListener('dblclick', e => { if (e.button === 0 && !measuring && !panned) resetView(); });
 
   // ------------------------------------------------------------ measuring (SVG units are mm)
   let unit = 'mm', imperialUnit = 'mil', measuring = false, pts = [], measurements = [], selectedMeasurement = null, hover = null, mg = null;
@@ -1167,6 +1219,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
     readout.textContent = `dist ${fmt(Math.hypot(dx, dy))}\ndx   ${fmt(Math.abs(dx))}\ndy   ${fmt(Math.abs(dy))}\nang  ${(Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1)}°`;
   }
   function setMeasuring(v) {
+    cancelDrag();
     v = Boolean(v && svg && !is3D() && activeBoard?.kind !== 'schematic');
     measuring = v; $('measure-btn').classList.toggle('on', v); view.classList.toggle('measuring', v);
     pts = []; hover = null;
@@ -1190,6 +1243,10 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
   window.addEventListener('keydown', e => {
     if (measuring && (e.key === 'Meta' || e.key === 'Control')) { snapping = Boolean(snapModifier(e)); refreshHover(); draw(); }
     const editing = e.target.closest('textarea, select, [contenteditable], input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="file"])');
+    if (!editing && !is3D() && e.code === 'Space' && !e.ctrlKey && !e.metaKey && !e.altKey &&
+        (e.target === document.body || view.contains(e.target))) {
+      e.preventDefault(); spaceHeld = true; view.classList.add('pan-ready'); return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); $('file').click(); return; }
     if (!editing && !e.altKey && !e.metaKey && !e.ctrlKey) {
       if (e.key.toLowerCase() === 'f') { e.preventDefault(); resetView(); return; }
@@ -1207,6 +1264,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
       return;
     }
     if (e.key === 'Escape') {
+      cancelDrag();
       selectedMeasurement = null;
       clearSchematicSelection();
       clearComponent();
@@ -1220,6 +1278,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
     if (e.shiftKey && e.key.toLowerCase() === 'c') { measurements = []; pts = []; selectedMeasurement = null; refreshHover(); draw(); }
   });
   window.addEventListener('keyup', e => {
+    if (e.code === 'Space') { spaceHeld = false; view.classList.remove('pan-ready'); }
     if (measuring && (e.key === 'Meta' || e.key === 'Control')) { snapping = Boolean(snapModifier(e)); refreshHover(); draw(); }
   });
   window.addEventListener('blur', () => { snapping = false; if (measuring) { refreshHover(); draw(); } });

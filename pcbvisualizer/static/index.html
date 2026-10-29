@@ -56,7 +56,7 @@
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
       <button id="units-toggle" aria-pressed="false" title="Switch metric / imperial units (Q)" disabled>Metric (mm)</button>
       <div id="readout"></div>
-      <div class="hint">Click copper to select a net; click it again to deselect. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. F or double-click fits. Measure (M): click two points; hold Command on macOS or Ctrl on Windows/Linux to snap to visible pad/via centres. Click a completed segment for dashed X/Y distances. Q switches metric/imperial. Esc cancels the tool and selection; Shift+C clears measurements.</div>
+      <div class="hint">Click copper to select a net; click it again to deselect. Drag a dashed rectangle to select nets and components; Shift-drag adds to the selection. Pan with two-finger scrolling, middle-drag or Space-drag. Pinch or Ctrl+scroll to zoom. F or double-click fits. Measure (M): click two points; hold Command on macOS or Ctrl on Windows/Linux to snap to visible pad/via centres. Click a completed segment for dashed X/Y distances. Q switches metric/imperial. Esc cancels the tool and selection; Shift+C clears measurements.</div>
     </div>
     <div id="schematic-selection" hidden>
       <label>Selection</label>
@@ -77,16 +77,17 @@
       <div id="probe-result-status" role="status"></div>
       <button id="probe-back">Back to schematic</button>
     </div>
-    <div id="schematic-hint" class="hint" hidden>Click a component or net to select it; click it again to deselect it. Shift-click to add to the selection. Esc clears the selection. Scroll with two fingers or drag to pan. Pinch or Ctrl+scroll to zoom. Double-click to reset.</div>
+    <div id="schematic-hint" class="hint" hidden>Click a component or net to select it; click it again to deselect it. Shift-click to add to the selection. Esc clears the selection. Drag a dashed rectangle to select nets and components; Shift-drag adds to the selection. Pan with two-finger scrolling, middle-drag or Space-drag. Pinch or Ctrl+scroll to zoom. Double-click to reset.</div>
     <div id="stats"></div>
   </div>
   <div id="workspace">
     <div id="tabs" role="tablist" aria-label="Open documents"></div>
-    <div id="view" role="tabpanel" aria-label="Document view">
+    <div id="view" role="tabpanel" aria-label="Document view" tabindex="0">
       <div id="empty">Open Altium or KiCad PCB and schematic files<br>or drop them here</div>
       <div id="three-view" hidden></div>
       <div id="net-labels" aria-hidden="true"></div>
       <div id="measure-label"></div>
+      <div id="selection-rectangle" aria-hidden="true" hidden></div>
       <div id="toast"></div>
       <div id="busy">Rendering…</div>
     </div>
