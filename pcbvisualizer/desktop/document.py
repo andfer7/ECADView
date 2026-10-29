@@ -707,11 +707,13 @@ class DocumentWorker(QObject):
     frame = Signal(object)
     picked = Signal(object)
     mesh = Signal(object)
+    gpu_scene = Signal(object)
     failed = Signal(str)
 
     def __init__(self, path):
         super().__init__()
         self.path, self.document = path, None
+        self.retained_ready = False
 
     @Slot()
     def load(self):
@@ -727,10 +729,29 @@ class DocumentWorker(QObject):
     @Slot(object)
     def render(self, request):
         try:
+            if self.retained_ready and not request.get("raster_required", True):
+                return
             if self.document:
                 self.frame.emit(self.document.raster(request))
         except Exception as exc:  # noqa: BLE001 - keep Qt callbacks from swallowing renderer errors
             self.failed.emit(f"Rendering failed: {exc}")
+
+    @Slot()
+    def build_gpu_scene(self):
+        if self.document is None:
+            return
+        try:
+            from .gpu_scene import build_scene
+
+            scene = build_scene(self.document)
+            self.retained_ready = bool(scene.get("supported"))
+            if self.retained_ready and hasattr(self.document, "pcb_raster"):
+                # Camera-independent geometry replaces the raster caches. A
+                # later CPU fallback creates its cache again on demand.
+                del self.document.pcb_raster
+        except Exception as exc:  # noqa: BLE001 - retain raster presentation on unsupported inputs
+            scene = {"supported": False, "reason": str(exc)}
+        self.gpu_scene.emit(scene)
 
     @Slot(object)
     def pick(self, request):

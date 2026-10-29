@@ -301,6 +301,8 @@ class LayoutGpuTests(unittest.TestCase):
         canvas.timer.stop()
         canvas.camera, canvas.scale = QPointF(), 100
         canvas.frame = frame(canvas, image("#604020"), canvas.viewport())
+        # This fixture supplies a completed frame without a document worker.
+        canvas.inflight = False
         canvas.measurements = [(QPointF(-1, -0.5), QPointF(1, -0.5))]
         target, snapped = canvas.measurement_position(QPointF(104, 100), True)
         self.assertTrue(snapped)

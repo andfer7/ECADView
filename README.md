@@ -7,18 +7,21 @@ between documents, and measure PCB geometry. The default application uses Qt
 painting and native OpenGL. It starts no web server and opens no browser.
 
 Zoom into a PCB to see pin numbers and net names over visible component pads
-when the captions fit. Navigation uses a bounded image cache, while parsing,
-spatial indexing and vector refinements run in a worker thread per document.
-Repeated pan and zoom input coalesces into one pending refinement instead of
-queuing redraws for thousands of individual graphics. Cached images follow input
-immediately with smooth scaling; a sharp refinement follows when a gesture pauses.
-The 2D layout keeps its overview and detail images in OpenGL textures, so the GPU
-scales and positions them during navigation without uploading every frame again.
-Captions and measurement overlays use Qt's OpenGL painter. Parsing and detailed
-source rasterization remain on the CPU. If OpenGL is unavailable, the layout
-automatically uses the raster canvas; schematics retain their raster renderer.
-Panning within the cached margin reuses existing detail, and a retained overview
-fills uncovered areas while the next frame arrives. Offscreen pad captions are
+when the captions fit. Parsing, spatial indexing and geometry preparation run in
+a worker thread per document. The 2D layout first shows a cached preview, then
+uploads a retained OpenGL scene of tracks, pads, vias, copper pours and text.
+Zooming and panning change camera uniforms; selecting nets or components updates
+a small object lookup. These interactions require no CPU SVG redraw or new board
+image upload once the scene is ready. Analytic curves and multisampled triangles
+keep geometry sharp as the camera moves. Captions and measurement overlays use
+Qt's OpenGL painter.
+
+Source parsing and one-time triangulation still use the CPU. Unsupported SVG
+composition, such as clipping or isolated group opacity, retains the cached image
+renderer. Geometry beyond the 128 MiB buffer budget also uses that fallback. If
+OpenGL is unavailable, the layout automatically uses the raster canvas;
+schematics retain their raster renderer. Image-based navigation coalesces worker
+refinements and keeps an overview for uncovered areas. Offscreen pad captions are
 culled before text layout, and text measurements are cached. Small text uses native
 glyph outlines from installed fonts, so it remains visible below a pixel in
 document coordinates. Font appearance can differ from embedded browser fonts.
@@ -36,9 +39,19 @@ vector rendering. To compare raster and OpenGL presentation on a live desktop:
 uv run python scripts/benchmark_layout_gpu.py board.PcbDoc --renderer both --zoom 4 --motion zoom
 ```
 
-The desktop comparison reports the graphics renderer, paint submission times,
-input timer cadence and texture upload counts. Paint submission time does not
-include all asynchronous GPU execution or display latency.
+The desktop comparison reports the graphics renderer, geometry preparation,
+paint submission times, input timer cadence and upload counts. Paint submission
+time does not include all asynchronous GPU execution or display latency. To
+include production worker activity and pauses between gestures:
+
+```bash
+uv run python scripts/benchmark_layout_interaction.py board.PcbDoc --output retained.json
+uv run python scripts/benchmark_layout_interaction.py board.PcbDoc --renderer textures --output textures.json
+```
+
+This scripted camera workload reports Qt presentation callbacks, event-loop
+cadence, load milestones and redraw/upload counts. It excludes physical touchpad
+and display latency.
 
 PCB tabs also offer a **2D / 3D** toggle. The 3D preview shows the board profile,
 curved edges, cutouts, through holes, slots, and simple extruded component bodies
@@ -202,9 +215,11 @@ pcbvisualizer/
   cli.py                  Native startup and explicit web-mode compatibility
   desktop/
     app.py                Native windows, tabs, inspector and worker lifecycle
-    canvas.py             Cached viewport, gestures and measurements
+    canvas.py             Viewport, gestures, captions and measurements
     document.py           Worker-owned rasterizer and spatial picking
-    opengl.py             Resident GPU textures for 2D layout presentation
+    opengl.py             GPU viewport, overlays and image fallback
+    gpu_scene.py          Worker-side SVG geometry compilation
+    gpu_mesh.py           Retained buffers, analytic shaders and selection lookup
     text.py               Native glyph outlines for small text
     probing.py            Source/pin/name cross-probing
     solid.py              OpenGL meshes, camera, picking and body edits
@@ -224,6 +239,8 @@ pcbvisualizer/
 tests/
   test_desktop.py         Native rendering, tabs, navigation and picking tests
   test_layout_gpu.py      GPU fidelity, texture reuse and raster fallback tests
+  test_gpu_scene.py       Retained geometry, GPU selection and upload regressions
+  test_gpu_paths.py       Curved/dashed path and fill-rule raster comparisons
   test_rendering.py       Rendering regression tests
   test_kicad.py           KiCad geometry, connectivity, and input tests
   test_server.py          HTTP and launch-command integration tests
@@ -234,6 +251,7 @@ scripts/
   PCBVisualizer.spec      Native Qt modules, data and file associations
   benchmark_native.py     Native load, raster and cached paint timings
   benchmark_layout_gpu.py Live raster/OpenGL navigation comparison
+  benchmark_layout_interaction.py Production worker and camera interaction timings
 ```
 
 The server serves frontend resources explicitly. They are included in

@@ -1,4 +1,4 @@
-"""Resident layout textures: navigation changes transforms, never image pixels."""
+"""Retained layout geometry with cached image fallback and native overlays."""
 
 import time
 
@@ -10,11 +10,12 @@ from shiboken6 import VoidPtr
 
 
 class LayoutOpenGLView(QOpenGLWidget):
-    """GPU presentation of the canvas's bounded overview and detail images.
+    """GPU layout presentation owned by the canvas's native input controller.
 
-    BoardCanvas owns navigation, hit testing and frame production. This child
-    only uploads new QImages and draws their world rectangles as textured quads;
-    Qt's OpenGL painter draws captions and measurements over those quads.
+    Supported documents upload geometry once; navigation updates the camera and
+    highlighting updates a small object lookup. Cached overview/detail images
+    provide the first preview and fallback for unsupported SVG composition.
+    Qt's OpenGL painter draws captions and measurements above either scene.
     """
 
     failed = Signal(str)
@@ -25,7 +26,7 @@ class LayoutOpenGLView(QOpenGLWidget):
         surface = QSurfaceFormat()
         surface.setVersion(3, 2)
         surface.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
-        surface.setSamples(0)
+        surface.setSamples(4)
         surface.setDepthBufferSize(0)
         surface.setStencilBufferSize(0)
         self.setFormat(surface)
@@ -39,6 +40,7 @@ class LayoutOpenGLView(QOpenGLWidget):
         self.gl_info = {}
         self.gl = self.blitter = self._context = None
         self.textures = {}
+        self.retained_renderer = None
         self._ready = self._failed = self._cleaning = False
 
     @property
@@ -146,10 +148,25 @@ class LayoutOpenGLView(QOpenGLWidget):
 
     def _paint_frames(self):
         frames = list(self.canvas.display_frames())
-        self._sync_textures(frames)
+        scene = self.canvas.gpu_scene
+        if scene is None:
+            if self.retained_renderer is not None:
+                self.retained_renderer.cleanup()
+                self.retained_renderer = None
+            self._sync_textures(frames)
+        else:
+            if self.retained_renderer is None:
+                from .gpu_mesh import RetainedGpuScene
+
+                self.retained_renderer = RetainedGpuScene()
+                self.retained_renderer.initialize(self._context)
+            self.retained_renderer.set_scene(scene)
+            for texture, _size in self.textures.values():
+                texture.destroy()
+            self.textures.clear()
         gl = self.gl
         # QPainter and other Qt GL widgets share the context. Establish all
-        # state used by the texture pass on every paint, including after text.
+        # state used by the geometry/image pass, including after text.
         gl.glViewport(
             0,
             0,
@@ -160,6 +177,7 @@ class LayoutOpenGLView(QOpenGLWidget):
         gl.glDisable(0x0B90)  # GL_STENCIL_TEST
         gl.glDisable(0x0B44)  # GL_CULL_FACE
         gl.glDisable(0x0C11)  # GL_SCISSOR_TEST
+        gl.glEnable(0x809D)  # GL_MULTISAMPLE for tessellated polygon contours
         gl.glColorMask(True, True, True, True)
         gl.glActiveTexture(0x84C0)  # GL_TEXTURE0
         gl.glEnable(0x0BE2)  # GL_BLEND
@@ -167,6 +185,9 @@ class LayoutOpenGLView(QOpenGLWidget):
         gl.glBlendFunc(1, 0x0303)  # premultiplied: GL_ONE, GL_ONE_MINUS_SRC_ALPHA
         gl.glClearColor(27 / 255, 29 / 255, 33 / 255, 1)
         gl.glClear(0x4000)  # GL_COLOR_BUFFER_BIT
+        if scene is not None:
+            self.retained_renderer.paint(self.canvas)
+            return
         self.blitter.bind()
         try:
             for frame in frames:
@@ -207,7 +228,7 @@ class LayoutOpenGLView(QOpenGLWidget):
             self.paint_ms_total += self.last_paint_ms
 
     def cleanup(self):
-        """Release resident images while their owning context is current."""
+        """Release geometry and images with their owning context current."""
         if self._cleaning:
             return
         self._cleaning = True
@@ -216,11 +237,14 @@ class LayoutOpenGLView(QOpenGLWidget):
             if context is not None:
                 self.makeCurrent()
             if context is not None and QOpenGLContext.currentContext() == context:
+                if self.retained_renderer is not None:
+                    self.retained_renderer.cleanup()
                 for texture, _size in self.textures.values():
                     texture.destroy()
                 if self.blitter is not None:
                     self.blitter.destroy()
             self.textures.clear()
+            self.retained_renderer = None
             self.blitter = None
             self._ready = False
         finally:

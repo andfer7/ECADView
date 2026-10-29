@@ -1,4 +1,4 @@
-"""Compare visible raster/OpenGL navigation using resident board frames.
+"""Compare cached raster navigation with retained OpenGL layout geometry.
 
 Paint timings measure CPU submission, not completed GPU execution. Timer and
 frameSwapped intervals describe observed event/presentation cadence. This script
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication
 
 from pcbvisualizer.desktop.canvas import BoardCanvas
 from pcbvisualizer.desktop.document import NativeDocument
+from pcbvisualizer.desktop.gpu_scene import build_scene
 from pcbvisualizer.rendering import render_file
 
 
@@ -74,6 +75,7 @@ def _run_case(
     interval,
     snapshot_dir,
     frame_cache,
+    scene,
 ):
     gpu = renderer == "opengl"
     canvas = TimedCanvas(opengl=gpu)
@@ -175,6 +177,16 @@ def _run_case(
             uploads=view.uploads if gpu else 0,
             gpu_cpu_total=view.paint_ms_total if gpu else 0,
             last_gpu_paint=view.paint_count if gpu else 0,
+            geometry_uploads=(
+                view.retained_renderer.geometry_uploads
+                if gpu and view.retained_renderer is not None
+                else 0
+            ),
+            selection_uploads=(
+                view.retained_renderer.selection_uploads
+                if gpu and view.retained_renderer is not None
+                else 0
+            ),
         )
         canvas.paint_times.clear()
         canvas.record_paints = True
@@ -198,16 +210,32 @@ def _run_case(
                 view.frameSwapped.connect(swapped)
             canvas.fit()
             canvas.timer.stop()
-            raster_frame()  # retain a home overview for uncovered zoom/pan
-            canvas.zoom_at(QPointF(canvas.width() / 2, canvas.height() / 2), zoom)
-            canvas.timer.stop()
-            raster_frame()
+            if gpu and scene is not None and scene.get("supported"):
+                canvas.accept_gpu_scene(scene)
+                canvas.zoom_at(QPointF(canvas.width() / 2, canvas.height() / 2), zoom)
+                canvas.timer.stop()
+            else:
+                if gpu and scene is not None:
+                    canvas.accept_gpu_scene(scene)  # records the fallback reason
+                raster_frame()  # retain a home overview for uncovered zoom/pan
+                canvas.zoom_at(QPointF(canvas.width() / 2, canvas.height() / 2), zoom)
+                canvas.timer.stop()
+                raster_frame()
             canvas.navigating = False
             canvas.update()
             state["primed"] = True
             return
-        # An idle paint prewarms label layout and uploads both resident images.
-        if canvas.caption_cache is None or gpu and not view.texture_count:
+        # Initial geometry/images and label placement are excluded from timing.
+        retained = gpu and scene is not None and scene.get("supported")
+        ready = True
+        if gpu:
+            ready = (
+                view.retained_renderer is not None
+                and view.retained_renderer.geometry_uploads > 0
+                if retained
+                else view.texture_count > 0
+            )
+        if canvas.caption_cache is None or not ready:
             return
         ready_timer.stop()
         QTimer.singleShot(150, guard(begin))
@@ -225,6 +253,12 @@ def _run_case(
             raise RuntimeError("Navigation unexpectedly rasterized a new detail frame.")
         if gpu and view.uploads != state["uploads"]:
             raise RuntimeError("Cached navigation unexpectedly uploaded another image.")
+        mesh = view.retained_renderer if gpu else None
+        if mesh is not None and (
+            mesh.geometry_uploads != state["geometry_uploads"]
+            or mesh.selection_uploads != state["selection_uploads"]
+        ):
+            raise RuntimeError("Camera navigation unexpectedly uploaded retained data.")
         swap_intervals = [
             (b - a) * 1000 for a, b in zip(state["swaps"], state["swaps"][1:])
         ]
@@ -235,6 +269,13 @@ def _run_case(
             )
         result = {
             "renderer": renderer,
+            "presentation": (
+                "retained_geometry"
+                if mesh is not None
+                else "cached_texture_fallback"
+                if gpu
+                else "cached_raster_image"
+            ),
             "viewport": [canvas.width(), canvas.height()],
             "device_pixel_ratio": canvas.devicePixelRatioF(),
             "resident_image_keys": sorted(
@@ -263,7 +304,22 @@ def _run_case(
                 uploads_after=view.uploads,
                 texture_count=view.texture_count,
                 texture_bytes=view.texture_bytes,
+                retained_scene={
+                    "supported": bool(scene and scene.get("supported")),
+                    "reason": scene.get("reason", "") if scene else "No scene supplied",
+                    "preparation": dict(scene.get("stats", {})) if scene else {},
+                },
             )
+            if mesh is not None:
+                result.update(
+                    geometry_uploads_before=state["geometry_uploads"],
+                    geometry_uploads_after=mesh.geometry_uploads,
+                    selection_uploads_before=state["selection_uploads"],
+                    selection_uploads_after=mesh.selection_uploads,
+                    resident_vertex_bytes=mesh.vertex_bytes,
+                    resident_index_bytes=mesh.index_bytes,
+                    draw_calls_last_paint=mesh.draw_calls,
+                )
         if snapshot_dir is not None:
             snapshot_dir.mkdir(parents=True, exist_ok=True)
             path = snapshot_dir / (
@@ -330,6 +386,7 @@ def benchmark(
     height=700,
     interval=16,
     snapshot_dir=None,
+    scene=None,
 ):
     """Benchmark an already constructed NativeDocument without reparsing it."""
     app = QApplication.instance()
@@ -350,8 +407,12 @@ def benchmark(
         raise ValueError("The GPU layout benchmark requires a PCB document")
     previous = app.quitOnLastWindowClosed()
     app.setQuitOnLastWindowClosed(False)
-    # Paired renderers use the very same implicitly shared QImages, including
-    # the overview. Image generation is excluded from both measured cases.
+    # Compile once before either measured case. Callers comparing several
+    # window sizes can supply a previously built scene to reuse this work.
+    if renderer != "raster" and scene is None:
+        scene = build_scene(document)
+    # The raster comparator retains its original cached-image presentation.
+    # Unsupported scenes use that same image path through the OpenGL blitter.
     frame_cache = {}
     try:
         return [
@@ -367,6 +428,7 @@ def benchmark(
                 interval=interval,
                 snapshot_dir=Path(snapshot_dir) if snapshot_dir is not None else None,
                 frame_cache=frame_cache,
+                scene=scene,
             )
             for choice in (["raster", "opengl"] if renderer == "both" else [renderer])
         ]
@@ -421,7 +483,7 @@ def main():
                 "qt_platform": app.platformName(),
                 "source_render_seconds": round(source_ready - started, 3),
                 "native_index_seconds": round(indexed - source_ready, 3),
-                "timing_notes": "Paint timings are CPU submissions, not GPU execution. Timer/frameSwapped intervals are observed cadence, not a GPU FPS benchmark. Initial rasterization, uploads, caption warmup and snapshot readback are excluded.",
+                "timing_notes": "Paint timings are CPU submissions, not GPU execution. Timer/frameSwapped intervals are observed cadence, not GPU FPS. Raster uses cached images; supported OpenGL scenes use retained geometry. Scene preparation, initial rasterization/uploads, caption warmup and snapshot readback are excluded from navigation timing and scene preparation is reported separately.",
                 "cases": cases,
             },
             indent=2,
