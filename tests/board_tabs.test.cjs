@@ -2513,6 +2513,115 @@ const image3D = async page => {
   return page.locator('#three-view canvas').screenshot();
 };
 
+test('completed 3D views reuse geometry, textures and STEP bodies across mode and tab switches and release closed tabs', async t => {
+  const fixture = name => {
+    const data = threeBoardData(name);
+    data.scene3d.surface_origin = [25,15];
+    if (name === 'B.PcbDoc') {
+      data.scene3d.board = [{ outline: [[-40,-25],[40,-25],[40,25],[-40,25]], holes: [] }];
+      data.scene3d.surface_origin = [40,25];
+    }
+    data.scene3d.bodies[0] = { ...data.scene3d.bodies[0], id: 'body-0', model: 'box',
+      matrix: [1,0,0,0,0,1,0,0,0,0,1,0,-16,-6,0.8,1] };
+    data.scene3d.step_models = { box: { name: 'box.step', data: readFileSync(resolve(__dirname, 'fixtures/step/box.step')).toString('base64') } };
+    data.svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 30" data-board="${name}"><g id="scene">
+      <g data-layer-token="TOP" data-layer-name="Top copper"><rect x="5" y="5" width="5" height="5" fill="red"/></g>
+      <g data-layer-token="TOPSOLDER" data-layer-name="Top mask"><rect x="5" y="5" width="5" height="5"/></g>
+      <g data-layer-token="TOPOVERLAY" data-layer-name="Top overlay"><rect x="30" y="20" width="5" height="2"/></g>
+      <g data-layer-token="BOTTOM" data-layer-name="Bottom copper"><rect x="35" y="5" width="5" height="5" fill="blue"/></g>
+      <g data-layer-token="BOTTOMSOLDER" data-layer-name="Bottom mask"><rect x="35" y="5" width="5" height="5"/></g>
+    </g></svg>`;
+    return data;
+  };
+  const { page } = await openPage(t, { render: (route, name) => reply(route, fixture(name)) });
+  await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js'), show = Board3D.prototype.show;
+    Board3D.prototype.show = function (...args) { window.testViewer = this; return show.apply(this, args); };
+    window.work3D = { buffers: 0, textures: 0, shaders: 0, decodes: 0 };
+    window.twoDQueries = 0;
+    const query = SVGSVGElement.prototype.querySelectorAll;
+    SVGSVGElement.prototype.querySelectorAll = function (selector) {
+      if (selector.startsWith('#scene ')) window.twoDQueries++;
+      return query.call(this, selector);
+    };
+    for (const [method, counter] of [['bufferData','buffers'], ['texImage2D','textures'], ['compileShader','shaders']]) {
+      const original = WebGL2RenderingContext.prototype[method];
+      WebGL2RenderingContext.prototype[method] = function (...args) {
+        if (this.canvas.getAttribute('aria-label') === '3D PCB view') window.work3D[counter]++;
+        return original.apply(this, args);
+      };
+    }
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = function (...args) { window.work3D.decodes++; return decode.apply(this, args); };
+  });
+  const complete = () => page.waitForFunction(() => window.testViewer?.ready);
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#mode-3d').click(); await complete();
+  await page.locator('#three-top').click(); await page.locator('#three-body-list').selectOption('body-0');
+  const original = await image3D(page);
+  const first = await page.evaluate(() => ({ ...window.work3D, scene: window.testViewer.scene.uuid }));
+  assert.ok(first.buffers > 0 && first.textures > 0 && first.decodes > 0);
+  await page.locator('#mode-2d').click(); await page.locator('#mode-3d').click(); await complete();
+  assert.deepEqual(await page.evaluate(() => ({ ...window.work3D, scene: window.testViewer.scene.uuid })), first,
+    'returning to 3D performs no geometry/texture uploads, rasterization or shader compilation');
+  assert.ok((await image3D(page)).equals(original), 'the first return preserves realistic finishes, camera and highlight');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  await page.locator('#mode-3d').click(); await complete();
+  const both = await page.evaluate(() => ({ ...window.work3D }));
+  for (let cycle = 0; cycle < 3; cycle++) {
+    const scans = await page.evaluate(() => window.twoDQueries);
+    await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click(); await complete();
+    assert.equal(await page.evaluate(() => window.twoDQueries), scans, 'a 3D tab return does not rebuild hidden 2D controls or labels');
+    assert.deepEqual(await selected3DBodies(page), ['body-0']);
+    assert.ok((await image3D(page)).equals(original), 'cached tabs retain the exact rendered finish');
+    await page.locator('#mode-2d').click(); await page.locator('#mode-3d').click(); await complete();
+    const after2D = await page.evaluate(() => window.twoDQueries);
+    await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click(); await complete();
+    assert.equal(await page.evaluate(() => window.twoDQueries), after2D);
+  }
+  assert.deepEqual(await page.evaluate(() => ({ ...window.work3D })), both, 'warm tab and mode switches reuse both prepared views');
+  const beforeClose = await page.evaluate(() => window.testViewer.renderer.info.memory.geometries);
+  await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.testViewer.cache.size), 0);
+  assert.ok(await page.evaluate(before => window.testViewer.renderer.info.memory.geometries < before, beforeClose));
+  await page.getByRole('button', { name: 'Close B.PcbDoc', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => ({ cached: window.testViewer.cache.size, active: Boolean(window.testViewer.scene),
+    geometries: window.testViewer.renderer.info.memory.geometries })), { cached: 0, active: false, geometries: 0 });
+});
+
+test('3D scene cache evicts least recently used views and honors its byte budget', async t => {
+  const { page } = await openPage(t);
+  const result = await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js');
+    const host = document.createElement('div'); Object.assign(host.style, { width: '300px', height: '200px' }); document.body.append(host);
+    const viewer = new Board3D(host, () => {}, null, null, { maxScenes: 2 });
+    const model = () => ({ board: [{ outline: [[-5,-5],[5,-5],[5,5],[-5,5]], holes: [] }], thickness: 1.6, bodies: [] });
+    const a = model(), b = model(), c = model(), disposed = { a: 0, b: 0, c: 0 };
+    for (const [name, data] of [['a',a], ['b',b], ['c',c]]) {
+      viewer.show(data); await viewer.loading;
+      viewer.boardMeshes[0].geometry.addEventListener('dispose', () => disposed[name]++);
+    }
+    const lru = { ...disposed };
+    const bScene = viewer.cache.get(b).scene;
+    viewer.show(b); const reusedB = viewer.scene === bScene;
+    viewer.show(a); await viewer.loading;
+    const after = { ...disposed };
+    viewer.release(b); const releasedB = !viewer.cache.has(b) && disposed.b === 1;
+    viewer.maxBytes = 1; viewer.hide();
+    const bounded = viewer.cache.size === 0 && viewer.renderer.info.memory.geometries === 0;
+    viewer.maxBytes = Infinity; viewer.show(a); await viewer.loading; viewer.hide();
+    viewer.renderer.domElement.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+    const contextCleared = viewer.cache.size === 0 && !viewer.scene && !viewer.environment;
+    viewer.clear(); viewer.controls.dispose(); viewer.observer.disconnect(); viewer.environment?.dispose(); viewer.renderer.dispose(); host.remove();
+    return { lru, reusedB, after, releasedB, bounded, contextCleared };
+  });
+  assert.deepEqual(result.lru, { a: 1, b: 0, c: 0 }, 'the third view evicts only the oldest completed scene');
+  assert.equal(result.reusedB, true);
+  assert.deepEqual(result.after, { a: 1, b: 0, c: 1 }, 'a cache hit refreshes recency');
+  assert.equal(result.releasedB, true); assert.equal(result.bounded, true);
+  assert.equal(result.contextCleared, true, 'graphics context loss invalidates all retained GPU resources');
+});
+
 test('3D board finishes use actual outer copper, mask and silkscreen on both sides independently of selection and hidden layers', async t => {
   const { page } = await openPage(t);
   const result = await page.evaluate(async () => {
@@ -2801,6 +2910,11 @@ test('failed STEP conversion retains extruded bodies and leaving 3D cancels pend
   await page.locator('#three-top').click(); await click3D(page, 0.35, 0.56);
   assert.deepEqual(await selected3DBodies(page), ['body-0'], 'failed model retains selectable extrusion');
   await page.locator('#mode-2d').click();
+  // A completed fallback is cached too. Open a fresh document to exercise
+  // cancellation of a conversion that has not finished yet.
+  const pendingData = { ...data, name: 'Pending.PcbDoc', svg: data.svg.replaceAll('Fallback.PcbDoc', 'Pending.PcbDoc') };
+  await page.route('**/render', route => reply(route, pendingData));
+  await page.locator('#file').setInputFiles(file('Pending.PcbDoc')); await loaded(page, 'Pending.PcbDoc');
   let pending;
   const requested = new Promise(resolve => { pending = resolve; });
   await page.route('**/occt-import-js.wasm', route => { pending(); return new Promise(() => {}); });

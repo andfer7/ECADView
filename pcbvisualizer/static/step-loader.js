@@ -1,5 +1,5 @@
 // Keep converted data across tabs while bounding retained CPU memory. GPU
-// geometries are shared per model by Board3D and disposed when leaving its view.
+// geometries are shared per model by Board3D and retained with completed views.
 const cache = new Map(); let cacheBytes = 0;
 const cacheLimit = 64 * 1024 * 1024;
 export class StepLoader {

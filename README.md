@@ -143,7 +143,12 @@ one is available; components without either a model or body geometry are omitted
 Use **Add STEP models…** to supply missing `.step`/`.stp` references by filename.
 STEP assets are limited to 32 MB (64 MB after decompression), 250,000 triangles
 per model and a 45-second conversion deadline; converted CPU data uses a bounded
-64 MB cache. Leaving 3D cancels outstanding conversion and releases GPU geometry.
+64 MB cache. Completed 3D views retain their geometry, board finishes and shadows,
+so returning from 2D or another tab displays the prepared view immediately.
+The viewer retains up to three completed scenes within an estimated 512 MiB
+budget; older or oversized scenes rebuild when needed. Closing/reloading a tab
+or replacing its STEP models releases its cached scene. Leaving an unfinished
+3D view cancels outstanding conversion.
 Outer copper and printing are rasterized into maps up to 2048 pixels per side;
 these are visual finishes rather than additional editable solids. Blind/buried
 via bores and rigid-flex folding are not represented. Applicable approximations appear in

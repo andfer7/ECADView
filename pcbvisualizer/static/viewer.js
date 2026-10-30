@@ -12,6 +12,7 @@ import { trackViewerSession } from './viewer-session.js';
   const NS = 'http://www.w3.org/2000/svg';
   const netLabels = new NetLabels($('net-labels'));
   let svg = null, groups = [], vb = null, home = null;
+  let twoDBoard = null;
   const boards = [];
   let activeBoard = null, nextBoardId = 1;
   let layoutGPU = null, gpuUnavailable = false, labelTimer = 0;
@@ -25,7 +26,7 @@ import { trackViewerSession } from './viewer-session.js';
     for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn']) $(id).disabled = !svg || loading;
     $('mode-2d').disabled = !svg || loading;
     $('mode-3d').disabled = loading || activeBoard?.kind === 'schematic' || !activeBoard?.scene3d?.board?.length;
-    if (wasLoading && !loading) netLabels.update(activeBoard, gpuActive());
+    if (wasLoading && !loading && !is3D()) netLabels.update(activeBoard, gpuActive());
   }
   // The SVG remains the hit-test surface, but navigating a large unaccelerated
   // layout during preparation can overwhelm the browser. Keep input off it
@@ -47,7 +48,7 @@ import { trackViewerSession } from './viewer-session.js';
     view.classList.remove('gpu-layout');
     if (layoutGPU) layoutGPU.canvas.hidden = true;
     const board = activeBoard;
-    if (board?.gpuScene && !layoutGPU?.lost) {
+    if (board?.gpuScene && !layoutGPU?.lost && !is3D()) {
       try {
         layoutGPU.setScene(board.gpuScene);
         view.classList.toggle('gpu-layout', !is3D());
@@ -89,7 +90,7 @@ import { trackViewerSession } from './viewer-session.js';
         layoutGPU ||= new LayoutWebGL(view, message => {
           if (message && activeBoard) activeBoard.gpuStatus = 'SVG: ' + message;
           syncGPU();
-          if (activeBoard?.svg) { updateComponentStatus(); updateNetStatus(); }
+          if (activeBoard?.svg && !is3D()) { updateComponentStatus(); updateNetStatus(); }
         });
       } catch (error) { gpuUnavailable = true; throw error; }
       const body = JSON.stringify({ svg: data.svg, kind: 'pcb', polygon_elements: data.polygon_elements || [] });
@@ -105,7 +106,7 @@ import { trackViewerSession } from './viewer-session.js';
       if (!boards.includes(board) || board.request !== generation || controller.signal.aborted) return;
       board.gpuScene = scene; board.gpuStatus = 'WebGL 2';
       netLabels.setBounds(board.svg, scene.caption_bounds || {});
-      if (board === activeBoard) { syncGPU(); updateComponentStatus(); updateNetStatus(); }
+      if (board === activeBoard) { syncGPU(); if (!is3D()) { updateComponentStatus(); updateNetStatus(); } }
     } catch (error) {
       if (error.name !== 'AbortError' && boards.includes(board) && board.request === generation) {
         board.gpuStatus = 'SVG: ' + error.message;
@@ -193,7 +194,7 @@ import { trackViewerSession } from './viewer-session.js';
     if (layoutGPU) { layoutGPU.canvas.hidden = true; if (board?.gpuScene !== layoutGPU.scene) layoutGPU.release(); }
     unmount3D();
     if (svg) svg.remove();
-    activeBoard = board; drag = null; gestureScale = null;
+    activeBoard = board; twoDBoard = null; drag = null; gestureScale = null;
     ({ svg, groups, vb, home, unit, imperialUnit, measuring, pts, measurements, selectedMeasurement, hover, mg } = board || {
       svg: null, groups: [], vb: null, home: null, unit: 'mm', imperialUnit: 'mil', selectedMeasurement: null, measuring: false, pts: [], measurements: [], hover: null, mg: null,
     });
@@ -216,29 +217,33 @@ import { trackViewerSession } from './viewer-session.js';
     updateUnits();
     layersEl.replaceChildren();
     if (svg) {
-      svg.style.display = '';
+      svg.style.display = is3D() ? 'none' : '';
       view.prepend(svg);
-      if (schematic) buildSchematicComponentTargets(board);
-      else buildLayers();
-      // Restore retained resources before mounting search/labels. Otherwise a
-      // selected large board would briefly rebuild its expensive SVG overlays.
-      syncGPU();
-      apply();
     }
-    updatePolygonControl();
-    mountNetSearch();
+    if (!is3D()) { mount2DControls(); apply(); }
     updateTabs();
-    mountComponentSearch();
-    updateSchematicSelection();
-    netLabels.update(activeBoard, gpuActive());
     mountViewMode();
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
     else $('view').removeAttribute('aria-labelledby');
+  }
+  function mount2DControls() {
+    if (twoDBoard === activeBoard && activeBoard) return;
+    componentIndex = new Map(); componentHits = []; netIndex = new Map(); netHits = [];
+    if (svg) {
+      if (activeBoard.kind === 'schematic') buildSchematicComponentTargets(activeBoard);
+      else buildLayers();
+      // Upload 2D buffers and build search/layer controls only when that view
+      // is actually displayed. A 3D tab return should just restore its scene.
+      syncGPU();
+    }
+    updatePolygonControl(); mountNetSearch(); mountComponentSearch(); updateSchematicSelection();
+    twoDBoard = activeBoard;
   }
   function closeBoard(board) {
     const index = boards.indexOf(board);
     if (index < 0) return;
     board.controller?.abort();
+    invalidate3D(board);
     board.gpuController?.abort(); board.gpuScene = null;
     boards.splice(index, 1);
     if (board === activeBoard) mountBoard(boards[Math.min(index, boards.length - 1)] || null);
@@ -284,6 +289,7 @@ import { trackViewerSession } from './viewer-session.js';
     const tpl = document.createElement('div'); tpl.innerHTML = data.svg;
     const rendered = tpl.querySelector('svg');
     if (!rendered) throw new Error('The renderer did not return an SVG.');
+    invalidate3D(board);
     if (board === activeBoard) saveBoard();
     const b = rendered.viewBox.baseVal;
     const origin = { x: b.x, y: b.y, w: b.width, h: b.height };
@@ -331,7 +337,7 @@ import { trackViewerSession } from './viewer-session.js';
       if (!response.ok) throw new Error('Could not stop the viewer. Please try again.');
       viewerSession.stop();
       for (const board of boards) { board.controller?.abort(); board.gpuController?.abort(); }
-      netLabels.cancel(); clearTimeout(labelTimer); cancelViewUpdate(); cancelDrag(); unmount3D(); layoutGPU?.release();
+      netLabels.cancel(); clearTimeout(labelTimer); cancelViewUpdate(); cancelDrag(); unmount3D(); threeViewer?.clear(); layoutGPU?.release();
       $('session-stopped').hidden = false;
     } catch (error) { $('quit').disabled = false; toast(error.message); }
   };
@@ -339,11 +345,15 @@ import { trackViewerSession } from './viewer-session.js';
   // ------------------------------------------------------------ 3D mode
   let threeViewer = null, threeModule = null, threeMount = 0, threeBoard = null;
   function is3D() { return activeBoard?.mode === '3d'; }
+  function invalidate3D(board) {
+    if (threeBoard === board) { board.camera3d = threeViewer?.state(); threeBoard = null; }
+    threeViewer?.release(board.scene3d);
+  }
   function unmount3D() {
     threeMount++;
     if (threeBoard) threeBoard.camera3d = threeViewer?.state();
     threeBoard = null;
-    threeViewer?.clear();
+    threeViewer?.hide();
     $('three-view').hidden = true;
   }
   function mountViewMode() {
@@ -360,6 +370,7 @@ import { trackViewerSession } from './viewer-session.js';
     $('three-status').textContent = (activeBoard?.scene3d?.notes || []).join('\n');
     $('three-status').hidden = !showing && available;
     $('net-labels').hidden = showing; label.hidden = showing;
+    if (showing) netLabels.cancel();
     view.classList.toggle('measuring', !showing && measuring);
     if (svg) svg.style.display = showing ? 'none' : '';
     syncGPU();
@@ -400,6 +411,7 @@ import { trackViewerSession } from './viewer-session.js';
     if (!activeBoard || activeBoard.kind === 'schematic') return;
     cancelDrag();
     unmount3D(); activeBoard.mode = mode; drag = null; gestureScale = null;
+    if (mode === '2d' && svg) { svg.style.display = ''; mount2DControls(); }
     mountViewMode();
     if (mode === '2d') apply();
   }
@@ -427,6 +439,7 @@ import { trackViewerSession } from './viewer-session.js';
       });
       const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
       const key = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+      invalidate3D(board);
       for (const [oldKey, asset] of matches) {
         assets[key] = { name: asset.name, data, compressed: false };
         for (const body of board.scene3d.bodies) if (body.model === oldKey) body.model = key;

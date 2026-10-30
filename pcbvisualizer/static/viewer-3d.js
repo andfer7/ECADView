@@ -4,11 +4,45 @@ import { StepLoader } from './step-loader.js';
 import { boardSurfaces } from './board-surface.js';
 import { studioEnvironment, stepFinish, bodyMaterial, stepMaterial } from './studio-3d.js';
 
-// One WebGL context is shared by all tabs. Geometry is released on every switch.
+const sceneFields = ['scene', 'pickMeshes', 'bodyMeshes', 'boardMeshes', 'studioLights', 'bounds', 'center', 'radius',
+  'shadowDirty', 'shadowKey', 'selectionKey', 'bodyState', 'modelProgress', 'surfaceError', 'model', 'sourceSVG', 'ready', 'sceneBytes'];
+
+function resources(scene) {
+  const geometries = new Set(), materials = new Set(), textures = new Set(), shadows = new Set();
+  scene?.traverse(object => {
+    if (object.shadow) shadows.add(object.shadow);
+    if (object.geometry) geometries.add(object.geometry);
+    for (const material of Array.isArray(object.material) ? object.material : [object.material]) if (material) {
+      materials.add(material);
+      for (const value of Object.values(material)) if (value?.isTexture) textures.add(value);
+    }
+  });
+  return { geometries, materials, textures, shadows };
+}
+
+function disposeScene(scene) {
+  const all = resources(scene);
+  for (const items of Object.values(all)) for (const item of items) item.dispose();
+}
+
+function sceneBytes(scene) {
+  const all = resources(scene), arrays = new Set();
+  let bytes = 0;
+  for (const geometry of all.geometries) {
+    for (const attribute of [...Object.values(geometry.attributes), geometry.index]) if (attribute) arrays.add(attribute.array);
+  }
+  for (const array of arrays) bytes += array.byteLength * 2; // CPU arrays and GPU buffers.
+  for (const texture of all.textures) bytes += (texture.image?.width || 0) * (texture.image?.height || 0) * 4 * 8 / 3;
+  for (const shadow of all.shadows) if (shadow.map) bytes += shadow.map.width * shadow.map.height * 8;
+  return bytes;
+}
+
+// One WebGL context, with a bounded LRU of completed scenes across all tabs.
 export class Board3D {
-  constructor(host, onError, onPick, onModels) {
+  constructor(host, onError, onPick, onModels, { maxBytes = 512 * 1024 * 1024, maxScenes = 3 } = {}) {
     this.host = host;
     this.onModels = onModels;
+    this.cache = new Map(); this.maxBytes = maxBytes; this.maxScenes = maxScenes;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setClearColor(0x1b1d21);
@@ -21,7 +55,8 @@ export class Board3D {
     this.renderer.domElement.setAttribute('role', 'region');
     this.renderer.domElement.tabIndex = 0;
     this.renderer.domElement.addEventListener('webglcontextlost', event => {
-      event.preventDefault(); onError('The 3D graphics context was lost. Switch to 2D or reload to try again.');
+      event.preventDefault(); this.clear(); this.environment?.dispose(); this.environment = null;
+      onError('The 3D graphics context was lost. Switch to 2D or reload to try again.');
     });
     host.append(this.renderer.domElement);
     this.camera = new THREE.PerspectiveCamera(40, 1, 0.01, 10000);
@@ -60,33 +95,67 @@ export class Board3D {
     this.observer.observe(host);
   }
 
-  clear() {
+  detach() {
     this.generation = (this.generation || 0) + 1;
     this.stepLoader?.close(); this.stepLoader = null;
-    this.shadowDirty = true; this.shadowKey = null;
     this.cancelPick();
     this.controls.enabled = false;
-    const geometries = new Set(), textures = new Set();
-    this.scene?.traverse(object => {
-      object.shadow?.dispose();
-      if (object.geometry) geometries.add(object.geometry);
-      const materials = Array.isArray(object.material) ? object.material : [object.material];
-      materials.forEach(material => {
-        for (const value of Object.values(material || {})) if (value?.isTexture) textures.add(value);
-        material?.dispose();
-      });
-    });
-    geometries.forEach(geometry => geometry.dispose());
-    textures.forEach(texture => texture.dispose());
-    this.scene = null;
+    for (const field of sceneFields) this[field] = null;
+    this.ready = false; this.loading = null;
     this.pickMeshes = [];
     this.bodyMeshes = [];
     this.boardMeshes = [];
     this.renderer.clear();
   }
 
+  hide() {
+    if (this.scene && this.ready) {
+      this.cache.set(this.model, Object.fromEntries(sceneFields.map(field => [field, this[field]])));
+    } else disposeScene(this.scene);
+    this.detach(); this.trimCache();
+  }
+
+  trimCache(activeBytes = 0, activeCount = 0) {
+    let bytes = activeBytes + [...this.cache.values()].reduce((sum, entry) => sum + entry.sceneBytes, 0);
+    while (this.cache.size && (bytes > this.maxBytes || this.cache.size + activeCount > this.maxScenes)) {
+      const key = this.cache.keys().next().value, entry = this.cache.get(key);
+      bytes -= entry.sceneBytes; this.cache.delete(key); disposeScene(entry.scene);
+    }
+  }
+
+  release(model) {
+    if (this.model === model) { disposeScene(this.scene); this.detach(); }
+    const entry = this.cache.get(model);
+    if (entry) { this.cache.delete(model); disposeScene(entry.scene); }
+  }
+
+  clear() {
+    disposeScene(this.scene); this.detach();
+    for (const entry of this.cache.values()) disposeScene(entry.scene);
+    this.cache.clear();
+  }
+
   show(model, state, bodies, sourceSVG) {
-    this.clear();
+    this.hide();
+    const saved = this.cache.get(model);
+    if (saved) {
+      this.cache.delete(model);
+      if (saved.sourceSVG === sourceSVG) {
+        Object.assign(this, saved);
+        this.loading = Promise.resolve();
+        this.renderer.shadowMap.needsUpdate = false;
+        this.controls.minDistance = this.radius * 0.01; this.controls.maxDistance = this.radius * 100;
+        this.controls.enabled = true;
+        this.restoreCamera(state); this.resize(); this.updateBodies(bodies);
+        this.onModels?.(this.modelProgress);
+        if (this.surfaceError) this.onModels?.({ surfaceError: this.surfaceError });
+        return;
+      }
+      disposeScene(saved.scene);
+    }
+    this.model = model; this.sourceSVG = sourceSVG;
+    this.shadowDirty = true; this.shadowKey = null; this.selectionKey = null;
+    this.modelProgress = { loaded: 0, total: 0, failed: [] }; this.surfaceError = null;
     this.scene = new THREE.Scene();
     this.environment ||= studioEnvironment(this.renderer);
     this.scene.environment = this.environment.texture; this.scene.environmentIntensity = 0.5;
@@ -152,13 +221,22 @@ export class Board3D {
     this.updateBounds();
     this.controls.enabled = true;
     this.resize();
+    this.restoreCamera(state);
+    this.updateBodies(bodies);
+    const generation = this.generation;
+    this.loading = Promise.all([this.loadSteps(model, generation), this.loadSurfaces(sourceSVG, model, generation)]).then(() => {
+      if (generation !== this.generation) return;
+      this.stepLoader?.close(); this.stepLoader = null;
+      this.ready = true; this.sceneBytes = sceneBytes(this.scene);
+      this.trimCache(this.sceneBytes, 1);
+    });
+  }
+
+  restoreCamera(state) {
     if (state) {
       this.camera.position.fromArray(state.position); this.camera.up.fromArray(state.up);
       this.controls.target.fromArray(state.target); this.controls.update();
     } else this.fit();
-    this.updateBodies(bodies);
-    this.loadSteps(model, this.generation);
-    this.loadSurfaces(sourceSVG, model, this.generation);
   }
 
   async loadSurfaces(source, model, generation) {
@@ -178,7 +256,10 @@ export class Board3D {
       }
       this.render();
     } catch (error) {
-      if (generation === this.generation) this.onModels?.({ surfaceError: 'Board finish unavailable: ' + error.message });
+      if (generation === this.generation) {
+        this.surfaceError = 'Board finish unavailable: ' + error.message;
+        this.onModels?.({ surfaceError: this.surfaceError });
+      }
     }
   }
 
@@ -190,7 +271,10 @@ export class Board3D {
       requests.get(body.model).set(body.id, body);
     }
     let loaded = 0; const failed = [];
-    const progress = () => this.onModels?.({ loaded, total: requests.size, failed: [...failed] });
+    const progress = () => {
+      this.modelProgress = { loaded, total: requests.size, failed: [...failed] };
+      this.onModels?.(this.modelProgress);
+    };
     progress();
     if (!requests.size) return;
     this.stepLoader = new StepLoader();
@@ -269,6 +353,8 @@ export class Board3D {
 
   updateBodies(state) {
     this.bodyState = state;
+    const key = [...(state?.deleted || [])].sort().join(','), selectionKey = [...(state?.selected || [])].sort().join(',');
+    if (!this.shadowDirty && key === this.shadowKey && selectionKey === this.selectionKey) { this.render(); return; }
     for (const { id, mesh, edges, edgeColor, edgeOpacity } of this.bodyMeshes) {
       mesh.visible = !state?.deleted.has(id);
       if (edges) edges.visible = mesh.visible;
@@ -279,10 +365,9 @@ export class Board3D {
         edges.material.opacity = selected ? 1 : edgeOpacity;
       }
     }
-    this.updateBounds();
-    const key = [...(state?.deleted || [])].sort().join(',');
+    if (this.shadowDirty || key !== this.shadowKey) this.updateBounds();
     if (this.shadowDirty || key !== this.shadowKey) this.renderer.shadowMap.needsUpdate = true;
-    this.shadowDirty = false; this.shadowKey = key;
+    this.shadowDirty = false; this.shadowKey = key; this.selectionKey = selectionKey;
     this.render();
   }
 
