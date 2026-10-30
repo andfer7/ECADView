@@ -106,6 +106,15 @@ body dimensions, bottom-side standoffs, curved outlines, merged drills, slots,
 edge notches, and fallback notices. Browser coverage checks actual WebGL output,
 camera controls and tab persistence, preservation of 2D state, lazy local assets,
 unsupported browsers, and an uploaded generated PcbDoc through the real server.
+
+CAD navigation regressions cover free top/bottom tumbling, rotation-centre and
+orbit-distance stability, screen-space pan, pointer-directed wheel/pinch zoom,
+surface-double-click recentering and camera restoration. Input bursts draw once
+per animation frame; interrupted drags cannot resume after blur or mode changes.
+Touch coverage sends real two-touch input through Chrome's DevTools protocol.
+Safari gesture events are simulated in Chrome; OS touchpad input and WebKit
+are not exercised by these tests.
+
 Body editing coverage checks ray picking from both sides, board occlusion,
 highlight restoration, drag suppression, Shift selections, duplicate names,
 Delete/Backspace, grouped undo, tab isolation, and unchanged 2D/source geometry.

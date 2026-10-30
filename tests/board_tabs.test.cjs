@@ -2549,6 +2549,228 @@ const image3D = async page => {
   return page.locator('#three-view canvas').screenshot();
 };
 
+async function openCadNavigation(t) {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, threeBoardData(name)) });
+  await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js'), show = Board3D.prototype.show;
+    Board3D.prototype.show = function (...args) { window.testViewer = this; return show.apply(this, args); };
+  });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#mode-3d').click(); await page.waitForFunction(() => window.testViewer?.ready);
+  return page;
+}
+const cadState = page => page.evaluate(() => window.testViewer.state());
+function nearCadState(actual, expected, message) {
+  for (const key of ['position', 'up', 'target']) actual[key].forEach((value, i) =>
+    near(value, expected[key][i], `${message}: ${key}[${i}]`, 1e-7));
+}
+async function cadDrag(page, button, from, to, modifiers = []) {
+  const rect = await page.locator('#three-view canvas').boundingBox();
+  for (const modifier of modifiers) await page.keyboard.down(modifier);
+  await page.mouse.move(rect.x + rect.width * from[0], rect.y + rect.height * from[1]);
+  await page.mouse.down({ button });
+  await page.mouse.move(rect.x + rect.width * to[0], rect.y + rect.height * to[1], { steps: 5 });
+  await page.mouse.up({ button });
+  for (const modifier of modifiers.reverse()) await page.keyboard.up(modifier);
+  await settleView(page);
+}
+
+test('CAD navigation tumbles freely through top and bottom views with a fixed pivot and orbit distance', async t => {
+  const page = await openCadNavigation(t);
+  await page.locator('#three-top').click();
+  const initial = await cadState(page), samples = [];
+  const distance = state => Math.hypot(...state.position.map((value, i) => value - state.target[i]));
+  for (let i = 0; i < 8; i++) {
+    await cadDrag(page, 'middle', [0.5, 0.5], [0.5, 0.75]);
+    samples.push(await cadState(page));
+  }
+  assert.ok(samples.some(state => state.position[2] < state.target[2]), 'vertical orbit reaches the underside');
+  assert.ok(samples.some(state => state.up[1] < -0.5), 'the camera rolls over naturally instead of clamping at a pole');
+  for (const [i, state] of samples.entries()) {
+    assert.deepEqual(state.target, initial.target, 'rotation keeps the chosen pivot');
+    near(distance(state), distance(initial), 'middle drag orbits rather than zooming', 1e-6);
+    near(Math.hypot(...state.up), 1, 'camera up remains normalized', 1e-7);
+    const previous = i ? samples[i - 1] : initial;
+    assert.ok(Math.hypot(...state.position.map((value, axis) => value - previous.position[axis])) > 1,
+      'successive drags continue rotating instead of sticking at a pole');
+    assert.ok(Object.values(state).flat().every(Number.isFinite));
+  }
+  await cadDrag(page, 'left', [0.7, 0.45], [0.6, 0.65]);
+  assert.notDeepEqual(await cadState(page), samples.at(-1), 'left drag retains orbit access without a middle button');
+  assert.deepEqual(await selected3DBodies(page), [], 'orbit gestures do not select bodies');
+  const rect = await page.locator('#three-view canvas').boundingBox();
+  await page.locator('#three-view canvas').evaluate(canvas => canvas.addEventListener('pointerdown', event => {
+    window.navigationPointer = event.pointerId;
+  }, { once: true }));
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2); await page.mouse.down({ button: 'middle' });
+  const immediate = await page.evaluate(() => {
+    const viewer = window.testViewer, canvas = viewer.renderer.domElement, rect = canvas.getBoundingClientRect();
+    const render = viewer.renderer.render;
+    window.navigationDraws = 0;
+    viewer.renderer.render = function (...args) { window.navigationDraws++; return render.apply(this, args); };
+    for (let i = 1; i <= 12; i++) canvas.dispatchEvent(new PointerEvent('pointermove', {
+      pointerId: window.navigationPointer, pointerType: 'mouse', buttons: 4,
+      clientX: rect.x + rect.width / 2 + i * 3, clientY: rect.y + rect.height / 2 + i,
+    }));
+    return window.navigationDraws;
+  });
+  assert.equal(immediate, 0, 'a synchronous input burst does not render repeatedly');
+  await settleView(page);
+  assert.equal(await page.evaluate(() => window.navigationDraws), 1, 'one animation frame draws the latest navigation state');
+  await page.mouse.up({ button: 'middle' });
+});
+
+test('CAD navigation pans in the camera plane and anchors wheel and pinch zoom without changing selection', async t => {
+  const page = await openCadNavigation(t);
+  await page.locator('#three-top').click(); await page.locator('#three-body-list').selectOption('body-0');
+  for (const [button, modifiers] of [['right', []], ['middle', ['Shift']], ['left', ['Shift']]]) {
+    const before = await cadState(page);
+    await cadDrag(page, button, [0.5, 0.5], [0.55, 0.53], modifiers);
+    const after = await cadState(page);
+    assert.notDeepEqual(after.target, before.target, 'pan translates the pivot');
+    for (let i = 0; i < 3; i++) near(after.position[i] - before.position[i], after.target[i] - before.target[i],
+      'pan translates camera and pivot equally', 1e-7);
+    assert.deepEqual(after.up, before.up, 'pan preserves orientation');
+    assert.deepEqual(await selected3DBodies(page), ['body-0'], 'pan gestures preserve body selection');
+  }
+  const anchor = await page.evaluate(async () => {
+    const THREE = await import('/static/three.module.min.js'), viewer = window.testViewer;
+    window.navigationAnchor = viewer.controls.target.clone().add(new THREE.Vector3(-8, 5, 0));
+    const point = window.navigationAnchor.clone().project(viewer.camera), rect = viewer.renderer.domElement.getBoundingClientRect();
+    // MouseEvent coordinates are integral. Anchor the ray at the delivered
+    // pixel rather than comparing with a fractional, undispatched position.
+    const clientX = Math.round(rect.x + (point.x + 1) * rect.width / 2), clientY = Math.round(rect.y + (1 - point.y) * rect.height / 2);
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2((clientX - rect.x) / rect.width * 2 - 1,
+      -(clientY - rect.y) / rect.height * 2 + 1), viewer.camera);
+    raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(
+      viewer.camera.getWorldDirection(new THREE.Vector3()), viewer.controls.target), window.navigationAnchor);
+    return { clientX, clientY };
+  });
+  for (const ctrlKey of [false, true]) {
+    const before = await cadState(page);
+    await page.locator('#three-view canvas').dispatchEvent('wheel', { ...anchor, deltaY: -30, deltaX: 0, ctrlKey });
+    await settleView(page);
+    const projected = await page.evaluate(() => {
+      const viewer = window.testViewer, point = window.navigationAnchor.clone().project(viewer.camera);
+      const rect = viewer.renderer.domElement.getBoundingClientRect();
+      return { clientX: rect.x + (point.x + 1) * rect.width / 2, clientY: rect.y + (1 - point.y) * rect.height / 2,
+        distance: viewer.camera.position.distanceTo(viewer.controls.target) };
+    });
+    near(projected.clientX, anchor.clientX, 'zoom keeps the pointer anchor X', 0.1);
+    near(projected.clientY, anchor.clientY, 'zoom keeps the pointer anchor Y', 0.1);
+    assert.ok(projected.distance < Math.hypot(...before.position.map((value, i) => value - before.target[i])),
+      ctrlKey ? 'trackpad pinch zooms in' : 'wheel zooms in');
+    assert.deepEqual(await selected3DBodies(page), ['body-0']);
+  }
+  const beforeNative = await cadState(page);
+  await page.locator('#three-view canvas').evaluate((canvas, anchor) => {
+    const gesture = (type, scale) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.assign(event, anchor, { scale }); canvas.dispatchEvent(event);
+    };
+    gesture('gesturestart', 1);
+    canvas.dispatchEvent(new WheelEvent('wheel', { ...anchor, ctrlKey: true, deltaY: -100, cancelable: true }));
+    window.nativePinchBeforeScale = window.testViewer.state();
+    gesture('gesturechange', 1.25); gesture('gestureend', 1.25);
+  }, anchor);
+  nearCadState(await page.evaluate(() => window.nativePinchBeforeScale), beforeNative,
+    'native Safari pinch ignores duplicate Ctrl-wheel zoom');
+  await settleView(page);
+  const native = await page.evaluate(() => {
+    const viewer = window.testViewer, point = window.navigationAnchor.clone().project(viewer.camera);
+    const rect = viewer.renderer.domElement.getBoundingClientRect();
+    return { clientX: rect.x + (point.x + 1) * rect.width / 2, clientY: rect.y + (1 - point.y) * rect.height / 2,
+      distance: viewer.camera.position.distanceTo(viewer.controls.target) };
+  });
+  near(native.clientX, anchor.clientX, 'native pinch preserves pointer anchor X', 0.1);
+  near(native.clientY, anchor.clientY, 'native pinch preserves pointer anchor Y', 0.1);
+  near(native.distance, Math.hypot(...beforeNative.position.map((value, i) => value - beforeNative.target[i])) / 1.25,
+    'native pinch applies the relative scale once', 1e-6);
+  assert.deepEqual(await selected3DBodies(page), ['body-0']);
+  const gestureRect = await page.locator('#three-view canvas').boundingBox();
+  const gx = Math.round(gestureRect.x + gestureRect.width / 2), gy = Math.round(gestureRect.y + gestureRect.height / 2);
+  await page.locator('#three-view canvas').evaluate(canvas => {
+    const event = new Event('gesturestart', { bubbles: true, cancelable: true }); event.scale = 1; canvas.dispatchEvent(event);
+  });
+  await page.mouse.move(gx, gy); await page.mouse.down({ button: 'middle' });
+  const duringNative = await cadState(page);
+  await page.mouse.move(gx + 100, gy);
+  nearCadState(await cadState(page), duringNative, 'native gestures suppress overlapping pointer navigation');
+  await page.locator('#three-view canvas').evaluate(canvas => {
+    const event = new Event('gestureend', { bubbles: true, cancelable: true }); event.scale = 1; canvas.dispatchEvent(event);
+  });
+  await page.mouse.move(gx + 101, gy);
+  nearCadState(await cadState(page), duringNative, 'pointer navigation rebases after native pinch without replaying the suppressed movement');
+  await page.mouse.up({ button: 'middle' });
+  const touch = await page.context().newCDPSession(page), rect = await page.locator('#three-view canvas').boundingBox();
+  const x = Math.round(rect.x + rect.width / 2), y = Math.round(rect.y + rect.height / 2);
+  const touchPoints = (offsetX, offsetY, spread) => [
+    { id: 11, x: x + offsetX - spread, y: y + offsetY }, { id: 12, x: x + offsetX + spread, y: y + offsetY },
+  ];
+  const beforeTouch = await cadState(page);
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: touchPoints(0, 0, 40) });
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: touchPoints(20, 10, 40) });
+  const panned = await cadState(page);
+  assert.notDeepEqual(panned.target, beforeTouch.target, 'two fingers moving together pan');
+  near(Math.hypot(...panned.position.map((value, i) => value - panned.target[i])),
+    Math.hypot(...beforeTouch.position.map((value, i) => value - beforeTouch.target[i])), 'two-finger pan keeps orbit distance', 1e-6);
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: touchPoints(20, 10, 60) });
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  const spread = await cadState(page);
+  assert.ok(Math.hypot(...spread.position.map((value, i) => value - spread.target[i])) <
+    Math.hypot(...panned.position.map((value, i) => value - panned.target[i])), 'two fingers spreading zoom in');
+  assert.deepEqual(spread.up, beforeTouch.up, 'two-finger pan and pinch preserve orientation');
+  assert.deepEqual(await selected3DBodies(page), ['body-0'], 'touch navigation does not pick a body');
+  await touch.detach();
+});
+
+test('CAD navigation recentres on a picked surface, remembers its camera and cancels interrupted drags', async t => {
+  const page = await openCadNavigation(t);
+  await page.locator('#three-top').click();
+  const before = await cadState(page);
+  const pivot = await page.evaluate(async () => {
+    const THREE = await import('/static/three.module.min.js'), viewer = window.testViewer;
+    const point = new THREE.Vector3(-13, -4, 4.8).project(viewer.camera), rect = viewer.renderer.domElement.getBoundingClientRect();
+    const x = Math.round(rect.x + (point.x + 1) * rect.width / 2), y = Math.round(rect.y + (1 - point.y) * rect.height / 2);
+    viewer.scene.updateMatrixWorld(true);
+    viewer.raycaster.setFromCamera(new THREE.Vector2((x - rect.x) / rect.width * 2 - 1,
+      -(y - rect.y) / rect.height * 2 + 1), viewer.camera);
+    const hit = viewer.raycaster.intersectObjects(viewer.pickMeshes.filter(mesh => mesh.visible), false)[0];
+    return { point: hit.point.toArray(), x, y };
+  });
+  await page.mouse.dblclick(pivot.x, pivot.y); await settleView(page);
+  const recentred = await cadState(page);
+  for (let i = 0; i < 3; i++) {
+    near(recentred.target[i], pivot.point[i], 'double-click uses the visible body surface as pivot', 1e-6);
+    near(recentred.position[i] - before.position[i], recentred.target[i] - before.target[i],
+      'recentering translates the view without a rotation or distance jump', 1e-7);
+  }
+  assert.deepEqual(recentred.up, before.up);
+  await cadDrag(page, 'middle', [0.5, 0.5], [0.65, 0.7]);
+  const saved = await cadState(page);
+  await page.locator('#mode-2d').click(); await page.locator('#mode-3d').click();
+  await page.waitForFunction(() => window.testViewer?.ready);
+  nearCadState(await cadState(page), saved, 'mode changes restore free rotation and picked pivot');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click(); await wait3D(page);
+  nearCadState(await cadState(page), saved, 'tab changes restore the same camera');
+  const rect = await page.locator('#three-view canvas').boundingBox();
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(rect.x + rect.width / 2 + 20, rect.y + rect.height / 2 + 20);
+  const interrupted = await cadState(page);
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.mouse.move(rect.x + rect.width / 2 + 100, rect.y + rect.height / 2 + 100); await page.mouse.up({ button: 'middle' });
+  nearCadState(await cadState(page), interrupted, 'blur cancels a drag rather than replaying it');
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2); await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(rect.x + rect.width / 2 + 20, rect.y + rect.height / 2);
+  const hidden = await cadState(page);
+  await page.evaluate(() => document.querySelector('#mode-2d').click());
+  await page.mouse.move(rect.x + rect.width / 2 + 100, rect.y + rect.height / 2); await page.mouse.up({ button: 'middle' });
+  await page.locator('#mode-3d').click(); await wait3D(page);
+  nearCadState(await cadState(page), hidden, 'leaving 3D cancels captured navigation input');
+});
+
 test('completed 3D views reuse geometry, textures and STEP bodies across mode and tab switches and release closed tabs', async t => {
   const fixture = name => {
     const data = threeBoardData(name);

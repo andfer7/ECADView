@@ -23,6 +23,7 @@ STATIC_ROUTES = {
     "/static/cross-probe.js": ("cross-probe.js", "text/javascript; charset=utf-8"),
     "/static/net-labels.js": ("net-labels.js", "text/javascript; charset=utf-8"),
     "/static/viewer-3d.js": ("viewer-3d.js", "text/javascript; charset=utf-8"),
+    "/static/cad-controls.js": ("cad-controls.js", "text/javascript; charset=utf-8"),
     "/static/board-surface.js": ("board-surface.js", "text/javascript; charset=utf-8"),
     "/static/studio-3d.js": ("studio-3d.js", "text/javascript; charset=utf-8"),
     "/static/step-loader.js": ("step-loader.js", "text/javascript; charset=utf-8"),

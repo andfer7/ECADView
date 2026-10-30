@@ -1,5 +1,5 @@
 import * as THREE from './three.module.min.js';
-import { OrbitControls } from './OrbitControls.js';
+import { CadControls } from './cad-controls.js';
 import { StepLoader } from './step-loader.js';
 import { boardSurfaces } from './board-surface.js';
 import { studioEnvironment, stepFinish, bodyMaterial, stepMaterial } from './studio-3d.js';
@@ -61,8 +61,8 @@ export class Board3D {
     host.append(this.renderer.domElement);
     this.camera = new THREE.PerspectiveCamera(40, 1, 0.01, 10000);
     this.camera.up.set(0, 0, 1);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.addEventListener('change', () => this.render());
+    this.controls = new CadControls(this.camera, this.renderer.domElement);
+    this.controls.addEventListener('change', () => this.queueRender());
     this.raycaster = new THREE.Raycaster();
     const canvas = this.renderer.domElement;
     const pointers = new Set();
@@ -79,7 +79,7 @@ export class Board3D {
     });
     canvas.addEventListener('pointerup', event => {
       const selected = click; click = null; pointers.delete(event.pointerId);
-      if (!this.scene || selected?.id !== event.pointerId || selected.moved) return;
+      if (!this.scene || selected?.id !== event.pointerId || selected.moved || event.ctrlKey || event.metaKey) return;
       canvas.focus({ preventScroll: true });
       const rect = canvas.getBoundingClientRect();
       const point = new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1,
@@ -91,11 +91,25 @@ export class Board3D {
       onPick?.(hit?.object.userData.bodyId ?? null, event.shiftKey);
     });
     canvas.addEventListener('pointercancel', event => { pointers.delete(event.pointerId); click = null; });
+    canvas.addEventListener('lostpointercapture', event => { if (pointers.has(event.pointerId)) this.cancelPick(); });
+    canvas.addEventListener('dblclick', event => {
+      if (!this.scene || event.button !== 0) return;
+      const rect = canvas.getBoundingClientRect();
+      this.scene.updateMatrixWorld(true);
+      this.raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1,
+        -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
+      const hit = this.raycaster.intersectObjects(this.pickMeshes.filter(mesh => mesh.visible), false)[0];
+      if (!hit) return; // Empty-space double-click still fits the whole board.
+      event.preventDefault(); event.stopPropagation(); this.controls.cancel(); this.cancelPick();
+      this.camera.position.add(hit.point.clone().sub(this.controls.target));
+      this.controls.target.copy(hit.point); this.controls.update();
+    });
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(host);
   }
 
   detach() {
+    cancelAnimationFrame(this.renderFrame); this.renderFrame = 0;
     this.generation = (this.generation || 0) + 1;
     this.stepLoader?.close(); this.stepLoader = null;
     this.cancelPick();
@@ -389,10 +403,7 @@ export class Board3D {
 
   zoom(factor) {
     if (!this.scene) return;
-    const offset = this.camera.position.clone().sub(this.controls.target);
-    offset.setLength(THREE.MathUtils.clamp(offset.length() * factor,
-      this.controls.minDistance, this.controls.maxDistance));
-    this.camera.position.copy(this.controls.target).add(offset); this.controls.update(); this.render();
+    this.controls.dolly(factor); this.render();
   }
 
   resize() {
@@ -402,7 +413,12 @@ export class Board3D {
     this.camera.aspect = width / height; this.camera.updateProjectionMatrix(); this.render();
   }
 
+  queueRender() {
+    if (!this.renderFrame) this.renderFrame = requestAnimationFrame(() => { this.renderFrame = 0; this.render(); });
+  }
+
   render() {
+    cancelAnimationFrame(this.renderFrame); this.renderFrame = 0;
     if (!this.scene || this.host.hidden) return;
     // Fit the depth interval to the scene along the current viewing direction,
     // including after zoom/pan/orbit. A huge far/near ratio quantizes nearby
