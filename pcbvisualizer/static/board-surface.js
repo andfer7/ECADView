@@ -1,4 +1,4 @@
-// Rasterize the real outer PCB layers once per 3D mount. Interior copper,
+// Rasterize the real outer PCB layers once per prepared 3D scene. Interior copper,
 // selection overlays, measurements and 2D visibility never enter the finish.
 const NS = 'http://www.w3.org/2000/svg';
 const MASK = '#0e452c', COPPER_UNDER_MASK = '#104c30', METAL = '#b8aa7e', INK = '#eeeade';

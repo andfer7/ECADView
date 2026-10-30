@@ -104,6 +104,10 @@ highlight restoration, drag suppression, Shift selections, duplicate names,
 Delete/Backspace, grouped undo, tab isolation, and unchanged 2D/source geometry.
 Python coverage verifies that split solids share one body identity while distinct
 bodies retain separate identities even when their names match.
+Highlight pixel coverage checks dark fallback bodies, black and metallic STEP
+parts, and independent instances sharing geometry. It verifies exact finish
+restoration, deletion/undo and highlights retained through STEP replacement and
+remounting, with no extra geometry or shader compilation on selection.
 
 STEP coverage uses the repository's authored 6 × 4 × 2 mm box fixture, embedded
 in generated Altium boards and referenced by generated KiCad boards. It checks
@@ -122,6 +126,10 @@ texture/shadow cleanup across repeated 3D mounts.
 Repeated-mount coverage compares rendered pixels across twelve returns to 3D
 in top, bottom and isometric views, including interrupted board-finish loads.
 It checks visible copper/silkscreen and bounded GPU resource counts.
+Completed-view cache tests check identical rendered pixels and zero additional
+GPU uploads, shader compilation or board-texture decoding on warm tab/mode
+switches. They cover deferred 2D setup, least-recently-used/byte-budget eviction,
+closed tabs, context loss, STEP replacement and cancellation of incomplete loads.
 Depth regressions render two contrasting faces separated by 0.005 mm, checking
 that the foreground face stays solid through top/isometric views, zoom and pan.
 They also check clipping coverage and verify that board finishes reuse the

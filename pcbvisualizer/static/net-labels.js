@@ -67,7 +67,7 @@ export class NetLabels {
   *layout(board) {
     const svg = board?.svg;
     // At fit-to-board scale the labels would obscure the layout overview.
-    if (board?.kind !== 'pcb' || !svg?.isConnected || board.home.w / svg.viewBox.baseVal.width < 2) return;
+    if (board?.kind !== 'pcb' || board.mode === '3d' || !svg?.isConnected || board.home.w / svg.viewBox.baseVal.width < 2) return;
     const view = this.container.getBoundingClientRect(), occupied = [], fragment = document.createDocumentFragment();
     const candidates = yield* this.index(svg);
     const rootMatrix = svg.getScreenCTM();
