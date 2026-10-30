@@ -65,7 +65,7 @@ def main() -> None:
 
     server = ViewerServer(("127.0.0.1", args.port or 0), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
-    print(f"PCB viewer running at {url}   (Close the viewer, Quit viewer, or Ctrl+C to stop)")
+    print(f"PCB viewer running at {url}   (Close the viewer or Ctrl+C to stop)")
 
     if not args.no_open:
         threading.Timer(0.3, open_in_browser, args=(url, args.browser or "chrome")).start()
