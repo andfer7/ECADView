@@ -6,8 +6,8 @@ preparation run locally; no CAD data goes to an external service.
 
 ## Design and limits
 
-The browser first displays the SVG preview. An isolated offscreen Qt process
-then uses the offscreen SVG geometry compiler to prepare analytic primitives and
+The browser keeps the loading status visible while an isolated offscreen Qt
+process uses the SVG geometry compiler to prepare analytic primitives and
 tessellated paths. A padded JSON header and binary float32/uint32 buffers cross
 the loopback connection. Geometry is uploaded once when a document becomes
 resident. Navigation updates camera uniforms; component/net selection updates
@@ -40,6 +40,25 @@ timeout. There is no persistent generated-board cache.
 The WebGL interface follows the [Khronos WebGL 2 specification](https://registry.khronos.org/webgl/specs/2.0/).
 The renderer uses analytic coverage for simple primitives; GPU integration tests
 compare the resulting pixels with SVG and verify selection colors and holes.
+
+## Initial loading improvements (#113)
+
+The loader reuses the physical layer stack for SVG, 3D metadata and layer order,
+uses exact byte-row vertex deduplication for filled paths, and draws the first
+accelerated selection state once. It avoids SVG measurement layout when there
+are no measurements, and defers hidden selection clones while WebGL is preparing.
+Queries entered during preparation still appear in either WebGL or SVG fallback.
+
+A local Chrome load profile of the supplied LimeSDR reference measured 20.04 s
+before and 18.48 s after (about 8% faster). Document response time fell from
+7.44 s to 6.44 s and geometry preparation from 11.26 s to 10.72 s. These are
+single before/after observations, not a cross-machine performance guarantee;
+the geometry buffers and visible output retain the same precision.
+
+The benchmark now reports `svg_setup_ms` for the installed SVG interaction tree
+and `prepared_ms` for an interactive viewer. The SVG is hidden during WebGL
+preparation; older `preview_ms` results must not be treated as an interactive
+loading time.
 
 ## Representative LimeSDR result
 

@@ -87,6 +87,20 @@ class IndexedAltiumRenderingTests(unittest.TestCase):
         self.assertIn('data-primitive="track"', svg)
         self.assertLess(signature.call_count, len(pcb.tracks))
 
+    def test_layer_stack_is_resolved_once_per_render_and_refreshed_for_the_next_render(self):
+        pcb = self.board()
+        renderer = IndexedPcbSvgRenderer(pcb, PcbSvgRenderOptions())
+        with patch.object(PcbSvgRenderer, '_resolved_layer_stack_safe',
+                          wraps=PcbSvgRenderer._resolved_layer_stack_safe) as resolve:
+            first = renderer.render_board(pcb)
+            self.assertEqual(resolve.call_count, 1)
+            stack = renderer.resolved_stack
+            self.assertIsNotNone(stack)
+            second = renderer.render_board(pcb)
+            self.assertEqual(resolve.call_count, 2)
+        self.assertEqual(second, first)
+        self.assertIsNot(renderer.resolved_stack, stack)
+
     def test_native_drill_batching_preserves_slots_plating_and_blind_vias(self):
         pcb = self.board()
         pcb.add_pad(

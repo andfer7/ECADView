@@ -484,7 +484,12 @@ class _Builder:
         if len(coords) % 4:
             raise UnsupportedScene("Unexpected polygon tessellation")
         points = coords.reshape((-1, 4, 2))[:, :3].reshape((-1, 2))
-        points, inverse = np.unique(points, axis=0, return_inverse=True)
+        # Exact row keys avoid NumPy's slower structured floating-point sort.
+        # Normalize signed zero so deduplication retains numeric equality.
+        points[points == 0] = 0.0
+        keys = points.view(np.dtype((np.void, points.dtype.itemsize * 2))).ravel()
+        _, first, inverse = np.unique(keys, return_index=True, return_inverse=True)
+        points = points[first]
         count = len(points)
         start = len(self.vertices) // 20
         rows = np.zeros((count, 20), dtype="<f4")

@@ -15,7 +15,7 @@ import { trackViewerSession } from './viewer-session.js';
   let twoDBoard = null;
   const boards = [];
   let activeBoard = null, nextBoardId = 1;
-  let layoutGPU = null, gpuUnavailable = false, labelTimer = 0;
+  let layoutGPU = null, gpuUnavailable = false, labelTimer = 0, paintBatch = 0;
   let geometryQueue = Promise.resolve();
   function viewLoading() { return Boolean(activeBoard?.loading || activeBoard?.gpuLoading); }
   function updateLoading() {
@@ -40,7 +40,7 @@ import { trackViewerSession } from './viewer-session.js';
   }
   function gpuActive() { return Boolean(layoutGPU && !layoutGPU.lost && activeBoard?.gpuScene && layoutGPU.scene === activeBoard.gpuScene); }
   function paintGPU() {
-    if (!gpuActive() || is3D()) return;
+    if (paintBatch || !gpuActive() || is3D()) return;
     layoutGPU.paint(vb, [...activeBoard.sceneGroup.children].filter(g => groups.includes(g)), !activeBoard.polygonsHidden,
       activeBoard.gpuComponents || [], activeBoard.gpuNets || []);
   }
@@ -106,18 +106,24 @@ import { trackViewerSession } from './viewer-session.js';
       if (!boards.includes(board) || board.request !== generation || controller.signal.aborted) return;
       board.gpuScene = scene; board.gpuStatus = 'WebGL 2';
       netLabels.setBounds(board.svg, scene.caption_bounds || {});
-      if (board === activeBoard) { syncGPU(); if (!is3D()) { updateComponentStatus(); updateNetStatus(); } }
     } catch (error) {
       if (error.name !== 'AbortError' && boards.includes(board) && board.request === generation) {
         board.gpuStatus = 'SVG: ' + error.message;
-        if (board === activeBoard) syncGPU();
       }
     } finally {
-      if (board.gpuController === controller) {
-        board.gpuLoading = false; board.gpuController = null;
-        if (board === activeBoard) { syncGPU(); updateLoading(); }
-      }
-      finished();
+      try {
+        if (board.gpuController === controller) {
+          board.gpuLoading = false; board.gpuController = null;
+          if (board === activeBoard) {
+            // Upload once, refresh flags/status without intermediate full-board
+            // draws, then expose the first complete frame to navigation.
+            paintBatch++;
+            try { syncGPU(); if (!is3D()) { updateComponentStatus(); updateNetStatus(); } }
+            finally { paintBatch--; }
+            paintGPU(); updateLoading();
+          }
+        }
+      } finally { finished(); }
     }
   }
 
@@ -798,6 +804,13 @@ import { trackViewerSession } from './viewer-session.js';
     const visibleHits = hits.filter(el => !hiddenPolygon(el));
     const matched = new Set(visibleHits), branches = new Set();
     for (const el of visibleHits) for (let node = el; node && node.id !== 'scene'; node = node.parentElement) branches.add(node);
+    if (activeBoard?.gpuLoading && !gpuActive()) {
+      // The SVG is hidden behind the startup gate. Avoid cloning large nets
+      // while the compiler works; completion applies the current selections
+      // directly to WebGL, or rebuilds the overlay for SVG fallback.
+      return { overlay: { childElementCount: groups.filter(g => g.style.display !== 'none' && branches.has(g)).length },
+        hidden: groups.filter(g => g.style.display === 'none' && branches.has(g)).length, hiddenPolygons: hits.some(hiddenPolygon) };
+    }
     if (gpuActive()) {
       const visibleLayers = new Set(groups.filter(g => g.style.display !== 'none'));
       const visible = el => !hiddenPolygon(el) && visibleLayers.has(el.closest('#scene > g'));
@@ -1264,6 +1277,7 @@ import { trackViewerSession } from './viewer-session.js';
   }
   function positionMeasurementLabels() {
     if (!svg || is3D() || !mg) return;
+    if (!mg.childElementCount && !label.childElementCount) { updateMeasurementReadout(); return; }
     const scale = Math.hypot(svg.getScreenCTM().a, svg.getScreenCTM().b);
     for (const g of mg.querySelectorAll('.measurement-marker')) {
       const p = g.id === 'measure-pointer' && hover ? hover : { x: g.dataset.x, y: g.dataset.y };
