@@ -2575,6 +2575,69 @@ async function cadDrag(page, button, from, to, modifiers = []) {
   await settleView(page);
 }
 
+test('3D Fit frames the board without rotating it through the button, F and empty-space double-click', async t => {
+  const page = await openCadNavigation(t);
+  const snapshot = () => page.evaluate(() => {
+    const viewer = window.testViewer, corners = [];
+    for (const x of [viewer.bounds.min.x, viewer.bounds.max.x])
+      for (const y of [viewer.bounds.min.y, viewer.bounds.max.y])
+        for (const z of [viewer.bounds.min.z, viewer.bounds.max.z])
+          corners.push(viewer.center.clone().set(x, y, z).project(viewer.camera).toArray());
+    return { state: viewer.state(), quaternion: viewer.camera.quaternion.toArray(),
+      center: viewer.center.toArray(), direction: viewer.camera.getWorldDirection(viewer.center.clone()).toArray(), corners };
+  });
+  const initial = await snapshot(), iso = [1, -1.3, 1.4], length = Math.hypot(...iso);
+  initial.direction.forEach((value, i) => near(value, -iso[i] / length, 'new boards still open isometrically', 1e-7));
+  const assertFitted = (before, after, action) => {
+    const dot = before.quaternion.reduce((sum, value, i) => sum + value * after.quaternion[i], 0);
+    near(Math.abs(dot), 1, action + ' preserves camera orientation and roll', 1e-9);
+    assert.deepEqual(after.state.up, before.state.up, action + ' preserves the up vector');
+    after.state.target.forEach((value, i) => near(value, after.center[i], action + ' centres the board', 1e-7));
+    assert.ok(after.corners.every(([x,y,z]) => Math.abs(x) < 1 && Math.abs(y) < 1 && z > -1 && z < 1),
+      action + ' fits all visible board/component bounds inside the viewport');
+  };
+  for (const viewport of [{ width: 1200, height: 800 }, { width: 700, height: 1000 }]) {
+    await page.setViewportSize(viewport);
+    await page.waitForFunction(() => {
+      const viewer = window.testViewer, canvas = viewer.renderer.domElement;
+      return Math.abs(viewer.camera.aspect - canvas.clientWidth / canvas.clientHeight) < 1e-7;
+    });
+    for (const action of ['button', 'F', 'double-click']) {
+      await page.locator('#three-body-list').selectOption('body-0');
+      await cadDrag(page, 'middle', [0.7, 0.45], [0.55, 0.7]);
+      await cadDrag(page, 'right', [0.5, 0.5], [0.65, 0.6]);
+      await page.evaluate(() => window.testViewer.zoom(0.2));
+      const before = await snapshot();
+      if (action === 'button') await page.locator('#view-fit').click();
+      else if (action === 'F') { await page.locator('#three-view canvas').focus(); await page.keyboard.press('f'); }
+      else {
+        // Use empty space even when the zoomed/panned board covers the canvas.
+        const point = await page.evaluate(() => {
+          const viewer = window.testViewer, rect = viewer.renderer.domElement.getBoundingClientRect();
+          viewer.camera.position.addScaledVector(viewer.camera.getWorldDirection(viewer.center.clone()).cross(viewer.camera.up), viewer.radius * 100);
+          viewer.controls.target.addScaledVector(viewer.camera.getWorldDirection(viewer.center.clone()).cross(viewer.camera.up), viewer.radius * 100);
+          viewer.controls.update(); return { x: rect.x + 5, y: rect.y + 5 };
+        });
+        await page.mouse.dblclick(point.x, point.y);
+      }
+      await settleView(page);
+      const after = await snapshot(); assertFitted(before, after, action);
+      if (action !== 'double-click') assert.deepEqual(await selected3DBodies(page), ['body-0'], action + ' keeps the selected component');
+      await page.locator('#view-fit').click();
+      nearCadState((await snapshot()).state, after.state, 'repeated Fit is stable');
+    }
+  }
+  for (const preset of ['top', 'bottom', 'iso']) {
+    await page.locator('#three-' + preset).click(); const before = await snapshot();
+    if (preset !== 'iso') near(before.direction[2], preset === 'top' ? -1 : 1, 'preset still changes orientation', 1e-7);
+    else before.direction.forEach((value, i) => near(value, -iso[i] / length, 'isometric preset still rotates', 1e-7));
+    await page.locator('#view-fit').click(); assertFitted(before, await snapshot(), preset + ' fit');
+  }
+  const fitted = await cadState(page);
+  await page.locator('#mode-2d').click(); await page.locator('#mode-3d').click(); await wait3D(page);
+  nearCadState(await cadState(page), fitted, 'mode changes retain the fitted camera');
+});
+
 test('CAD navigation tumbles freely through top and bottom views with a fixed pivot and orbit distance', async t => {
   const page = await openCadNavigation(t);
   await page.locator('#three-top').click();

@@ -111,6 +111,8 @@ CAD navigation regressions cover free top/bottom tumbling, rotation-centre and
 orbit-distance stability, screen-space pan, pointer-directed wheel/pinch zoom,
 surface-double-click recentering and camera restoration. Input bursts draw once
 per animation frame; interrupted drags cannot resume after blur or mode changes.
+Fit, F and empty-space double-click preserve viewing direction and roll while
+framing geometry in wide and portrait windows; explicit presets still rotate.
 Touch coverage sends real two-touch input through Chrome's DevTools protocol.
 Safari gesture events are simulated in Chrome; OS touchpad input and WebKit
 are not exercised by these tests.

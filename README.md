@@ -131,8 +131,9 @@ past top and bottom, without a locked up axis. Right-drag, Shift-middle-drag or
 Shift-left-drag to pan; scroll or pinch to zoom towards the pointer. On a
 touchscreen, use one finger to rotate and two fingers to pan or pinch. Double-click a
 board or component surface to centre rotation there, preserving the viewing
-direction and zoom. Double-click empty space to fit. Top, Bottom, Isometric and
-Fit reset the camera; each tab remembers its rotation centre, camera and mode.
+direction and zoom. Fit, the F key and double-clicking empty space centre and
+frame the board without changing its rotation. Top, Bottom and Isometric change
+the viewing orientation; each tab remembers its rotation centre, camera and mode.
 
 Click a body to select it; its visible parts turn cyan, including dark plastics
 and reflective metal. Clear the selection to restore its original finish.
