@@ -31,7 +31,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     modeSwitch.disabled = !svg || loading || activeBoard?.kind !== 'pcb' || !activeBoard?.scene3d?.board?.length;
     modeSwitch.setAttribute('aria-checked', String(is3D()));
     modeSwitch.title = loading ? 'Loading document…' : !svg ? 'Open a PCB layout to switch views' :
-      modeSwitch.disabled ? '3D view requires a PCB with a board outline' : is3D() ? 'Switch to 2D view' : 'Switch to 3D view';
+      modeSwitch.disabled ? '3D view requires a PCB with a board outline' : is3D() ? 'Switch to 2D view (2)' : 'Switch to 3D view (3)';
     $('three-navigation').hidden = !is3D();
     const ready3D = is3D() && !loading && threeBoard === activeBoard && Boolean(threeViewer?.scene);
     for (const button of $('three-navigation').querySelectorAll('button')) button.disabled = !ready3D;
@@ -1375,6 +1375,12 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); $('file').click(); return; }
     if (!editing && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      if ((e.key === '2' || e.key === '3') && !e.shiftKey && !e.isComposing && !$('view-mode-switch').disabled) {
+        e.preventDefault();
+        const mode = e.key === '2' ? '2d' : '3d';
+        if (activeBoard.mode !== mode) setViewMode(mode);
+        return;
+      }
       if (e.key.toLowerCase() === 'f') { e.preventDefault(); resetView(); return; }
       if (e.key === '+' || e.key === '=') { e.preventDefault(); $('zoom-in').click(); return; }
       if (e.key === '-') { e.preventDefault(); $('zoom-out').click(); return; }
