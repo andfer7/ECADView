@@ -140,7 +140,7 @@ touchscreen, use one finger to rotate and two fingers to pan or pinch. Double-cl
 board or component surface to centre rotation there, preserving the viewing
 direction and zoom. Fit, the F key and double-clicking empty space centre and
 frame the board without changing its rotation. In 3D, the floating Top and Bottom
-buttons are stacked at the bottom-left. The four arrows beside them rotate the
+buttons are stacked above the arrow pad at the bottom-left. The four arrows rotate the
 board by 5° per click in screen directions, keeping the rotation centre and zoom.
 Each tab remembers its rotation centre, camera and mode.
 
