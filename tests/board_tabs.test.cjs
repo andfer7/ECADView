@@ -2551,7 +2551,9 @@ const wait3D = page => page.waitForFunction(() =>
   !document.getElementById('three-view').hidden && /\d+ bod(y|ies)/.test(document.getElementById('three-summary').textContent));
 const image3D = async page => {
   await settleView(page);
-  return page.locator('#three-view canvas').screenshot();
+  // Compare the rendered board independently of the floating controls' hover
+  // and keyboard-focus states, which are painted over the canvas rectangle.
+  return page.locator('#three-view canvas').screenshot({ style: '#navigation-toolbar { visibility: hidden !important; }' });
 };
 
 async function openCadNavigation(t) {
