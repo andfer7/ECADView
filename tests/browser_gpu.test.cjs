@@ -98,7 +98,8 @@ test('layout startup shows WebGL progress and blocks early navigation until the 
   assert.equal(await page.locator('#busy').isVisible(), true);
   assert.equal(await page.locator('#busy').textContent(), 'Starting WebGL…');
   assert.equal(await page.locator('#view').getAttribute('aria-busy'), 'true');
-  for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn', 'view-mode-switch'])
+  for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn', 'view-mode-switch',
+    'three-top', 'three-bottom', 'three-rotate-up', 'three-rotate-down', 'three-rotate-left', 'three-rotate-right'])
     assert.equal(await page.locator('#' + id).isDisabled(), true, `${id} is unavailable during startup`);
   const before = await page.locator('#view > svg').getAttribute('viewBox');
   const box = await page.locator('#view').boundingBox(), x = box.x + box.width / 2, y = box.y + box.height / 2;

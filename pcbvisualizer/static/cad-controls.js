@@ -105,6 +105,16 @@ export class CadControls extends EventDispatcher {
 
   rotate(from, to) {
     const turn = new Quaternion().setFromUnitVectors(this.ball(to), this.ball(from));
+    this.applyRotation(turn);
+  }
+
+  rotateBy(horizontal, vertical) {
+    const turn = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), -horizontal);
+    turn.multiply(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -vertical));
+    this.applyRotation(turn);
+  }
+
+  applyRotation(turn) {
     const frame = this.camera.quaternion.clone();
     turn.premultiply(frame).multiply(frame.clone().invert());
     this.camera.position.sub(this.target).applyQuaternion(turn).add(this.target);

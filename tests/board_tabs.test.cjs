@@ -2557,7 +2557,7 @@ const image3D = async page => {
   await settleView(page);
   // Compare the rendered board independently of the floating controls' hover
   // and keyboard-focus states, which are painted over the canvas rectangle.
-  return page.locator('#three-view canvas').screenshot({ style: '#navigation-toolbar, #view-mode-switch { visibility: hidden !important; }' });
+  return page.locator('#three-view canvas').screenshot({ style: '#navigation-toolbar, #view-mode-switch, #three-navigation { visibility: hidden !important; } #three-view canvas { outline: none !important; }' });
 };
 
 test('a sliding view switch covers the inactive mode and supports keyboard activation and per-tab state', async t => {
@@ -2615,6 +2615,55 @@ async function cadDrag(page, button, from, to, modifiers = []) {
   await settleView(page);
 }
 
+test('floating 3D controls stack Top/Bottom and rotate five degrees in screen directions without changing pivot or zoom', async t => {
+  const page = await openCadNavigation(t);
+  assert.equal(await page.getByRole('button', { name: 'Isometric', exact: true }).count(), 0);
+  const layout = await page.locator('#three-navigation').evaluate(group => {
+    const box = group.getBoundingClientRect(), view = document.querySelector('#view').getBoundingClientRect();
+    const top = document.querySelector('#three-top').getBoundingClientRect(), bottom = document.querySelector('#three-bottom').getBoundingClientRect();
+    return { left: box.x - view.x, bottom: view.bottom - box.bottom, stacked: top.x === bottom.x && top.bottom < bottom.y,
+      inSidebar: Boolean(group.closest('#panel')) };
+  });
+  near(layout.left, 12, 'controls sit at the left of the drawing'); near(layout.bottom, 12, 'controls sit at the bottom');
+  assert.equal(layout.stacked, true); assert.equal(layout.inSidebar, false);
+  await page.locator('#three-top').click();
+  await cadDrag(page, 'middle', [0.7, 0.45], [0.6, 0.62]);
+  await page.evaluate(async () => {
+    const { Vector3 } = await import('/static/three.module.min.js'), viewer = window.testViewer, delta = new Vector3(3, 2, 1);
+    viewer.camera.position.add(delta); viewer.controls.target.add(delta); viewer.controls.update();
+  });
+  await page.locator('#three-body-list').selectOption('body-0');
+  const snapshot = () => page.evaluate(async () => {
+    const { Vector3 } = await import('/static/three.module.min.js'), viewer = window.testViewer;
+    const offset = viewer.camera.position.clone().sub(viewer.controls.target);
+    return { state: viewer.state(), eye: offset.clone().normalize().toArray(), distance: offset.length(),
+      right: new Vector3(1,0,0).applyQuaternion(viewer.camera.quaternion).toArray(),
+      up: new Vector3(0,1,0).applyQuaternion(viewer.camera.quaternion).toArray(),
+      scene: viewer.scene.uuid, geometries: viewer.renderer.info.memory.geometries, textures: viewer.renderer.info.memory.textures };
+  });
+  const initial = await snapshot(), dot = (a,b) => a.reduce((sum, value, i) => sum + value * b[i], 0);
+  for (const [direction, x, y] of [['up',0,-1], ['down',0,1], ['left',-1,0], ['right',1,0]]) {
+    const before = await snapshot(); await page.getByRole('button', { name: 'Rotate ' + direction, exact: true }).click();
+    const after = await snapshot(), angle = Math.acos(Math.max(-1, Math.min(1, dot(before.eye, after.eye)))) * 180 / Math.PI;
+    near(angle, 5, direction + ' rotates five degrees', 1e-7);
+    assert.deepEqual(after.state.target, before.state.target, direction + ' keeps the chosen pivot');
+    near(after.distance, before.distance, direction + ' keeps the zoom', 1e-7);
+    const screenMovement = x ? -dot(after.eye, before.right) : dot(after.eye, before.up);
+    assert.equal(Math.sign(screenMovement), Math.sign(x || y), direction + ' follows the camera frame');
+    assert.equal(after.scene, initial.scene); assert.equal(after.geometries, initial.geometries); assert.equal(after.textures, initial.textures);
+    assert.deepEqual(await selected3DBodies(page), ['body-0'], direction + ' preserves selection');
+  }
+  nearCadState((await snapshot()).state, initial.state, 'opposite arrow pairs undo one another');
+  await page.getByRole('button', { name: 'Rotate up', exact: true }).focus(); await page.keyboard.press('Space');
+  assert.notDeepEqual((await snapshot()).state.position, initial.state.position, 'Space activates a rotation arrow');
+  await page.getByRole('button', { name: 'Rotate down', exact: true }).focus(); await page.keyboard.press('Enter');
+  nearCadState((await snapshot()).state, initial.state, 'Enter activates the opposite arrow');
+  await page.getByRole('button', { name: 'Rotate right', exact: true }).click(); const saved = await cadState(page);
+  await set3DMode(page, false); assert.equal(await page.locator('#three-navigation').isHidden(), true);
+  await set3DMode(page, true); await page.waitForFunction(() => window.testViewer.ready);
+  nearCadState(await cadState(page), saved, 'arrow rotation survives mode switches');
+});
+
 test('3D Fit frames the board without rotating it through the button, F and empty-space double-click', async t => {
   const page = await openCadNavigation(t);
   const snapshot = () => page.evaluate(() => {
@@ -2667,10 +2716,9 @@ test('3D Fit frames the board without rotating it through the button, F and empt
       nearCadState((await snapshot()).state, after.state, 'repeated Fit is stable');
     }
   }
-  for (const preset of ['top', 'bottom', 'iso']) {
+  for (const preset of ['top', 'bottom']) {
     await page.locator('#three-' + preset).click(); const before = await snapshot();
-    if (preset !== 'iso') near(before.direction[2], preset === 'top' ? -1 : 1, 'preset still changes orientation', 1e-7);
-    else before.direction.forEach((value, i) => near(value, -iso[i] / length, 'isometric preset still rotates', 1e-7));
+    near(before.direction[2], preset === 'top' ? -1 : 1, 'preset still changes orientation', 1e-7);
     await page.locator('#view-fit').click(); assertFitted(before, await snapshot(), preset + ' fit');
   }
   const fitted = await cadState(page);
@@ -3315,7 +3363,7 @@ test('3D renders local solids, preserves 2D measurements and layers, and remembe
   await page.locator('#three-bottom').click();
   const bottom = await image3D(page);
   assert.notDeepEqual(top, bottom, 'both sides render differently');
-  await page.locator('#three-iso').click();
+  const beforeRotate = await image3D(page);
   const canvas = page.locator('#three-view canvas');
   const rect = await canvas.boundingBox();
   await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
@@ -3323,7 +3371,7 @@ test('3D renders local solids, preserves 2D measurements and layers, and remembe
   await page.mouse.move(rect.x + rect.width / 2 + 100, rect.y + rect.height / 2 + 40, { steps: 5 });
   await page.mouse.up();
   const rotated = await image3D(page);
-  assert.notDeepEqual(iso, rotated, 'drag rotates the solids');
+  assert.notDeepEqual(beforeRotate, rotated, 'drag rotates the solids');
   await page.locator('#zoom-in').click();
   const zoomed = await image3D(page);
   assert.notDeepEqual(rotated, zoomed, 'zoom button affects 3D');
@@ -3560,7 +3608,6 @@ test('3D supports multiple bodies, Delete and Backspace, per-tab deletions, and 
   await click3D(page, 0.59, 0.63, ['Shift']);
   assert.deepEqual(await selected3DBodies(page), ['body-0'], 'Shift-click toggles one body');
   await click3D(page, 0.59, 0.63, ['Shift']);
-  await page.locator('#three-iso').click();
   const selected = await image3D(page);
   await page.keyboard.press('Delete');
   assert.equal(await page.locator('#three-body-list option').count(), 1);

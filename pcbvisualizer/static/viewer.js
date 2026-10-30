@@ -32,6 +32,9 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     modeSwitch.setAttribute('aria-checked', String(is3D()));
     modeSwitch.title = loading ? 'Loading document…' : !svg ? 'Open a PCB layout to switch views' :
       modeSwitch.disabled ? '3D view requires a PCB with a board outline' : is3D() ? 'Switch to 2D view' : 'Switch to 3D view';
+    $('three-navigation').hidden = !is3D();
+    const ready3D = is3D() && !loading && threeBoard === activeBoard && Boolean(threeViewer?.scene);
+    for (const button of $('three-navigation').querySelectorAll('button')) button.disabled = !ready3D;
     if (wasLoading && !loading && !is3D()) updateNetLabels();
   }
   // The SVG remains the hit-test surface, but navigating a large unaccelerated
@@ -394,6 +397,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       if (request !== threeMount || board !== activeBoard || !is3D()) return;
       threeViewer ||= new Board3D($('three-view'), message => {
         $('three-status').hidden = false; $('three-status').textContent = message;
+        updateLoading();
       }, pickBody, ({ loaded, total, failed, surfaceError }) => {
         if (threeBoard && threeBoard !== activeBoard) return;
         if (surfaceError) { $('three-status').hidden = false; $('three-status').textContent += '\n' + surfaceError; return; }
@@ -402,6 +406,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       });
       threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board), board.svg);
       threeBoard = board;
+      updateLoading();
       updateBodyControls();
     } catch (error) {
       if (request !== threeMount || board !== activeBoard) return;
@@ -455,7 +460,10 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (board === activeBoard && is3D()) { unmount3D(); mountViewMode(); }
     if (unmatched.length) toast('No model reference matches: ' + unmatched.join(', '));
   }
-  for (const preset of ['top', 'bottom', 'iso']) $('three-' + preset).onclick = () => threeViewer?.fit(preset);
+  for (const preset of ['top', 'bottom']) $('three-' + preset).onclick = () => threeViewer?.fit(preset);
+  for (const [direction, x, y] of [['up', 0, -1], ['down', 0, 1], ['left', -1, 0], ['right', 1, 0]]) {
+    $('three-rotate-' + direction).onclick = () => threeViewer?.rotateStep(x, y);
+  }
 
   function bodyEdits(board) {
     return board.bodyEdits ||= { selected: new Set(), deleted: new Set(), undo: [] };
