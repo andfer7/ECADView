@@ -59,7 +59,7 @@ def solid_shapes(geometry, origin):
             for p in polygons(geometry) if not p.is_empty and p.area > 1e-10]
 
 
-def build_scene(pcb):
+def build_scene(pcb, *, layer_stack=None):
     outline = pcb.board.outline if pcb.board else None
     if not outline or len(outline.vertices) < 3:
         return {"board": [], "notes": ["3D is unavailable: this document has no board outline."]}
@@ -70,7 +70,7 @@ def build_scene(pcb):
     substacks = []
     thickness = 0
     try:
-        stack = resolved_layer_stack_from_pcbdoc(pcb)
+        stack = layer_stack if layer_stack is not None else resolved_layer_stack_from_pcbdoc(pcb)
         substacks = [s for s in stack.substacks if not s.service_stackup]
         if substacks:
             thickness = stack.stack_envelope_for_substack(substacks[0].source_stackup_ref).total_thickness_mils * MIL_MM

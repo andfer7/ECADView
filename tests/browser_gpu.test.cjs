@@ -134,6 +134,56 @@ test('WebGL startup completes even when the browser suspends animation callbacks
   assert.equal(await page.locator('#zoom-in').isEnabled(), true);
 });
 
+test('WebGL startup draws once with selections entered during preparation and avoids temporary SVG clones', async t => {
+  const page = await pageFor(t, {});
+  let release, requested;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { requested = resolve; });
+  t.after(() => release());
+  await page.evaluate(async () => {
+    const { LayoutWebGL } = await import('/static/layout-webgl.js'), paint = LayoutWebGL.prototype.paint;
+    window.startupFrames = 0;
+    LayoutWebGL.prototype.paint = function (...args) {
+      const frames = this.stats.frames, starting = document.querySelector('#view').getAttribute('aria-busy') === 'true';
+      const result = paint.apply(this, args);
+      if (starting && this.stats.frames > frames) window.startupFrames++;
+      return result;
+    };
+  });
+  await page.route('**/geometry', async route => { requested(); await gate; await route.continue().catch(() => {}); });
+  await page.locator('#file').setInputFiles({ name: 'Selected.PcbDoc', mimeType: 'application/octet-stream', buffer: Buffer.from('test') });
+  await started;
+  await page.locator('#component-query').fill('U1'); await page.locator('#net-query').fill('GND');
+  assert.equal(await page.locator('#component-highlight, #net-highlight, #layout-holes').count(), 0,
+    'selection entered while loading does not clone hidden SVG geometry');
+  release(); await ready(page);
+  await page.waitForFunction(() => document.querySelector('#view').getAttribute('aria-busy') === 'false');
+  assert.equal(Number((await dataset(page)).geometryUploads), 1);
+  assert.equal(await page.evaluate(() => window.startupFrames), 1, 'the first complete selection state is drawn in one pass');
+  assert.equal(await page.locator('#component-query').inputValue(), 'U1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  const selected = await colors(page, [[54,15],[30,48]]);
+  near(selected[0], [255,224,102]); near(selected[1], [104,224,255]);
+});
+
+test('selections entered during preparation become visible in SVG when compilation fails', async t => {
+  const page = await pageFor(t, {});
+  let release, requested;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { requested = resolve; });
+  t.after(() => release());
+  await page.route('**/geometry', async route => { requested(); await gate; await route.fulfill({ status: 500, json: { error: 'Test compiler failure' } }); });
+  await page.locator('#file').setInputFiles({ name: 'SelectedFallback.PcbDoc', mimeType: 'application/octet-stream', buffer: Buffer.from('test') });
+  await started;
+  await page.locator('#net-query').fill('GND'); release();
+  await page.waitForFunction(() => document.querySelector('#view').getAttribute('aria-busy') === 'false');
+  assert.equal(await page.locator('#net-highlight').count(), 1);
+  assert.equal(await page.locator('#layout-holes').count(), 1);
+  near((await colors(page, [[30,48]]))[0], [104,224,255]);
+  await page.locator('#net-clear').click();
+  assert.equal(await page.locator('#net-highlight, #layout-holes').count(), 0);
+});
+
 test('WebGL preparation failure releases the startup gate into a working SVG fallback', async t => {
   const page = await pageFor(t, {});
   await page.route('**/geometry', route => route.fulfill({ status: 500, json: { error: 'Test compiler failure' } }));

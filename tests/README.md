@@ -145,6 +145,9 @@ Startup tests hold geometry preparation open to check the “Starting WebGL…�
 message and blocked wheel/pinch, mouse and keyboard navigation. They verify
 recovery after compilation failure, unavailable graphics, suspended animation
 callbacks, tab changes and cancellation.
+Startup selection tests enter searches while compilation is pending, verify
+that hidden SVG geometry is not cloned, and check both the first WebGL frame
+and SVG fallback. They count actual startup draws to catch redundant redraws.
 
 Launcher tests require every entry point to start the local browser server by
 default, preserve `--web` compatibility, `--no-open`, browser choice and startup

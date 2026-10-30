@@ -27,8 +27,9 @@ async function main() {
       });
       await page.goto(origin); const load = Date.now();
       await page.locator('#file').setInputFiles(path);
-      await page.waitForFunction(() => document.querySelector('#view > svg') && document.querySelector('#busy').style.display === 'none', undefined, { timeout: 180000 });
-      const preview_ms = Date.now() - load;
+      await page.waitForFunction(() => document.querySelector('#view > svg'), undefined, { timeout: 180000 });
+      const svg_setup_ms = Date.now() - load;
+      await page.waitForFunction(() => document.querySelector('#busy').style.display === 'none', undefined, { timeout: 180000 });
       if (gpu) await page.waitForFunction(() => document.querySelector('#view.gpu-layout') || document.querySelector('#renderer-status').textContent.startsWith('SVG:'), undefined, { timeout: 180000 });
       const prepared_ms = Date.now() - load;
       const renderer = await page.locator('#renderer-status').textContent();
@@ -80,7 +81,7 @@ async function main() {
       const cdp = await page.context().newCDPSession(page);
       const heap = await cdp.send('Runtime.getHeapUsage'), dom = await cdp.send('Memory.getDOMCounters');
       await page.screenshot({ path: `/private/tmp/pcb-browser-${gpu ? 'webgl' : 'svg'}.png` });
-      results.cases.push({ renderer, preview_ms, prepared_ms, cadence, settled, heap, dom, errors });
+      results.cases.push({ renderer, svg_setup_ms, prepared_ms, cadence, settled, heap, dom, errors });
       console.log(JSON.stringify(results.cases.at(-1), null, 2));
       await page.close();
     }

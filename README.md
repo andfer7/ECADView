@@ -88,8 +88,8 @@ across tab and 2D/3D changes.
 
 ## 2D rendering and performance
 
-PCB layouts first display an SVG preview, then switch to retained WebGL 2
-geometry prepared by an isolated offscreen process. Zoom and pan update camera
+PCB layouts show “Starting WebGL…” until their retained WebGL 2 geometry is
+ready, with navigation disabled during preparation. Zoom and pan update camera
 uniforms; selection updates an object lookup. Geometry stays on the GPU during
 navigation and selection. Schematics use SVG directly.
 

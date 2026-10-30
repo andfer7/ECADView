@@ -45,6 +45,8 @@ class IndexedPcbSvgRenderer(PcbSvgRenderer):
     def __init__(self, pcb, options, *, compact_metadata=False):
         super().__init__(options)
         self._pcb = pcb
+        self._stack_cached = False
+        self.resolved_stack = None
         self._compact_metadata = compact_metadata
         self._signatures = {}
         self._collections = {}
@@ -76,6 +78,21 @@ class IndexedPcbSvgRenderer(PcbSvgRenderer):
                     layers[ref].append(primitive)
             if resolved and name != "pads":
                 self._collections[id(collection)] = (collection, layers)
+
+    def render_board(self, pcbdoc, *args, **kwargs):
+        # Resolution is immutable within a render, but callers may edit the
+        # document before using the renderer again.
+        self._stack_cached = False
+        self.resolved_stack = None
+        return super().render_board(pcbdoc, *args, **kwargs)
+
+    def _resolved_layer_stack_safe(self, pcbdoc):
+        if pcbdoc is not self._pcb:
+            return super()._resolved_layer_stack_safe(pcbdoc)
+        if not self._stack_cached:
+            self.resolved_stack = super()._resolved_layer_stack_safe(pcbdoc)
+            self._stack_cached = True
+        return self.resolved_stack
 
     def _primitive_layer_ref(self, primitive):
         identity = id(primitive)

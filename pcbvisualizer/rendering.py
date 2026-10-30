@@ -121,10 +121,10 @@ def polygon_element_ids(pcb: AltiumPcbDoc, svg: str) -> list[str]:
             and (match[2], int(match[3])) in linked]
 
 
-def copper_layer_order(pcb: AltiumPcbDoc) -> list[str]:
+def copper_layer_order(pcb: AltiumPcbDoc, *, layer_stack=None) -> list[str]:
     """Read physical copper order for the layer list without changing paint."""
     try:
-        stack = resolved_layer_stack_from_pcbdoc(pcb)
+        stack = layer_stack if layer_stack is not None else resolved_layer_stack_from_pcbdoc(pcb)
     except Exception:  # noqa: BLE001 - optional stack metadata must not prevent 2D viewing
         return []
     return [
@@ -185,7 +185,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         svg = renderer.render_board(pcb)
     # An unsupported 3D record must not prevent opening the existing 2D view.
     try:
-        scene = build_scene(pcb)
+        scene = build_scene(pcb, layer_stack=getattr(renderer, "resolved_stack", None))
         if renderer is not None and scene.get("board"):
             ctx = renderer.context
             x, y = scene["origin"]
@@ -197,7 +197,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         "scene3d": scene,
         "name": path.name,
         "kind": "pcb",
-        "copper_layer_order": copper_layer_order(pcb),
+        "copper_layer_order": copper_layer_order(pcb, layer_stack=getattr(renderer, "resolved_stack", None)),
         "polygon_elements": polygon_element_ids(pcb, svg),
         "layout_components": [
             {"name": component.designator, "source_name": component.source_designator,
