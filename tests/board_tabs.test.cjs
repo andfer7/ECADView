@@ -260,14 +260,19 @@ for (const gpu of [false, true]) {
     const page = await openParityBoard(t, gpu);
     await page.keyboard.press('m'); await clickWorld(page, 10, 10); await clickWorld(page, 50, 40); await page.keyboard.press('Escape');
     const original = await segmentPoints(page), viewBox = await currentViewBox(page);
+    // Unsnapped mouse coordinates are rounded to CSS pixels. A different canvas
+    // height changes that rounding, but labels must describe the actual segment.
+    const pixel = await page.locator('#view > svg').evaluate(svg => { const m = svg.getScreenCTM(); return 1 / Math.hypot(m.a, m.b); });
+    original[0].forEach((value, i) => near(value, [10,10,50,40][i], 'unsnapped endpoint stays within one screen pixel', pixel));
+    const [x1,y1,x2,y2] = original[0], dx = Math.abs(x2 - x1), dy = Math.abs(y2 - y1), total = Math.hypot(dx, dy);
     assert.equal(await page.locator('.measurement-axis').count(), 0);
     await clickWorld(page, 30, 25);
     assert.equal(await page.locator('.measurement-segment').count(), 1);
     assert.equal(await page.locator('.measurement-axis').count(), 2);
-    assert.deepEqual(await page.locator('.measure-label').allTextContents(), ['50.000 mm', 'X: 40.000 mm', 'Y: 30.000 mm']);
+    assert.deepEqual(await page.locator('.measure-label').allTextContents(), [`${total.toFixed(3)} mm`, `X: ${dx.toFixed(3)} mm`, `Y: ${dy.toFixed(3)} mm`]);
     assert.ok((await page.locator('.measurement-axis').evaluateAll(lines => lines.map(line => getComputedStyle(line).strokeDasharray))).every(value => value !== 'none'));
     await page.locator('[data-unit="in"]').click();
-    assert.match(await page.locator('.measure-label').first().textContent(), /1\.9685 in/);
+    assert.equal(await page.locator('.measure-label').first().textContent(), `${(total / 25.4).toFixed(4)} in`);
     await page.keyboard.press('q'); assert.equal(await page.locator('#units-toggle').textContent(), 'Metric (mm)');
     await page.keyboard.press('q'); assert.equal(await page.locator('#units-toggle').textContent(), 'Imperial (in)');
     assert.ok((await page.locator('.measure-label').allTextContents()).every(text => text.endsWith(' in')));

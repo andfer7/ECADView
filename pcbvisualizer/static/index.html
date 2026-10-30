@@ -7,7 +7,6 @@
       <h1>PCB &amp; schematic viewer</h1>
       <input id="file" type="file" accept=".PcbDoc,.pcbdoc,.SchDoc,.schdoc,.kicad_pcb,.kicad_sch,.sch" multiple hidden>
       <button class="primary" id="open">Open files…</button>
-      <div class="row"><button id="zoom-out" aria-label="Zoom out" disabled>−</button><button id="zoom-in" aria-label="Zoom in" disabled>+</button><button id="view-fit" aria-label="Fit document" title="Fit document" disabled>Fit</button></div>
       <div id="filename">No document loaded</div>
       <div id="warnings" role="status" hidden></div>
       <div id="renderer-status" class="hint" role="status" hidden></div>
@@ -84,6 +83,23 @@
     <div id="stats"></div>
   </div>
   <div id="workspace">
+    <div id="navigation-toolbar" role="group" aria-label="View navigation">
+      <button id="zoom-out" type="button" aria-label="Zoom out" title="Zoom out (−)" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <circle cx="10" cy="10" r="7"/><path d="m15.5 15.5 5.5 5.5M7 10h6"/>
+        </svg>
+      </button>
+      <button id="zoom-in" type="button" aria-label="Zoom in" title="Zoom in (+)" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <circle cx="10" cy="10" r="7"/><path d="m15.5 15.5 5.5 5.5M7 10h6M10 7v6"/>
+        </svg>
+      </button>
+      <button id="view-fit" type="button" aria-label="Fit document" title="Fit document (F)" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <circle cx="10" cy="10" r="7"/><path d="m15.5 15.5 5.5 5.5M7 9V7h2M11 7h2v2M13 11v2h-2M9 13H7v-2"/>
+        </svg>
+      </button>
+    </div>
     <div id="tabs" role="tablist" aria-label="Open documents"></div>
     <div id="view" role="tabpanel" aria-label="Document view" tabindex="0">
       <div id="empty">Open Altium or KiCad PCB and schematic files<br>or drop them here</div>

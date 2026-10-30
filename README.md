@@ -57,6 +57,10 @@ start a new session.
 
 ## Navigation, selection and measurements
 
+The magnifying-glass icons in the top toolbar zoom out, zoom in and fit the
+active document. Hover for the action and keyboard shortcut. The toolbar works
+in layout, schematic and 3D views.
+
 Use **Open files** or drop files anywhere in the application. Multiple startup
 files, movable tabs and Alt+Shift+Left/Right tab reordering are supported.
 
