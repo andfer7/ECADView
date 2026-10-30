@@ -98,7 +98,7 @@ test('layout startup shows WebGL progress and blocks early navigation until the 
   assert.equal(await page.locator('#busy').isVisible(), true);
   assert.equal(await page.locator('#busy').textContent(), 'Starting WebGL…');
   assert.equal(await page.locator('#view').getAttribute('aria-busy'), 'true');
-  for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn', 'mode-2d', 'mode-3d'])
+  for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn', 'view-mode-switch'])
     assert.equal(await page.locator('#' + id).isDisabled(), true, `${id} is unavailable during startup`);
   const before = await page.locator('#view > svg').getAttribute('viewBox');
   const box = await page.locator('#view').boundingBox(), x = box.x + box.width / 2, y = box.y + box.height / 2;
@@ -368,10 +368,10 @@ test('a real KiCad PCB uses retained WebGL and a schematic remains SVG', async t
   assert.match(await page.locator('#schematic-selection-status').textContent(), /SIGNAL/);
   await page.locator('#probe-layout-btn').click(); await ready(page);
   assert.equal(await page.locator('#net-query').inputValue(), 'SIGNAL');
-  await page.locator('#mode-3d').click();
+  await page.locator('#view-mode-switch').click();
   await page.waitForFunction(() => document.querySelector('#three-view canvas'));
   assert.equal(await page.locator('.layout-webgl').isHidden(), true);
-  await page.locator('#mode-2d').click(); await ready(page);
+  await page.locator('#view-mode-switch').click(); await ready(page);
 });
 
 test('closing a tab during preparation cannot mount stale GPU geometry', async t => {
