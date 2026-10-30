@@ -1701,7 +1701,7 @@ test('Escape exits measurement mode with a search field focused and retains fini
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   assert.equal(await page.locator('#measure-btn').evaluate(el => el.classList.contains('on')), false);
   assert.equal(await page.locator('#measure line').count(), 1);
-  await page.locator('#view').click({ position: { x: 20, y: 20 } });
+  await page.locator('#view').focus();
   await page.keyboard.press('Shift+C');
   assert.equal(await page.locator('#measure line').count(), 0, 'Shift+C still clears finished measurements');
 });
@@ -2035,7 +2035,7 @@ test('clicking pads, tracks, vias, polygon copper and nested geometry selects th
   assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"');
   await page.locator('[data-primitive="unlinked"]').click();
   assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"');
-  await page.locator('#view').click({ position: { x: 20, y: 20 } });
+  await page.locator('#view').click({ position: { x: 8, y: 8 } });
   assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"', 'blank space keeps the selection');
   assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewBox, 'selecting does not move the view');
   assert.equal(requests.length, 1, 'selection does not render again');
@@ -2146,7 +2146,7 @@ test('clicking components highlights all their geometry and retains selection of
   assert.equal(await page.locator('#net-query').inputValue(), 'Net[1]"');
   await page.locator('[data-primitive="free-via"]').click();
   assert.equal(await page.locator('#component-query').inputValue(), 'C2', 'a net-only item keeps the component selection');
-  await page.locator('#view').click({ position: { x: 20, y: 20 } });
+  await page.locator('#view').click({ position: { x: 8, y: 8 } });
   assert.equal(await page.locator('#component-query').inputValue(), 'C2');
   assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewBox);
   assert.equal(requests.length, 1);
@@ -2547,14 +2547,47 @@ test('pin captions remain upright on mirrored pads, avoid holes and respect laye
   await page.locator('#view-fit').click(); assert.equal(await pinCaptions(page).count(), 0);
 });
 
+async function set3DMode(page, enabled) {
+  const control = page.locator('#view-mode-switch');
+  if (await control.getAttribute('aria-checked') !== String(enabled)) await control.click();
+}
 const wait3D = page => page.waitForFunction(() =>
   !document.getElementById('three-view').hidden && /\d+ bod(y|ies)/.test(document.getElementById('three-summary').textContent));
 const image3D = async page => {
   await settleView(page);
   // Compare the rendered board independently of the floating controls' hover
   // and keyboard-focus states, which are painted over the canvas rectangle.
-  return page.locator('#three-view canvas').screenshot({ style: '#navigation-toolbar { visibility: hidden !important; }' });
+  return page.locator('#three-view canvas').screenshot({ style: '#navigation-toolbar, #view-mode-switch { visibility: hidden !important; }' });
 };
+
+test('a sliding view switch covers the inactive mode and supports keyboard activation and per-tab state', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? schematicData(name) : threeBoardData(name)) });
+  const control = page.getByRole('switch', { name: '3D view', exact: true });
+  assert.equal(await control.isDisabled(), true);
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  const cover = async enabled => {
+    assert.equal(await control.getAttribute('aria-checked'), String(enabled));
+    await page.waitForFunction(enabled => {
+      const button = document.querySelector('#view-mode-switch'), bounds = button.getBoundingClientRect();
+      const mask = button.querySelector('.mode-cover').getBoundingClientRect();
+      const boundary = bounds.x + bounds.width / 2;
+      return Math.abs((enabled ? mask.right : mask.x) - boundary) < 1;
+    }, enabled);
+  };
+  await cover(false);
+  assert.equal(await page.locator('#view-mode').isHidden(), true, '2D has no empty sidebar mode-button section');
+  await control.focus(); await page.keyboard.press('Space'); await wait3D(page); await cover(true);
+  assert.equal(await page.locator('#three-controls').isVisible(), true);
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc'); await cover(false);
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click(); await wait3D(page); await cover(true);
+  await control.focus(); await page.keyboard.press('Enter'); await cover(false);
+  assert.equal(await page.locator('#three-view').isHidden(), true);
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  assert.equal(await page.locator('#view-mode-switch').isHidden(), true, 'schematics have no 3D mode');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click(); await cover(false);
+  await control.click(); await wait3D(page); await cover(true);
+});
 
 async function openCadNavigation(t) {
   const { page } = await openPage(t, { render: (route, name) => reply(route, threeBoardData(name)) });
@@ -2563,7 +2596,7 @@ async function openCadNavigation(t) {
     Board3D.prototype.show = function (...args) { window.testViewer = this; return show.apply(this, args); };
   });
   await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
-  await page.locator('#mode-3d').click(); await page.waitForFunction(() => window.testViewer?.ready);
+  await set3DMode(page, true); await page.waitForFunction(() => window.testViewer?.ready);
   return page;
 }
 const cadState = page => page.evaluate(() => window.testViewer.state());
@@ -2641,7 +2674,7 @@ test('3D Fit frames the board without rotating it through the button, F and empt
     await page.locator('#view-fit').click(); assertFitted(before, await snapshot(), preset + ' fit');
   }
   const fitted = await cadState(page);
-  await page.locator('#mode-2d').click(); await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, false); await set3DMode(page, true); await wait3D(page);
   nearCadState(await cadState(page), fitted, 'mode changes retain the fitted camera');
 });
 
@@ -2819,7 +2852,7 @@ test('CAD navigation recentres on a picked surface, remembers its camera and can
   assert.deepEqual(recentred.up, before.up);
   await cadDrag(page, 'middle', [0.5, 0.5], [0.65, 0.7]);
   const saved = await cadState(page);
-  await page.locator('#mode-2d').click(); await page.locator('#mode-3d').click();
+  await set3DMode(page, false); await set3DMode(page, true);
   await page.waitForFunction(() => window.testViewer?.ready);
   nearCadState(await cadState(page), saved, 'mode changes restore free rotation and picked pivot');
   await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
@@ -2835,9 +2868,9 @@ test('CAD navigation recentres on a picked surface, remembers its camera and can
   await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2); await page.mouse.down({ button: 'middle' });
   await page.mouse.move(rect.x + rect.width / 2 + 20, rect.y + rect.height / 2);
   const hidden = await cadState(page);
-  await page.evaluate(() => document.querySelector('#mode-2d').click());
+  await page.evaluate(() => document.querySelector('#view-mode-switch').click());
   await page.mouse.move(rect.x + rect.width / 2 + 100, rect.y + rect.height / 2); await page.mouse.up({ button: 'middle' });
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   nearCadState(await cadState(page), hidden, 'leaving 3D cancels captured navigation input');
 });
 
@@ -2884,17 +2917,17 @@ test('completed 3D views reuse geometry, textures and STEP bodies across mode an
   });
   const complete = () => page.waitForFunction(() => window.testViewer?.ready);
   await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
-  await page.locator('#mode-3d').click(); await complete();
+  await set3DMode(page, true); await complete();
   await page.locator('#three-top').click(); await page.locator('#three-body-list').selectOption('body-0');
   const original = await image3D(page);
   const first = await page.evaluate(() => ({ ...window.work3D, scene: window.testViewer.scene.uuid }));
   assert.ok(first.buffers > 0 && first.textures > 0 && first.decodes > 0);
-  await page.locator('#mode-2d').click(); await page.locator('#mode-3d').click(); await complete();
+  await set3DMode(page, false); await set3DMode(page, true); await complete();
   assert.deepEqual(await page.evaluate(() => ({ ...window.work3D, scene: window.testViewer.scene.uuid })), first,
     'returning to 3D performs no geometry/texture uploads, rasterization or shader compilation');
   assert.ok((await image3D(page)).equals(original), 'the first return preserves realistic finishes, camera and highlight');
   await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
-  await page.locator('#mode-3d').click(); await complete();
+  await set3DMode(page, true); await complete();
   const both = await page.evaluate(() => ({ ...window.work3D }));
   for (let cycle = 0; cycle < 3; cycle++) {
     const scans = await page.evaluate(() => window.twoDQueries);
@@ -2902,7 +2935,7 @@ test('completed 3D views reuse geometry, textures and STEP bodies across mode an
     assert.equal(await page.evaluate(() => window.twoDQueries), scans, 'a 3D tab return does not rebuild hidden 2D controls or labels');
     assert.deepEqual(await selected3DBodies(page), ['body-0']);
     assert.ok((await image3D(page)).equals(original), 'cached tabs retain the exact rendered finish');
-    await page.locator('#mode-2d').click(); await page.locator('#mode-3d').click(); await complete();
+    await set3DMode(page, false); await set3DMode(page, true); await complete();
     const after2D = await page.evaluate(() => window.twoDQueries);
     await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click(); await complete();
     assert.equal(await page.evaluate(() => window.twoDQueries), after2D);
@@ -3174,7 +3207,7 @@ with tempfile.TemporaryDirectory() as tmp:
   await page.waitForFunction(() => document.querySelector('#filename').textContent === 'Models.PcbDoc' && document.querySelector('#busy').style.display === 'none');
   assert.ok(!resources.some(url => url.includes('occt-import-js')), '2D never starts the STEP converter');
   const svgBefore = await page.locator('#scene').evaluate(el => el.outerHTML);
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   await page.waitForFunction(() => document.querySelector('#step-status').textContent === 'STEP models: 1/1 loaded');
   assert.equal(resources.filter(url => url.endsWith('occt-import-js.wasm')).length, 1);
   assert.equal(await page.locator('#three-body-list option').count(), 2);
@@ -3191,9 +3224,9 @@ with tempfile.TemporaryDirectory() as tmp:
   await page.locator('#three-bottom').click();
   await click3D(page, 0.65, 0.58);
   assert.deepEqual(await selected3DBodies(page), ['body-1']);
-  await page.locator('#mode-2d').click();
+  await set3DMode(page, false);
   assert.equal(await page.locator('#scene').evaluate(el => el.outerHTML), svgBefore);
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   await page.waitForFunction(() => document.querySelector('#step-status').textContent === 'STEP models: 1/1 loaded');
   assert.deepEqual(await selected3DBodies(page), ['body-1']);
   assert.equal(resources.filter(url => url.endsWith('occt-import-js.wasm')).length, 1, 'converted model is reused after remount');
@@ -3209,7 +3242,7 @@ test('missing KiCad STEP references can be supplied locally without changing the
   await page.locator('#file').setInputFiles({ name: 'External.kicad_pcb', mimeType: 'application/octet-stream', buffer: Buffer.from(source) });
   await loadedDocument(page, 'External.kicad_pcb');
   const svgBefore = await page.locator('#scene').evaluate(el => el.outerHTML);
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   await page.waitForFunction(() => document.querySelector('#step-status').textContent.includes('Missing STEP file'));
   const before = await image3D(page);
   await page.locator('#step-files').setInputFiles(resolve(__dirname, 'fixtures/step/box.step'));
@@ -3222,7 +3255,7 @@ test('missing KiCad STEP references can be supplied locally without changing the
   await page.waitForFunction(() => document.querySelector('#step-status').textContent === 'STEP models: 1/1 loaded');
   assert.equal(await page.locator('#three-body-list option').count(), 0, 'reloading STEP data preserves deletions');
   await page.locator('#three-undo').click(); assert.equal(await page.locator('#three-body-list option').count(), 1);
-  await page.locator('#mode-2d').click();
+  await set3DMode(page, false);
   assert.equal(await page.locator('#scene').evaluate(el => el.outerHTML), svgBefore);
 });
 
@@ -3233,11 +3266,11 @@ test('failed STEP conversion retains extruded bodies and leaving 3D cancels pend
   data.scene3d.step_models = { invalid: { name: 'invalid.step', data: Buffer.from('not STEP').toString('base64') } };
   const { page } = await openPage(t, { initial: data });
   await loaded(page, 'Fallback.PcbDoc');
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   await page.waitForFunction(() => document.querySelector('#step-status').textContent.includes('1 unavailable'));
   await page.locator('#three-top').click(); await click3D(page, 0.35, 0.56);
   assert.deepEqual(await selected3DBodies(page), ['body-0'], 'failed model retains selectable extrusion');
-  await page.locator('#mode-2d').click();
+  await set3DMode(page, false);
   // A completed fallback is cached too. Open a fresh document to exercise
   // cancellation of a conversion that has not finished yet.
   const pendingData = { ...data, name: 'Pending.PcbDoc', svg: data.svg.replaceAll('Fallback.PcbDoc', 'Pending.PcbDoc') };
@@ -3246,8 +3279,8 @@ test('failed STEP conversion retains extruded bodies and leaving 3D cancels pend
   let pending;
   const requested = new Promise(resolve => { pending = resolve; });
   await page.route('**/occt-import-js.wasm', route => { pending(); return new Promise(() => {}); });
-  await page.locator('#mode-3d').click(); await requested;
-  await page.locator('#mode-2d').click();
+  await set3DMode(page, true); await requested;
+  await set3DMode(page, false);
   assert.equal(await page.locator('#three-view').isHidden(), true);
   assert.equal(await page.locator('#view > svg').isVisible(), true);
   await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -3269,9 +3302,9 @@ test('3D renders local solids, preserves 2D measurements and layers, and remembe
   await page.locator('#view > svg').click({ position: { x: 350, y: 330 } });
   assert.equal(await page.locator('#measure line').count(), 1);
   await page.locator('#none').click();
-  await page.locator('#mode-3d').click();
+  await set3DMode(page, true);
   await wait3D(page);
-  assert.equal(await page.locator('#mode-3d').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#view-mode-switch').getAttribute('aria-checked'), 'true');
   assert.equal(await page.locator('#view > svg').isVisible(), false);
   assert.equal(await page.locator('#layers-wrap').isVisible(), false);
   assert.match(await page.locator('#three-status').textContent(), /Simplified/);
@@ -3300,15 +3333,15 @@ test('3D renders local solids, preserves 2D measurements and layers, and remembe
   assert.equal(await page.locator('#view-mode').isVisible(), false);
   assert.equal(await page.locator('#three-view').isVisible(), false);
   await page.getByRole('tab', { name: 'B.PcbDoc', exact: true }).click();
-  assert.equal(await page.locator('#mode-2d').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#view-mode-switch').getAttribute('aria-checked'), 'false');
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   await wait3D(page);
   assert.deepEqual(await image3D(page), zoomed, 'restores the saved 3D camera');
-  await page.locator('#mode-2d').click();
+  await set3DMode(page, false);
   assert.deepEqual(await currentViewBox(page), before);
   assert.equal(await page.locator('#measure line').count(), 1);
   assert.equal(await page.locator('#scene #layer-top').evaluate(el => el.style.display), 'none');
-  await page.locator('#mode-3d').click();
+  await set3DMode(page, true);
   await wait3D(page);
   assert.deepEqual(await image3D(page), zoomed, 'mode toggling also restores the camera');
   await page.getByRole('button', { name: 'Close A.PcbDoc', exact: true }).click();
@@ -3322,7 +3355,7 @@ test('3D requires an outline and an unavailable WebGL context returns safely to 
     name === 'missing.PcbDoc' ? { ...boardData(name), scene3d: { board: [], notes: ['No board outline.'] } } : threeBoardData(name)) });
   await page.locator('#file').setInputFiles(file('missing.PcbDoc'));
   await loaded(page, 'missing.PcbDoc');
-  assert.equal(await page.locator('#mode-3d').isDisabled(), true);
+  assert.equal(await page.locator('#view-mode-switch').isDisabled(), true);
   assert.match(await page.locator('#three-status').textContent(), /No board outline/);
   await page.locator('#file').setInputFiles(file('A.PcbDoc'));
   await loaded(page, 'A.PcbDoc');
@@ -3332,9 +3365,10 @@ test('3D requires an outline and an unavailable WebGL context returns safely to 
       return type.startsWith('webgl') ? null : getContext.call(this, type, ...args);
     };
   });
-  await page.locator('#mode-3d').click();
+  await set3DMode(page, true);
   await page.waitForFunction(() => document.getElementById('three-status').textContent.includes('WebGL'));
-  assert.equal(await page.locator('#mode-2d').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#three-status').isVisible(), true);
+  assert.equal(await page.locator('#view-mode-switch').getAttribute('aria-checked'), 'false');
   assert.equal(await page.locator('#view > svg').isVisible(), true);
   assert.equal(await page.locator('#three-view').isVisible(), false);
 });
@@ -3347,7 +3381,7 @@ test('a delayed 3D import cannot mount onto another tab', async t => {
   await page.locator('#file').setInputFiles([file('A.PcbDoc'), file('B.PcbDoc')]);
   await loaded(page, 'B.PcbDoc');
   const requested = page.waitForRequest('**/viewer-3d.js');
-  await page.locator('#mode-3d').click();
+  await set3DMode(page, true);
   await requested;
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click();
   release();
@@ -3385,15 +3419,15 @@ with tempfile.TemporaryDirectory() as tmp:
   await page.unroute('**/render');
   await page.locator('#file').setInputFiles({ name: 'generated.PcbDoc', mimeType: 'application/octet-stream', buffer: data });
   await page.waitForFunction(() => document.getElementById('filename').textContent === 'generated.PcbDoc' && document.getElementById('busy').style.display === 'none');
-  assert.equal(await page.locator('#mode-3d').isEnabled(), true);
-  await page.locator('#mode-3d').click();
+  assert.equal(await page.locator('#view-mode-switch').isEnabled(), true);
+  await set3DMode(page, true);
   await wait3D(page);
   assert.match(await page.locator('#three-summary').textContent(), /3 bodies/);
   const iso = await image3D(page);
   if (process.env.PCB_3D_SCREENSHOT) await page.screenshot({ path: process.env.PCB_3D_SCREENSHOT });
   await page.locator('#three-top').click();
   assert.notDeepEqual(await image3D(page), iso);
-  await page.locator('#mode-2d').click();
+  await set3DMode(page, false);
   assert.equal(await page.locator('#view > svg').isVisible(), true);
 });
 
@@ -3476,7 +3510,7 @@ test('3D body picking highlights visible bodies, toggles selection, and ignores 
   const { page } = await openPage(t, { render: (route, name) => reply(route, threeBoardData(name)) });
   await page.locator('#file').setInputFiles(file('A.PcbDoc'));
   await loaded(page, 'A.PcbDoc');
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   await page.locator('#three-top').click();
   const original = await image3D(page);
   await click3D(page, 0.35, 0.56);
@@ -3490,7 +3524,7 @@ test('3D body picking highlights visible bodies, toggles selection, and ignores 
   await click3D(page, 0.64, 0.4);
   assert.deepEqual(await selected3DBodies(page), [], 'the board occludes the bottom body');
   await click3D(page, 0.35, 0.56);
-  await click3D(page, 0.05, 0.05);
+  await click3D(page, 0.05, 0.15);
   assert.deepEqual(await selected3DBodies(page), [], 'blank space clears selection');
   await page.locator('#three-bottom').click();
   await click3D(page, 0.64, 0.6);
@@ -3518,7 +3552,7 @@ test('3D supports multiple bodies, Delete and Backspace, per-tab deletions, and 
   await page.locator('#file').setInputFiles(file('A.PcbDoc'));
   await loaded(page, 'A.PcbDoc');
   const originalSVG = await page.locator('#scene').evaluate(scene => scene.outerHTML);
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   await page.locator('#three-top').click();
   await click3D(page, 0.35, 0.56);
   await click3D(page, 0.59, 0.63, ['Shift']);
@@ -3533,13 +3567,13 @@ test('3D supports multiple bodies, Delete and Backspace, per-tab deletions, and 
   assert.match(await page.locator('#three-summary').textContent(), /1 body/);
   assert.equal(await page.locator('#three-delete').isDisabled(), true);
   assert.ok(!(await image3D(page)).equals(selected), 'deletion removes solids from the image');
-  await page.locator('#mode-2d').click();
+  await set3DMode(page, false);
   assert.equal(await page.locator('#scene').evaluate(scene => scene.outerHTML), originalSVG);
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   assert.equal(await page.locator('#three-body-list option').count(), 1);
   await page.locator('#file').setInputFiles(file('B.PcbDoc'));
   await loaded(page, 'B.PcbDoc');
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   assert.equal(await page.locator('#three-body-list option').count(), 3, 'another tab keeps its own bodies');
   assert.equal(await page.locator('#three-undo').isDisabled(), true);
   await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click(); await wait3D(page);
@@ -3625,11 +3659,11 @@ test('opens real KiCad PCB and schematic files, cross-probes, searches pins and 
   assert.ok(measured && Math.abs(Number(measured[1]) - 10) < 0.05, '10 mm distance within mouse pixel rounding');
   await page.keyboard.press('Escape');
   if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'pcb.png') });
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   assert.match(await page.locator('#three-status').textContent(), /no usable STEP model references/);
   assert.equal(await page.locator('#three-body-list option').count(), 0);
   if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'board-3d.png') });
-  await page.locator('#mode-2d').click();
+  await set3DMode(page, false);
   assert.equal(await page.locator('#measure line').count(), 1);
 });
 
@@ -3666,7 +3700,7 @@ test('legacy KiCad sheets open with explicit placeholder warnings, wire selectio
   assert.match(await page.locator('#warnings').textContent(), /symbol graphics and pin connectivity are unavailable/);
   assert.equal(await page.locator('#scene [data-symbol-preview="placeholder"]').count(), 2);
   assert.match(await page.locator('#stats').textContent(), /2 components, 3 wires, 2 net labels/);
-  assert.equal(await page.locator('#mode-3d').isVisible(), false);
+  assert.equal(await page.locator('#view-mode-switch').isVisible(), false);
   await clickSchematicGraphic(page, page.locator('[data-symbol-preview="placeholder"]').first());
   assert.equal(await schematicStatus(page), 'Components: R1');
   await page.locator('#probe-layout-btn').click();
@@ -3704,7 +3738,7 @@ test('opens the reported co60 legacy files through the real server', {
   if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-pcb.png') });
   await page.locator('#component-query').fill('K_[1');
   assert.match(await page.locator('#component-status').textContent(), /1 component highlighted/);
-  await page.locator('#mode-3d').click(); await wait3D(page);
+  await set3DMode(page, true); await wait3D(page);
   if (process.env.KICAD_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.KICAD_SCREENSHOT_DIR, 'co60-3d.png') });
 });
 

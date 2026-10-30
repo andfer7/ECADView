@@ -113,7 +113,9 @@ PLAYWRIGHT_CHANNEL=chrome node scripts/benchmark_browser_layout.cjs path/to/boar
 
 ## 3D preview
 
-PCB tabs offer a **2D / 3D** toggle. The local WebGL preview shows the board
+PCB tabs offer a sliding **2D / 3D** switch at the top-left of the drawing
+window. Its cover hides the inactive mode; click it, or use Enter/Space while
+focused, to switch views. The local WebGL preview shows the board
 profile, curved edges, cutouts, through holes, slots and component STEP models.
 Embedded Altium STEP assets load automatically when entering 3D. Models retain
 their colors, rotations, offsets and board side; repeated models share geometry.

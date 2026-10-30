@@ -11,11 +11,7 @@
       <div id="warnings" role="status" hidden></div>
       <div id="renderer-status" class="hint" role="status" hidden></div>
     </div>
-    <div id="view-mode" data-pcb-only>
-      <div class="row" role="group" aria-label="PCB view mode">
-        <button id="mode-2d" class="on" aria-pressed="true" disabled>2D</button>
-        <button id="mode-3d" aria-pressed="false" disabled>3D</button>
-      </div>
+    <div id="view-mode" data-pcb-only hidden>
       <div id="three-controls" hidden>
         <div class="row"><button id="three-top">Top</button><button id="three-bottom">Bottom</button><button id="three-iso">Isometric</button></div>
         <div class="hint">Click a body to select; Shift-click adds or removes a body. Middle-drag or left-drag to rotate freely. Shift-middle-drag, right-drag or Shift-left-drag to pan. Scroll or pinch to zoom towards the pointer. Double-click a surface to centre rotation there; double-click empty space to fit.</div>
@@ -85,6 +81,10 @@
   <div id="workspace">
     <div id="tabs" role="tablist" aria-label="Open documents"></div>
     <div id="drawing-area">
+      <button id="view-mode-switch" type="button" role="switch" aria-label="3D view" aria-checked="false" title="Open a PCB layout to switch views" data-pcb-only disabled>
+        <span aria-hidden="true">2D</span><span aria-hidden="true">3D</span>
+        <span class="mode-cover" aria-hidden="true"></span>
+      </button>
       <div id="navigation-toolbar" role="group" aria-label="View navigation">
         <button id="zoom-out" type="button" aria-label="Zoom out" title="Zoom out (−)" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">

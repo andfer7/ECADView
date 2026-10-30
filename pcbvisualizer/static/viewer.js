@@ -27,8 +27,11 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     $('busy').style.display = loading ? 'flex' : 'none';
     view.setAttribute('aria-busy', String(loading));
     for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn']) $(id).disabled = !svg || loading;
-    $('mode-2d').disabled = !svg || loading;
-    $('mode-3d').disabled = loading || activeBoard?.kind === 'schematic' || !activeBoard?.scene3d?.board?.length;
+    const modeSwitch = $('view-mode-switch');
+    modeSwitch.disabled = !svg || loading || activeBoard?.kind !== 'pcb' || !activeBoard?.scene3d?.board?.length;
+    modeSwitch.setAttribute('aria-checked', String(is3D()));
+    modeSwitch.title = loading ? 'Loading document…' : !svg ? 'Open a PCB layout to switch views' :
+      modeSwitch.disabled ? '3D view requires a PCB with a board outline' : is3D() ? 'Switch to 2D view' : 'Switch to 3D view';
     if (wasLoading && !loading && !is3D()) updateNetLabels();
   }
   // The SVG remains the hit-test surface, but navigating a large unaccelerated
@@ -367,14 +370,11 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (!available && activeBoard) activeBoard.mode = '2d';
     const showing = is3D();
     updateLoading();
-    for (const mode of ['2d', '3d']) {
-      $('mode-' + mode).classList.toggle('on', (mode === '3d') === showing);
-      $('mode-' + mode).setAttribute('aria-pressed', String((mode === '3d') === showing));
-    }
     document.querySelectorAll('[data-2d-only]').forEach(el => { el.hidden = showing || el.hasAttribute('data-pcb-only') && activeBoard?.kind === 'schematic'; });
     $('three-controls').hidden = !showing;
     $('three-status').textContent = (activeBoard?.scene3d?.notes || []).join('\n');
     $('three-status').hidden = !showing && available;
+    $('view-mode').hidden = activeBoard?.kind === 'schematic' || !showing && (available || !$('three-status').textContent);
     $('net-labels').hidden = showing; label.hidden = showing;
     if (showing) netLabels.cancel();
     view.classList.toggle('measuring', !showing && measuring);
@@ -411,6 +411,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       $('three-view').hidden = true;
       $('three-status').hidden = false;
       $('three-status').textContent = 'Could not open 3D. Check WebGL support in your browser. ' + error.message;
+      $('view-mode').hidden = false;
     }
   }
   function setViewMode(mode) {
@@ -421,8 +422,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     mountViewMode();
     if (mode === '2d') apply();
   }
-  $('mode-2d').onclick = () => setViewMode('2d');
-  $('mode-3d').onclick = () => setViewMode('3d');
+  $('view-mode-switch').onclick = () => setViewMode(is3D() ? '2d' : '3d');
   $('step-add').onclick = () => $('step-files').click();
   $('step-files').onchange = event => {
     const board = activeBoard, files = [...event.target.files]; event.target.value = '';
