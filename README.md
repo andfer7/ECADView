@@ -57,6 +57,10 @@ start a new session.
 
 ## Navigation, selection and measurements
 
+The compact toolbar floats at the top centre of the drawing window. Its
+magnifying-glass icons zoom out, zoom in and fit the active document. Hover for
+the action and keyboard shortcut. It works in layout, schematic and 3D views.
+
 Use **Open files** or drop files anywhere in the application. Multiple startup
 files, movable tabs and Alt+Shift+Left/Right tab reordering are supported.
 
