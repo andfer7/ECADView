@@ -49,7 +49,7 @@ program after a **3-second reconnect grace period**. Refreshing the page or
 keeping another viewer page open keeps the backend running. Background tabs
 also stay connected; shutdown does not depend on JavaScript heartbeat timers.
 A server started with `--no-open` waits for its first viewer indefinitely.
-**Quit viewer** stops it immediately, and a terminal launch also accepts Ctrl+C.
+A terminal launch also accepts Ctrl+C to stop the backend immediately.
 Active geometry compiler children are cancelled and reaped during shutdown.
 Document tabs, measurements and preview edits are session state and are lost
 when the page closes. After automatic shutdown, launch the program again to
@@ -171,8 +171,7 @@ On macOS, open `dist/PCBVisualizer.app`. On Windows/Linux, launch the executable
 under `dist/PCBVisualizer/` and keep its supporting files together. It starts
 the local backend and opens the same browser interface, with no Python or uv
 installation required on the receiving computer. A browser must be installed.
-Close the last viewer browser tab/window to stop it automatically, or use
-**Quit viewer** for immediate shutdown.
+Close the last viewer browser tab/window to stop it automatically.
 
 Build on each target operating system. The macOS bundle uses a local ad-hoc
 signature; release signing/notarization is a separate distribution step. The

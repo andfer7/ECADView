@@ -106,7 +106,7 @@ sys.argv = ["pcbvisualizer"]
                         connection.request('GET', '/')
                         response = connection.getresponse()
                         self.assertEqual(response.status, 200)
-                        self.assertIn(b'Quit viewer', response.read())
+                        self.assertIn(b'id="app"', response.read())
                         connection.request('POST', '/shutdown', b'',
                                            {'Origin': f'http://{url.netloc}', 'X-Viewer-Request': 'shutdown'})
                         response = connection.getresponse()

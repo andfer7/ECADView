@@ -170,9 +170,9 @@ and SVG fallback. They count actual startup draws to catch redundant redraws.
 Launcher tests require every entry point to start the local browser server by
 default, preserve `--web` compatibility, `--no-open`, browser choice and startup
 files, and dispatch frozen geometry workers without starting another server.
-Quit tests verify the viewer-only shutdown request, stopped page and error recovery.
+Backend shutdown tests verify the viewer-origin and request-header checks.
 Packaged smoke validation must also exercise the bundled offscreen worker and
-Quit viewer, checking that the backend process exits. Build and smoke-test on
+last-viewer closure, checking that the backend process exits. Build and smoke-test on
 each target OS; a macOS build does not validate Windows/Linux packaging.
 
 
