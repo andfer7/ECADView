@@ -250,7 +250,7 @@ export class Board3D {
     if (state) {
       this.camera.position.fromArray(state.position); this.camera.up.fromArray(state.up);
       this.controls.target.fromArray(state.target); this.controls.update();
-    } else this.fit();
+    } else this.fit('iso');
   }
 
   async loadSurfaces(source, model, generation) {
@@ -390,13 +390,16 @@ export class Board3D {
       target: this.controls.target.toArray() } : null;
   }
 
-  fit(preset = 'iso') {
+  fit(preset = null) {
     if (!this.scene) return;
+    this.controls.cancel(); this.cancelPick();
     const angle = THREE.MathUtils.degToRad(this.camera.fov / 2);
     const distance = this.radius / Math.sin(Math.min(angle, Math.atan(Math.tan(angle) * this.camera.aspect))) * 1.12;
-    const direction = preset === 'top' ? new THREE.Vector3(0, 0, 1) :
-      preset === 'bottom' ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(1, -1.3, 1.4).normalize();
-    this.camera.up.set(0, preset === 'bottom' ? -1 : 1, 0);
+    const direction = !preset ? this.camera.getWorldDirection(new THREE.Vector3()).negate() :
+      preset === 'top' ? new THREE.Vector3(0, 0, 1) : preset === 'bottom' ? new THREE.Vector3(0, 0, -1) :
+        new THREE.Vector3(1, -1.3, 1.4).normalize();
+    // Framing preserves viewing direction and roll; only explicit presets rotate.
+    if (preset) this.camera.up.set(0, preset === 'bottom' ? -1 : 1, 0);
     this.camera.position.copy(this.center).addScaledVector(direction, distance);
     this.controls.target.copy(this.center); this.controls.update(); this.render();
   }
