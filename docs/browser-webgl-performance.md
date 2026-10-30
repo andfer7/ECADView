@@ -22,9 +22,12 @@ viewBox transform; it does not remove all DOM costs. Caption placement waits
 offscreen candidates, and yields between short batches. Subsequent input
 cancels stale caption work.
 
-One WebGL context serves all PCB tabs. Only the active tab has GPU buffers;
-each open tab retains its CPU geometry for switching and recovery. Closing the
-tab drops its CPU data and deletes resident GPU buffers. Context loss immediately
+One WebGL context serves all PCB tabs. At most one PCB has GPU buffers; its
+buffers remain resident while viewing schematics, so probing back needs no new
+geometry upload. Switching to a different PCB replaces them. Each open tab
+retains its CPU geometry for switching and recovery. Closing a PCB drops its CPU
+data and deletes its resident GPU buffers, including while a schematic is active.
+Context loss immediately
 restores SVG; successful context restoration recreates the current buffers.
 Unsupported SVG features (including isolated group opacity, clips, masks and
 filters), a missing WebGL 2 context, compiler failure, or GPU allocation failure
@@ -59,6 +62,39 @@ The benchmark now reports `svg_setup_ms` for the installed SVG interaction tree
 and `prepared_ms` for an interactive viewer. The SVG is hidden during WebGL
 preparation; older `preview_ms` results must not be treated as an interactive
 loading time.
+
+## Cross-probing improvements (#115)
+
+Connection indexes are built once per document and reused by each schematic/PCB
+pair. Component-only probes skip net resolution entirely. Net probes lazily cache
+pin-connected matches and the reverse lookup, retaining source-ID precedence,
+exact-name/alias fallbacks and ambiguity reporting. Replacing a document creates
+fresh indexes. View activation reuses search indexes and unchanged schematic
+styling; a schematic-to-layout probe batches activation, hidden-layer reveal and
+fitting into one final WebGL draw and caption refresh.
+
+A generated workload with 400 components and 600 two-terminal schematic nets
+exercises renamed component links without source IDs through the real viewer
+and WebGL geometry compiler. Local headless Chrome measurements at 1440 × 900
+on 2026-10-30 gave these median synchronous button-handler times over three
+round trips per selection type:
+
+| Direction and selection | Before | After |
+| --- | ---: | ---: |
+| Layout → schematic, component | 4,580 ms | 9.2 ms |
+| Layout → schematic, net | 4,570 ms | 12.4 ms |
+| Schematic → layout, component | 53 ms | 6.9 ms |
+| Schematic → layout, net | 62 ms | 7.2 ms |
+
+The first component and net forward probes after loading took 20 ms and 15.5 ms
+respectively; later probes reused their indexes. These timings include matching,
+selection restoration, view activation and fitting, but exclude deferred captions
+and presentation by the display. They describe this generated workload, not a
+guarantee for arbitrary CAD documents or machines. Reproduce with:
+
+```sh
+PLAYWRIGHT_CHANNEL=chrome node scripts/benchmark_browser_cross_probe.cjs result.json
+```
 
 ## Representative LimeSDR result
 

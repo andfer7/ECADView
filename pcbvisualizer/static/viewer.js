@@ -4,6 +4,8 @@ import { styleSchematic } from './schematic-style.js';
 import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurement-tools.js';
 import { rectangleMatches } from './rectangle-selection.js';
 import { trackViewerSession } from './viewer-session.js';
+import { indexLayout, indexSchematic, matchingComponents, matchingNets,
+  schematicComponents as findSchematicComponents, reverseNets } from './cross-probe.js';
 
 (function () {
   const viewerSession = trackViewerSession();
@@ -17,6 +19,7 @@ import { trackViewerSession } from './viewer-session.js';
   let activeBoard = null, nextBoardId = 1;
   let layoutGPU = null, gpuUnavailable = false, labelTimer = 0, paintBatch = 0;
   let geometryQueue = Promise.resolve();
+  function updateNetLabels() { if (!paintBatch) netLabels.update(activeBoard, gpuActive()); }
   function viewLoading() { return Boolean(activeBoard?.loading || activeBoard?.gpuLoading); }
   function updateLoading() {
     const wasLoading = view.getAttribute('aria-busy') === 'true', loading = viewLoading();
@@ -26,7 +29,7 @@ import { trackViewerSession } from './viewer-session.js';
     for (const id of ['zoom-in', 'zoom-out', 'view-fit', 'measure-btn']) $(id).disabled = !svg || loading;
     $('mode-2d').disabled = !svg || loading;
     $('mode-3d').disabled = loading || activeBoard?.kind === 'schematic' || !activeBoard?.scene3d?.board?.length;
-    if (wasLoading && !loading && !is3D()) netLabels.update(activeBoard, gpuActive());
+    if (wasLoading && !loading && !is3D()) updateNetLabels();
   }
   // The SVG remains the hit-test surface, but navigating a large unaccelerated
   // layout during preparation can overwhelm the browser. Keep input off it
@@ -197,7 +200,11 @@ import { trackViewerSession } from './viewer-session.js';
     clearTimeout(labelTimer);
     netLabels.cancel();
     view.classList.remove('gpu-layout');
-    if (layoutGPU) { layoutGPU.canvas.hidden = true; if (board?.gpuScene !== layoutGPU.scene) layoutGPU.release(); }
+    if (layoutGPU) {
+      layoutGPU.canvas.hidden = true;
+      // A schematic needs no GPU scene; keep the last PCB resident for probe-back.
+      if (!board || board.kind === 'pcb' && board.gpuScene !== layoutGPU.scene) layoutGPU.release();
+    }
     unmount3D();
     if (svg) svg.remove();
     activeBoard = board; twoDBoard = null; drag = null; gestureScale = null;
@@ -250,6 +257,7 @@ import { trackViewerSession } from './viewer-session.js';
     if (index < 0) return;
     board.controller?.abort();
     invalidate3D(board);
+    if (board.gpuScene && layoutGPU?.scene === board.gpuScene) layoutGPU.release();
     board.gpuController?.abort(); board.gpuScene = null;
     boards.splice(index, 1);
     if (board === activeBoard) mountBoard(boards[Math.min(index, boards.length - 1)] || null);
@@ -296,6 +304,7 @@ import { trackViewerSession } from './viewer-session.js';
     const rendered = tpl.querySelector('svg');
     if (!rendered) throw new Error('The renderer did not return an SVG.');
     invalidate3D(board);
+    if (board.gpuScene && layoutGPU?.scene === board.gpuScene) layoutGPU.release();
     if (board === activeBoard) saveBoard();
     const b = rendered.viewBox.baseVal;
     const origin = { x: b.x, y: b.y, w: b.width, h: b.height };
@@ -311,7 +320,9 @@ import { trackViewerSession } from './viewer-session.js';
     }
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
-                           layoutComponents: data.layout_components || [], scene3d: data.scene3d, camera3d: null, bodyEdits: null,
+                           layoutComponents: data.layout_components || [], probeConnections: null, probeSchematic: null,
+                           componentIndex: null, netIndex: null, schematicStyleKey: null, schematicTargetsBuilt: false,
+                           scene3d: data.scene3d, camera3d: null, bodyEdits: null,
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure, sceneGroup: rendered.querySelector('#scene'),
                            gpuScene: null, gpuLoading: kind === 'pcb' && Boolean(data.webgl) && !gpuUnavailable,
                            gpuStatus: 'SVG', gpuComponents: [], gpuNets: [], copperLayerOrder: data.copper_layer_order || [],
@@ -564,6 +575,7 @@ import { trackViewerSession } from './viewer-session.js';
     }
   }
   function buildSchematicComponentTargets(board) {
+    if (board.schematicTargetsBuilt) return;
     // Keep the body's own coordinate frame: a screen-aligned bounding box would
     // also capture empty corners around rotated/mirrored symbols.
     for (const row of board.schematicComponents.values()) for (const component of row.elements) {
@@ -591,18 +603,22 @@ import { trackViewerSession } from './viewer-session.js';
       // Restrict the target to the body so external pins still select nets.
       frame.append(hit);
     }
+    board.schematicTargetsBuilt = true;
   }
   function updateSchematicSelection() {
     if (activeBoard?.kind !== 'schematic') return;
     const board = activeBoard;
-    for (const [index, selected, cls] of [
-      [board.schematicComponents, board.selectedComponents, 'sch-component-match'],
-      [board.schematicNets, board.selectedNets, 'sch-net-match'],
-    ]) {
-      const matched = new Set([...selected].flatMap(id => index.get(id).elements));
-      for (const row of index.values()) for (const el of row.elements) el.classList.toggle(cls, matched.has(el));
+    const key = JSON.stringify([[...board.selectedComponents].sort(), [...board.selectedNets].sort()]);
+    if (key !== board.schematicStyleKey) {
+      for (const [index, selected, cls] of [
+        [board.schematicComponents, board.selectedComponents, 'sch-component-match'],
+        [board.schematicNets, board.selectedNets, 'sch-net-match'],
+      ]) {
+        const matched = new Set([...selected].flatMap(id => index.get(id).elements));
+        for (const row of index.values()) for (const el of row.elements) el.classList.toggle(cls, matched.has(el));
+      }
+      styleSchematic(board); board.schematicStyleKey = key;
     }
-    styleSchematic(board);
     const names = (selected, index) => [...selected].map(id => index.get(id).name).join(', ');
     const selected = [];
     if (board.selectedComponents.size) selected.push('Components: ' + names(board.selectedComponents, board.schematicComponents));
@@ -647,7 +663,6 @@ import { trackViewerSession } from './viewer-session.js';
   $('schematic-clear').onclick = clearSchematicSelection;
 
   // ------------------------------------------------------------ cross-probing
-  const identity = value => String(value || '').trim().toLowerCase();
   function updateProbeTargets() {
     const source = activeBoard;
     const fromSchematic = source?.kind === 'schematic';
@@ -689,54 +704,36 @@ import { trackViewerSession } from './viewer-session.js';
     const source = boards.find(board => board.id === activeBoard?.probeResult?.sourceId);
     if (source) activateBoard(source);
   };
-  function matchingComponents(sourceId, row, layout, names) {
-    const linked = layout.layoutComponents.filter(component => sourceId && component.source_id && identity(component.source_id) === identity(sourceId));
-    if (linked.length) return [...names].filter(name => linked.some(component => identity(component.name) === identity(name)));
-    return [...names].filter(name => {
-      const link = layout.layoutComponents.find(component => identity(component.name) === identity(name));
-      // An explicit link to another source symbol must not match by designator.
-      if (sourceId && link?.source_id) return false;
-      return identity(link?.source_name || name) === identity(row.name);
-    });
-  }
-  const padKey = (component, pin) => JSON.stringify([identity(component), identity(pin)]);
   function layoutConnections(layout) {
-    const primitives = [...layout.svg.querySelectorAll('#scene [data-component], #scene [data-net]')];
-    const names = new Set(primitives.map(el => el.dataset.component).filter(Boolean));
-    const netNames = new Set(primitives.map(el => el.dataset.net).filter(Boolean));
-    const padNets = new Map();
-    for (const el of primitives) {
-      const { component, padNumber, padDesignator, net } = el.dataset;
-      if (!component || !(padNumber || padDesignator) || !net) continue;
-      const key = padKey(component, padNumber || padDesignator);
-      if (!padNets.has(key)) padNets.set(key, new Set());
-      padNets.get(key).add(net);
+    if (layout.probeConnections?.svg !== layout.svg) {
+      layout.probeConnections = { svg: layout.svg, index: indexLayout(
+        layout.svg.querySelectorAll('#scene [data-component], #scene [data-net]'), layout.layoutComponents) };
     }
-    return { names, netNames, padNets };
+    return layout.probeConnections.index;
   }
-  function matchingNets(row, schematic, layout, { names, netNames, padNets }) {
-    const byPins = new Set();
-    for (const terminal of row.terminals) {
-      if (!terminal.component || !terminal.pin) continue;
-      const component = [...schematic.schematicComponents].find(([, item]) => identity(item.name) === identity(terminal.component));
-      const matches = matchingComponents(component?.[0] || '', component?.[1] || { name: terminal.component }, layout, names);
-      for (const name of matches) for (const net of padNets.get(padKey(name, terminal.pin)) || []) byPins.add(net);
+  function schematicConnections(board) {
+    if (board.probeSchematic?.svg !== board.svg) {
+      board.probeSchematic = { svg: board.svg, index: indexSchematic(board.schematicComponents, board.schematicNets) };
     }
-    return byPins.size ? [...byPins] : [...netNames].filter(name =>
-      [row.name, ...row.aliases].some(alias => identity(alias) === identity(name)));
+    return board.probeSchematic.index;
   }
   function probeResult(source, components, nets, unmatched) {
     return { sourceId: source.id,
       message: 'From ' + source.name + ': ' + components.size + ' component' + (components.size === 1 ? '' : 's') +
         ', ' + nets.size + ' net' + (nets.size === 1 ? '' : 's') + ' highlighted.' + unmatched };
   }
+  function probeTransition(update) {
+    paintBatch++;
+    try { update(); }
+    finally { paintBatch--; if (!paintBatch) { paintGPU(); updateNetLabels(); } }
+  }
   $('probe-layout-btn').onclick = () => {
     const source = activeBoard;
     const layout = boards.find(board => board.id === source?.probeTargetId && board.kind === 'pcb' && board.svg && !board.loading);
     if (source?.kind !== 'schematic' || !layout) return;
-    const connections = layoutConnections(layout), { names } = connections;
+    const connections = layoutConnections(layout), schematic = schematicConnections(source);
     const components = new Set(), nets = new Set(), missing = [];
-    const resolveComponent = (id, row) => matchingComponents(id, row, layout, names);
+    const resolveComponent = (id, row) => matchingComponents(id, row, connections);
     for (const id of source.selectedComponents) {
       const row = source.schematicComponents.get(id), matches = resolveComponent(id, row);
       if (matches.length) matches.forEach(name => components.add(name));
@@ -744,7 +741,7 @@ import { trackViewerSession } from './viewer-session.js';
     }
     for (const id of source.selectedNets) {
       const row = source.schematicNets.get(id);
-      const matches = matchingNets(row, source, layout, connections);
+      const matches = matchingNets(id, row, schematic, connections);
       if (matches.length === 1) nets.add(matches[0]);
       else missing.push('net ' + row.name + (matches.length > 1 ? ' (ambiguous)' : ''));
     }
@@ -755,29 +752,34 @@ import { trackViewerSession } from './viewer-session.js';
     layout.probeComponents = [...components]; layout.probeNets = [...nets];
     layout.componentQuery = [...components].join(', '); layout.netQuery = [...nets].join(', ');
     layout.probeResult = probeResult(source, components, nets, unmatched);
-    activateBoard(layout); setViewMode('2d'); setMeasuring(false);
-    const hits = [...componentHits, ...netHits];
-    for (const group of groups) if (group.style.display === 'none' && hits.some(el => group.contains(el))) group._cb.click();
-    fitMatches(hits);
+    probeTransition(() => {
+      activateBoard(layout); if (is3D()) setViewMode('2d'); setMeasuring(false);
+      const hits = [...componentHits, ...netHits], layers = new Set(hits.map(el => el.closest('#scene > g')));
+      let revealed = false;
+      for (const group of groups) if (group.style.display === 'none' && layers.has(group)) {
+        group._cb.checked = true; group.style.display = ''; raiseLayer(group); revealed = true;
+      }
+      if (revealed) { updateComponentStatus(); updateNetStatus(); }
+      fitMatches(hits);
+    });
   };
   $('probe-schematic-btn').onclick = () => {
     const source = activeBoard;
     const target = boards.find(board => board.id === source?.probeTargetId && board.kind === 'schematic' && board.svg && !board.loading);
     if (source?.kind !== 'pcb' || !target) return;
-    const connections = layoutConnections(source);
+    const connections = layoutConnections(source), schematic = schematicConnections(target);
     const components = new Set(), nets = new Set(), missing = [];
     for (const name of new Set(componentHits.map(el => el.dataset.component))) {
-      const link = source.layoutComponents.find(component => identity(component.name) === identity(name));
-      const matches = [...target.schematicComponents].filter(([id, row]) => link?.source_id ?
-        identity(id) === identity(link.source_id) : identity(row.name) === identity(link?.source_name || name));
-      if (matches.length) matches.forEach(([id]) => components.add(id));
+      const matches = findSchematicComponents(name, schematic, connections);
+      if (matches.length) matches.forEach(id => components.add(id));
       else missing.push('component ' + name);
     }
-    const netMatches = [...target.schematicNets].map(([id, row]) => [id, matchingNets(row, target, source, connections)]);
+    // Component-only probes never need to resolve the schematic's nets.
+    const netMatches = netHits.length ? reverseNets(schematic, connections) : null;
     for (const name of new Set(netHits.map(el => el.dataset.net))) {
-      const matches = netMatches.filter(([, names]) => names.length === 1 && names[0] === name);
-      if (matches.length) matches.forEach(([id]) => nets.add(id));
-      else missing.push('net ' + name + (netMatches.some(([, names]) => names.includes(name)) ? ' (ambiguous)' : ''));
+      const matches = netMatches.reverse.get(name) || [];
+      if (matches.length) matches.forEach(id => nets.add(id));
+      else missing.push('net ' + name + (netMatches.ambiguous.has(name) ? ' (ambiguous)' : ''));
     }
     const unmatched = missing.length ? '\nNot found: ' + missing.join(', ') : '';
     if (!components.size && !nets.size) {
@@ -785,10 +787,12 @@ import { trackViewerSession } from './viewer-session.js';
     }
     target.selectedComponents = components; target.selectedNets = nets; target.probeMessage = '';
     target.probeResult = probeResult(source, components, nets, unmatched);
-    activateBoard(target);
-    const hits = [...components].flatMap(id => target.schematicComponents.get(id).elements)
-      .concat([...nets].flatMap(id => target.schematicNets.get(id).elements));
-    fitMatches(hits);
+    probeTransition(() => {
+      activateBoard(target);
+      const hits = [...components].flatMap(id => target.schematicComponents.get(id).elements)
+        .concat([...nets].flatMap(id => target.schematicNets.get(id).elements));
+      fitMatches(hits);
+    });
   };
   function resetProbeSelection(kind) {
     if (!activeBoard) return;
@@ -883,16 +887,17 @@ import { trackViewerSession } from './viewer-session.js';
   // ------------------------------------------------------------ component search
   let componentIndex = new Map(), componentHits = [];
   function mountComponentSearch() {
-    componentIndex = new Map(); componentHits = [];
-    if (activeBoard?.kind === 'schematic') {
+    componentIndex = activeBoard?.componentIndex || new Map(); componentHits = [];
+    if (!activeBoard?.componentIndex && activeBoard?.kind === 'schematic') {
       for (const row of activeBoard.schematicComponents.values()) componentIndex.set(row.name, row.elements);
     }
-    for (const el of svg?.querySelectorAll('#scene [data-component]') || []) {
+    for (const el of activeBoard?.componentIndex ? [] : svg?.querySelectorAll('#scene [data-component]') || []) {
       const name = el.dataset.component;
       if (!name) continue;
       if (!componentIndex.has(name)) componentIndex.set(name, []);
       componentIndex.get(name).push(el);
     }
+    if (activeBoard) activeBoard.componentIndex = componentIndex;
     $('component-options').replaceChildren(...[...componentIndex.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(name => {
       const option = document.createElement('option'); option.value = name; return option;
     }));
@@ -923,7 +928,7 @@ import { trackViewerSession } from './viewer-session.js';
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
       `${count} component${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
       (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
-    netLabels.update(activeBoard, gpuActive());
+    updateNetLabels();
   }
   function clearComponent() { resetProbeSelection('probeComponents'); $('component-query').value = ''; searchComponents(); }
   $('component-query').oninput = () => { resetProbeSelection('probeComponents'); searchComponents(); };
@@ -1019,16 +1024,17 @@ import { trackViewerSession } from './viewer-session.js';
   // ------------------------------------------------------------ net search
   let netIndex = new Map(), netHits = [];
   function mountNetSearch() {
-    netIndex = new Map(); netHits = [];
-    if (activeBoard?.kind === 'schematic') {
+    netIndex = activeBoard?.netIndex || new Map(); netHits = [];
+    if (!activeBoard?.netIndex && activeBoard?.kind === 'schematic') {
       for (const row of activeBoard.schematicNets.values()) netIndex.set(row.name, row.elements);
     }
-    for (const el of svg?.querySelectorAll('#scene [data-net]') || []) {
+    for (const el of activeBoard?.netIndex ? [] : svg?.querySelectorAll('#scene [data-net]') || []) {
       const name = el.dataset.net;
       if (!name) continue;
       if (!netIndex.has(name)) netIndex.set(name, []);
       netIndex.get(name).push(el);
     }
+    if (activeBoard) activeBoard.netIndex = netIndex;
     $('net-options').replaceChildren(...[...netIndex.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(name => {
       const option = document.createElement('option'); option.value = name; return option;
     }));
@@ -1059,7 +1065,7 @@ import { trackViewerSession } from './viewer-session.js';
     $('net-status').textContent = !$('net-query').value.trim() ? '' : !count ? 'No matching nets.' :
       `${count} net${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
       (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
-    netLabels.update(activeBoard, gpuActive());
+    updateNetLabels();
   }
   function clearNet() { resetProbeSelection('probeNets'); $('net-query').value = ''; searchNets(); }
   function searchSchematic(kind) {
@@ -1158,8 +1164,8 @@ import { trackViewerSession } from './viewer-session.js';
       // navigation frame; refresh once the gesture has settled.
       $('net-labels').replaceChildren();
       netLabels.cancel();
-      labelTimer = setTimeout(() => netLabels.update(activeBoard, gpuActive()), 140);
-    } else netLabels.update(activeBoard, gpuActive());
+      labelTimer = setTimeout(updateNetLabels, 140);
+    } else updateNetLabels();
   }
   function queueViewUpdate() {
     if (!viewFrame) viewFrame = requestAnimationFrame(() => { viewFrame = 0; apply(false); });
@@ -1433,7 +1439,7 @@ import { trackViewerSession } from './viewer-session.js';
   new ResizeObserver(() => {
     positionMeasurementLabels();
     paintGPU();
-    netLabels.update(activeBoard, gpuActive());
+    updateNetLabels();
   }).observe(view);
 
   // ------------------------------------------------------------ board passed on the command line

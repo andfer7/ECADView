@@ -319,6 +319,38 @@ test('SVG fallback preserves all visible drill cutouts above selected copper, in
   await page.keyboard.press('Escape'); assert.equal(await page.locator('#layout-holes').count(), 0);
 });
 
+test('cross-probing retains PCB buffers while viewing schematics, draws the fitted result once and releases a closed resident PCB', async t => {
+  const page = await pageFor(t, fixture(), () => {
+    window.bufferBalance = 0;
+    for (const [method, difference] of [['createBuffer',1], ['deleteBuffer',-1]]) {
+      const original = WebGL2RenderingContext.prototype[method];
+      WebGL2RenderingContext.prototype[method] = function (...args) {
+        const result = original.apply(this, args); window.bufferBalance += difference; return result;
+      };
+    }
+  }); await ready(page);
+  const original = await dataset(page);
+  const schema = { name:'Sheet.SchDoc', kind:'schematic', stats:{components:1,wires:0,net_labels:0},
+    selection:{components:[{id:'symbol',name:'U1',elements:['symbol'],body_elements:['symbol']}],nets:[]},
+    svg:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"><g id="scene"><g id="symbol"><rect x="20" y="20" width="10" height="10" fill="yellow" stroke="brown"/></g></g></svg>' };
+  await page.route('**/render', route => route.fulfill({ json:schema }));
+  await page.locator('#file').setInputFiles({name:'Sheet.SchDoc',mimeType:'application/octet-stream',buffer:Buffer.from('test')});
+  await page.waitForFunction(() => document.querySelector('#filename').textContent === 'Sheet.SchDoc' && document.querySelector('#busy').style.display === 'none');
+  assert.equal(await page.evaluate(() => window.bufferBalance), 2, 'the hidden PCB keeps its existing vertex/index buffers');
+  await page.getByRole('tab', {name:'GPU.PcbDoc',exact:true}).click(); await ready(page);
+  assert.equal((await dataset(page)).geometryUploads, original.geometryUploads);
+  await page.locator('#component-query').fill('U1'); await page.locator('#probe-schematic-btn').click();
+  const frames = await page.evaluate(() => {
+    const canvas = document.querySelector('.layout-webgl'), before = Number(canvas.dataset.frames);
+    document.querySelector('#probe-layout-btn').click(); return Number(canvas.dataset.frames) - before;
+  });
+  assert.equal(frames, 1, 'activation, selection and fit produce one final GPU frame');
+  assert.equal((await dataset(page)).geometryUploads, original.geometryUploads);
+  await page.getByRole('tab', {name:'Sheet.SchDoc',exact:true}).click();
+  await page.getByRole('button', {name:'Close GPU.PcbDoc',exact:true}).click();
+  assert.equal(await page.evaluate(() => window.bufferBalance), 0, 'closing the hidden PCB frees its resident buffers');
+});
+
 test('a real KiCad PCB uses retained WebGL and a schematic remains SVG', async t => {
   const page = await pageFor(t, {});
   await page.unroute('**/render');
