@@ -13,7 +13,6 @@
     </div>
     <div id="view-mode" data-pcb-only hidden>
       <div id="three-controls" hidden>
-        <div class="row"><button id="three-top">Top</button><button id="three-bottom">Bottom</button><button id="three-iso">Isometric</button></div>
         <div class="hint">Click a body to select; Shift-click adds or removes a body. Middle-drag or left-drag to rotate freely. Shift-middle-drag, right-drag or Shift-left-drag to pan. Scroll or pinch to zoom towards the pointer. Double-click a surface to centre rotation there; double-click empty space to fit.</div>
         <div id="three-summary" class="hint"></div>
         <input id="step-files" type="file" accept=".step,.stp" multiple hidden>
@@ -101,6 +100,26 @@
             <circle cx="10" cy="10" r="7"/><path d="m15.5 15.5 5.5 5.5M7 9V7h2M11 7h2v2M13 11v2h-2M9 13H7v-2"/>
           </svg>
         </button>
+      </div>
+      <div id="three-navigation" role="group" aria-label="3D view controls" data-pcb-only hidden>
+        <div class="three-presets" role="group" aria-label="View direction">
+          <button id="three-top" type="button" title="Top view" disabled>Top</button>
+          <button id="three-bottom" type="button" title="Bottom view" disabled>Bottom</button>
+        </div>
+        <div class="rotation-pad" role="group" aria-label="Rotate board">
+          <button id="three-rotate-up" type="button" aria-label="Rotate up" title="Rotate up (5°)" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5m-7 7 7-7 7 7"/></svg>
+          </button>
+          <button id="three-rotate-left" type="button" aria-label="Rotate left" title="Rotate left (5°)" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+          </button>
+          <button id="three-rotate-right" type="button" aria-label="Rotate right" title="Rotate right (5°)" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h14m-7-7 7 7-7 7"/></svg>
+          </button>
+          <button id="three-rotate-down" type="button" aria-label="Rotate down" title="Rotate down (5°)" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14m-7-7 7 7 7-7"/></svg>
+          </button>
+        </div>
       </div>
       <div id="view" role="tabpanel" aria-label="Document view" tabindex="0">
         <div id="empty">Open Altium or KiCad PCB and schematic files<br>or drop them here</div>

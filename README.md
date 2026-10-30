@@ -139,8 +139,10 @@ Shift-left-drag to pan; scroll or pinch to zoom towards the pointer. On a
 touchscreen, use one finger to rotate and two fingers to pan or pinch. Double-click a
 board or component surface to centre rotation there, preserving the viewing
 direction and zoom. Fit, the F key and double-clicking empty space centre and
-frame the board without changing its rotation. Top, Bottom and Isometric change
-the viewing orientation; each tab remembers its rotation centre, camera and mode.
+frame the board without changing its rotation. In 3D, the floating Top and Bottom
+buttons are stacked at the bottom-left. The four arrows beside them rotate the
+board by 5° per click in screen directions, keeping the rotation centre and zoom.
+Each tab remembers its rotation centre, camera and mode.
 
 Click a body to select it; its visible parts turn cyan, including dark plastics
 and reflective metal. Clear the selection to restore its original finish.

@@ -108,6 +108,8 @@ camera controls and tab persistence, preservation of 2D state, lazy local assets
 unsupported browsers, and an uploaded generated PcbDoc through the real server.
 The sliding view switch is checked for cover placement, Enter/Space activation,
 per-document mode restoration, schematic visibility and unavailable/loading states.
+Floating 3D controls cover stacked Top/Bottom presets and 5° arrow rotations in
+the current camera frame, retaining pivot, distance, selection and scene resources.
 
 CAD navigation regressions cover free top/bottom tumbling, rotation-centre and
 orbit-distance stability, screen-space pan, pointer-directed wheel/pinch zoom,

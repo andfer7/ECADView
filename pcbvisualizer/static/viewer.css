@@ -67,6 +67,25 @@
   #navigation-toolbar button:hover:not(:disabled) { background: #474c56; }
   #navigation-toolbar button:disabled { opacity: 0.35; cursor: default; background: transparent; }
   #navigation-toolbar svg { width: 22px; height: 22px; pointer-events: none; }
+  #three-navigation { position: absolute; bottom: 12px; left: 12px; z-index: 5; display: flex;
+    flex-wrap: wrap; align-items: flex-end; gap: 8px; max-width: calc(100% - 24px); pointer-events: none; }
+  .three-presets, .rotation-pad { padding: 4px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; box-shadow: 0 3px 12px #0005; pointer-events: auto; }
+  .three-presets { display: flex; flex-direction: column; gap: 4px; }
+  #three-navigation button { display: flex; align-items: center; justify-content: center; padding: 0;
+    border-color: transparent; background: transparent; }
+  #three-navigation button:hover:not(:disabled) { background: #474c56; }
+  #three-navigation button:disabled { opacity: 0.35; cursor: default; }
+  .three-presets button { width: 68px; height: 32px; }
+  .rotation-pad { --step-size: 32px; display: grid; gap: 2px;
+    grid-template-columns: repeat(3, var(--step-size)); grid-template-rows: repeat(3, var(--step-size)); }
+  .rotation-pad button { width: var(--step-size); height: var(--step-size); }
+  .rotation-pad svg { width: 20px; height: 20px; pointer-events: none; }
+  #three-rotate-up { grid-area: 1 / 2; }
+  #three-rotate-left { grid-area: 2 / 1; }
+  #three-rotate-right { grid-area: 2 / 3; }
+  #three-rotate-down { grid-area: 3 / 2; }
+  @container (max-width: 130px) { .rotation-pad { --step-size: 24px; } }
   @container (max-width: 370px) { #view-mode-switch:not([hidden]) ~ #navigation-toolbar { top: 64px; } }
   @media (prefers-reduced-motion: reduce) { #view-mode-switch .mode-cover { transition: none; } }
   #tabs { display: flex; flex: none; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); }
