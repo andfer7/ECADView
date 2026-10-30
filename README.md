@@ -126,9 +126,13 @@ are reused during navigation and refreshed when geometry or deletions change.
 The board finish is applied directly to its existing top and bottom faces.
 The camera's depth interval follows the visible board during zoom, pan and orbit
 to keep closely spaced STEP faces distinct and avoid striped depth artifacts.
-Drag to rotate,
-right-drag or Shift-drag to pan, and scroll or pinch to zoom. Top, Bottom,
-Isometric and Fit reset the camera; each tab remembers its camera and mode.
+Middle-drag or left-drag to rotate freely through any orientation, including
+past top and bottom, without a locked up axis. Right-drag, Shift-middle-drag or
+Shift-left-drag to pan; scroll or pinch to zoom towards the pointer. On a
+touchscreen, use one finger to rotate and two fingers to pan or pinch. Double-click a
+board or component surface to centre rotation there, preserving the viewing
+direction and zoom. Double-click empty space to fit. Top, Bottom, Isometric and
+Fit reset the camera; each tab remembers its rotation centre, camera and mode.
 
 Click a body to select it; its visible parts turn cyan, including dark plastics
 and reflective metal. Clear the selection to restore its original finish.

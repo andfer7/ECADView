@@ -79,6 +79,7 @@ class ServerTests(unittest.TestCase):
             ("/static/cross-probe.js", "cross-probe.js", "text/javascript"),
             ("/static/net-labels.js", "net-labels.js", "text/javascript"),
             ("/static/viewer-3d.js", "viewer-3d.js", "text/javascript"),
+            ("/static/cad-controls.js", "cad-controls.js", "text/javascript"),
             ("/static/board-surface.js", "board-surface.js", "text/javascript"),
             ("/static/studio-3d.js", "studio-3d.js", "text/javascript"),
             ("/static/step-loader.js", "step-loader.js", "text/javascript"),
