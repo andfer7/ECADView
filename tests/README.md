@@ -76,6 +76,13 @@ schematic selection into its matching PCB and back into the source sheet.
 Cross-probing coverage in both directions includes renamed source components,
 pin connectivity, exact name/alias fallbacks, multiple document targets, missing
 and ambiguous matches, and preservation of source selections and views.
+Index tests preserve authoritative source IDs, first-row metadata semantics,
+pin precedence and case-sensitive reverse matching. Browser counters verify that
+component probes do no net work and repeated net probes reuse connectivity.
+GPU tests check that schematic visits retain the PCB buffers, a fitted probe
+draws once, and closing a resident PCB releases its buffers. For a reproducible
+generated cross-probing workload and timing limits, see
+[browser performance notes](../docs/browser-webgl-performance.md).
 
 Polygon visibility tests cover solid and hatched pours, preservation of custom
 pad shapes and ordinary copper, selection overlays, click-through to routes,

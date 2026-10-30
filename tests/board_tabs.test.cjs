@@ -910,6 +910,42 @@ test('unmatched and conflicting schematic probes are reported without selecting 
   assert.match(await page.locator('#probe-result-status').textContent(), /net GND \(ambiguous\)/);
 });
 
+test('cross-probes index document metadata once and resolve nets only when needed', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? probingSchematicData(name) : probingLayoutData(name)) });
+  await page.evaluate(() => {
+    window.probeReads = { components: 0, terminals: 0 };
+    const json = Response.prototype.json;
+    Response.prototype.json = async function (...args) {
+      const data = await json.apply(this, args);
+      for (const link of data.layout_components || []) {
+        const name = link.name;
+        Object.defineProperty(link, 'name', { enumerable: true, get() { window.probeReads.components++; return name; } });
+      }
+      for (const row of data.selection?.nets || []) for (const terminal of row.terminals || []) {
+        const component = terminal.component;
+        Object.defineProperty(terminal, 'component', { enumerable: true, get() { window.probeReads.terminals++; return component; } });
+      }
+      return data;
+    };
+  });
+  await page.locator('#file').setInputFiles(file('Sheet.SchDoc')); await loaded(page, 'Sheet.SchDoc');
+  await page.locator('#file').setInputFiles(file('Layout.PcbDoc')); await loaded(page, 'Layout.PcbDoc');
+  await page.locator('#component-query').fill('R99'); await page.locator('#probe-schematic-btn').click();
+  assert.equal(await schematicStatus(page), 'Components: R1');
+  const first = await page.evaluate(() => ({ ...window.probeReads }));
+  assert.ok(first.components > 0); assert.equal(first.terminals, 0, 'a component-only probe does not resolve unrelated nets');
+  await page.locator('#probe-layout-btn').click();
+  assert.deepEqual(await page.evaluate(() => ({ ...window.probeReads })), first, 'the same document metadata is not scanned again');
+  await page.locator('#component-clear').click(); await page.locator('#net-query').fill('PCB_SIGNAL');
+  await page.locator('#probe-schematic-btn').click();
+  assert.equal(await schematicStatus(page), 'Nets: GND');
+  const nets = await page.evaluate(() => ({ ...window.probeReads }));
+  assert.ok(nets.terminals > 0); assert.equal(nets.components, first.components);
+  await page.locator('#probe-layout-btn').click(); await page.locator('#probe-schematic-btn').click();
+  assert.deepEqual(await page.evaluate(() => ({ ...window.probeReads })), nets, 'repeated probes reuse the resolved pin connectivity');
+});
+
 test('layout cross-probing matches renamed source symbols and pin-connected nets, fits and returns without losing layout state', async t => {
   const { page, requests } = await openPage(t, { render: (route, name) => reply(route,
     name.endsWith('.SchDoc') ? probingSchematicData(name) : probingLayoutData(name)) });
@@ -3426,7 +3462,12 @@ test('SVG rectangle selection respects hidden layers and polygons and keeps exac
   const data = probingLayoutData('Rectangle.PcbDoc');
   data.polygon_elements = ['area'];
   data.svg = data.svg.replace('<rect id="pcb-other"', '<rect id="area" data-net="POUR" x="90" y="60" width="5" height="5" fill="red"/><rect id="pcb-other"');
-  const { page } = await openPage(t, { initial: data, render: (route, name) => reply(route, probingLayoutData(name)) });
+  const { page } = await openPage(t, { initial: data, render: (route, name) => {
+    const rendered = probingLayoutData(name);
+    if (name === 'Diagonal.PcbDoc') rendered.svg = rendered.svg.replace('<rect id="pcb-other"',
+      '<line data-net="DIAGONAL" x1="30" y1="10" x2="60" y2="40" stroke="red"/><rect id="pcb-other"');
+    return reply(route, rendered);
+  } });
   await loaded(page, 'Rectangle.PcbDoc');
   await rectangleDrag(page, [8, 8], [85, 65]);
   assert.equal(await page.locator('#component-query').inputValue(), 'R99, R10');
@@ -3445,14 +3486,8 @@ test('SVG rectangle selection respects hidden layers and polygons and keeps exac
   await rectangleDrag(page, [91, 60], [98, 69]);
   assert.equal(await page.locator('#net-query').inputValue(), '', 'hidden polygons are not selected');
   // Exclude a diagonal wire whose bounds overlap the box but whose line does not.
-  await page.locator('#layer-top').evaluate(layer => {
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    for (const [name, value] of Object.entries({ 'data-net': 'DIAGONAL', x1: 30, y1: 10, x2: 60, y2: 40, stroke: 'red' })) line.setAttribute(name, value);
-    layer.append(line);
-  });
-  // Remount to index the added fixture wire.
-  await page.getByRole('tab', { name: 'Other.PcbDoc', exact: true }).click();
-  await page.getByRole('tab', { name: 'Rectangle.PcbDoc', exact: true }).click();
+  // Geometry arrives through the loader; tab remounts reuse immutable indexes.
+  await page.locator('#file').setInputFiles(file('Diagonal.PcbDoc')); await loaded(page, 'Diagonal.PcbDoc');
   await rectangleDrag(page, [31, 34], [36, 39]);
   assert.equal(await page.locator('#net-query').inputValue(), '');
   await rectangleDrag(page, [44, 22], [48, 28]);

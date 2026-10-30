@@ -1,6 +1,6 @@
 import { vertexShader, fragmentShader } from './layout-shaders.js';
 
-// One context for every tab; only the active document is resident on the GPU.
+// One context for every tab; at most one PCB is resident, including behind sheets.
 // CPU buffers are retained per tab for switching/context restoration. Navigation
 // changes uniforms only. The SVG owns picking, annotations and measurements.
 export class LayoutWebGL {
