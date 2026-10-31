@@ -125,6 +125,9 @@ their colors, rotations, offsets and board side; repeated models share geometry.
 Conversion runs in a browser worker using bundled OpenCascade WebAssembly, so
 2D loading never waits for tessellation and the viewer stays usable while models
 appear. The sidebar reports loading progress and any unavailable models.
+On multicore machines, up to two STEP assets convert concurrently. Repeated
+opaque components share GPU draw calls while retaining individual selection,
+deletion and picking; mirrored and transparent parts retain separate draws.
 The 3D finish includes outer copper relief, exposed pads and silkscreen taken
 from the PCB layers on both sides, with a satin solder mask and an FR4-colored
 board edge. These details stay aligned regardless of 2D selections or hidden
