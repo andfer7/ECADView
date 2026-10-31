@@ -356,12 +356,14 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
 
   // ------------------------------------------------------------ 3D mode
   let threeViewer = null, threeModule = null, threeMount = 0, threeBoard = null;
+  let rotationHold = null, rotationFrame = 0;
   function is3D() { return activeBoard?.mode === '3d'; }
   function invalidate3D(board) {
     if (threeBoard === board) { board.camera3d = threeViewer?.state(); threeBoard = null; }
     threeViewer?.release(board.scene3d);
   }
   function unmount3D() {
+    stopRotation();
     threeMount++;
     if (threeBoard) threeBoard.camera3d = threeViewer?.state();
     threeBoard = null;
@@ -461,9 +463,52 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (unmatched.length) toast('No model reference matches: ' + unmatched.join(', '));
   }
   for (const preset of ['top', 'bottom']) $('three-' + preset).onclick = () => threeViewer?.fit(preset);
-  for (const [direction, x, y] of [['up', 0, -1], ['down', 0, 1], ['left', -1, 0], ['right', 1, 0]]) {
-    $('three-rotate-' + direction).onclick = () => threeViewer?.rotateStep(x, y);
+  function stopRotation() {
+    const held = rotationHold; rotationHold = null;
+    cancelAnimationFrame(rotationFrame); rotationFrame = 0;
+    if (held?.pointerId !== undefined && held.button.hasPointerCapture(held.pointerId)) held.button.releasePointerCapture(held.pointerId);
   }
+  function startRotation(button, x, y, input) {
+    if (button.disabled) return;
+    stopRotation();
+    const held = rotationHold = { button, board: activeBoard, ...input };
+    let last = performance.now() + 250;
+    threeViewer?.rotateStep(x, y);
+    const repeat = now => {
+      if (rotationHold !== held) return;
+      if (button.disabled || !is3D() || activeBoard !== held.board || document.hidden) { stopRotation(); return; }
+      // Keep speed independent of refresh rate; discard long suspended frames.
+      if (now > last) { threeViewer?.rotateStep(x, y, Math.min(now - last, 50) * 0.06); last = now; }
+      rotationFrame = requestAnimationFrame(repeat);
+    };
+    rotationFrame = requestAnimationFrame(repeat);
+  }
+  for (const [direction, x, y] of [['up', 0, -1], ['down', 0, 1], ['left', -1, 0], ['right', 1, 0]]) {
+    const button = $('three-rotate-' + direction);
+    button.onpointerdown = event => {
+      if (event.button !== 0 || !event.isPrimary || button.disabled) return;
+      event.preventDefault(); button.focus({ preventScroll: true });
+      startRotation(button, x, y, { pointerId: event.pointerId }); button.setPointerCapture(event.pointerId);
+    };
+    button.onpointerup = button.onpointercancel = event => {
+      if (rotationHold?.pointerId === event.pointerId) stopRotation();
+    };
+    button.onlostpointercapture = () => { if (rotationHold?.button === button) stopRotation(); };
+    button.onkeydown = event => {
+      if (![' ', 'Enter'].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+      event.preventDefault();
+      if (!event.repeat) startRotation(button, x, y, { key: event.key });
+    };
+    button.onkeyup = event => {
+      if (![' ', 'Enter'].includes(event.key)) return;
+      event.preventDefault(); if (rotationHold?.key === event.key) stopRotation();
+    };
+    button.onblur = () => { if (rotationHold?.button === button) stopRotation(); };
+    // Pointer and keyboard presses already rotate; retain assistive/programmatic clicks.
+    button.onclick = event => { if (event.detail === 0) threeViewer?.rotateStep(x, y); };
+  }
+  window.addEventListener('blur', stopRotation);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopRotation(); });
 
   function bodyEdits(board) {
     return board.bodyEdits ||= { selected: new Set(), deleted: new Set(), undo: [] };

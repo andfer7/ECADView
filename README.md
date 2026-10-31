@@ -144,6 +144,8 @@ direction and zoom. Fit, the F key and double-clicking empty space centre and
 frame the board without changing its rotation. In 3D, the floating Top and Bottom
 buttons are stacked above the arrow pad at the bottom-left. The four arrows rotate the
 board by 5° per click in screen directions, keeping the rotation centre and zoom.
+Hold an arrow to keep rotating; release to stop. Space or Enter also works while
+an arrow is focused.
 Each tab remembers its rotation centre, camera and mode.
 
 Click a body to select it; its visible parts turn cyan, including dark plastics
