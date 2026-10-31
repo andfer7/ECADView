@@ -85,7 +85,9 @@ test('layout startup shows WebGL progress and blocks early navigation until the 
   t.after(() => { releaseRender(); releaseGeometry(); });
   await page.route('**/render', async route => {
     renderStarted(); await renderGate;
-    await route.fulfill({ json: fixture('Starting.PcbDoc') });
+    await route.fulfill({ json: { ...fixture('Starting.PcbDoc'), scene3d: {
+      board: [{ outline: [[0, 0], [100, 0], [100, 80], [0, 80]], holes: [] }], thickness: 1.6, bodies: [],
+    } } });
   });
   await page.route('**/geometry', async route => {
     geometryStarted(); await geometryGate; await route.continue().catch(() => {});
@@ -94,6 +96,8 @@ test('layout startup shows WebGL progress and blocks early navigation until the 
   await rendering;
   assert.equal(await page.locator('#busy').textContent(), 'Rendering…');
   assert.equal(await page.locator('#zoom-in').isDisabled(), true);
+  await page.keyboard.press('3'); await page.keyboard.press('2');
+  assert.equal(await page.locator('#three-view').isHidden(), true, 'mode shortcuts wait for rendering');
   releaseRender(); await preparing;
   assert.equal(await page.locator('#busy').isVisible(), true);
   assert.equal(await page.locator('#busy').textContent(), 'Starting WebGL…');
@@ -108,6 +112,8 @@ test('layout startup shows WebGL progress and blocks early navigation until the 
   await page.mouse.down({ button: 'middle' }); await page.mouse.move(x + 80, y + 40); await page.mouse.up({ button: 'middle' });
   await page.mouse.down(); await page.mouse.move(x - 80, y - 40); await page.mouse.up();
   await page.locator('#view').focus(); await page.keyboard.press('+'); await page.keyboard.press('f'); await page.keyboard.press('m');
+  await page.keyboard.press('3'); await page.keyboard.press('2');
+  assert.equal(await page.locator('#three-view').isHidden(), true, 'mode shortcuts wait for WebGL');
   await page.locator('#view').evaluate(view => {
     for (const [type, scale] of [['gesturestart', 1], ['gesturechange', 2], ['gestureend', 2]]) {
       const event = new Event(type, { bubbles: true, cancelable: true }); event.scale = scale; view.dispatchEvent(event);

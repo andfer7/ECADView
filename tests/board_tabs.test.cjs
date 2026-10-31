@@ -2560,6 +2560,73 @@ const image3D = async page => {
   return page.locator('#three-view canvas').screenshot({ style: '#navigation-toolbar, #view-mode-switch, #three-navigation { visibility: hidden !important; } #three-view canvas { outline: none !important; }' });
 };
 
+test('number shortcuts switch PCB views, preserve cameras and leave text entry and browser shortcuts alone', async t => {
+  const { page, requests } = await openPage(t, { render: (route, name) => reply(route,
+    name.endsWith('.SchDoc') ? schematicData(name) : name === 'Missing.PcbDoc' ? boardData(name) : threeBoardData(name)) });
+  const control = page.locator('#view-mode-switch');
+  await page.keyboard.press('3');
+  assert.equal(await page.locator('#three-view').isHidden(), true, 'no document has no 3D view');
+  await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js'), show = Board3D.prototype.show;
+    window.shortcutMounts = 0;
+    Board3D.prototype.show = function (...args) { window.shortcutMounts++; window.testViewer = this; return show.apply(this, args); };
+  });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  await page.locator('#zoom-in').click(); await settleView(page); const twoD = await currentViewBox(page);
+  assert.match(await control.getAttribute('title'), /3D view \(3\)/);
+  for (const id of ['component-query', 'net-query']) {
+    await page.locator('#' + id).fill(''); await page.keyboard.type('23');
+    assert.equal(await page.locator('#' + id).inputValue(), '23');
+    assert.equal(await control.getAttribute('aria-checked'), 'false', 'typing numbers keeps 2D');
+  }
+  await control.focus();
+  for (const modifier of ['ctrlKey', 'metaKey', 'altKey', 'shiftKey']) {
+    await control.dispatchEvent('keydown', { key: '3', code: 'Digit3', [modifier]: true });
+    assert.equal(await control.getAttribute('aria-checked'), 'false', modifier + ' retains its normal meaning');
+  }
+  await page.keyboard.press('3'); await wait3D(page);
+  assert.equal(await control.getAttribute('aria-checked'), 'true');
+  assert.match(await control.getAttribute('title'), /2D view \(2\)/);
+  await page.locator('#three-rotate-right').click(); await settleView(page); const threeD = await cadState(page);
+  await page.keyboard.down('3'); await page.keyboard.press('3'); await page.keyboard.up('3');
+  assert.equal(await page.evaluate(() => window.shortcutMounts), 1, 'holding or repeating the current mode never remounts it');
+  await page.locator('#three-body-list').focus(); await page.keyboard.press('2');
+  assert.equal(await control.getAttribute('aria-checked'), 'true', 'list navigation does not switch modes');
+  await page.locator('#three-view canvas').focus(); await page.keyboard.press('2');
+  assert.equal(await page.locator('#three-view').isHidden(), true);
+  assert.deepEqual(await currentViewBox(page), twoD, '2 restores the 2D camera');
+  await page.keyboard.press('2'); await page.keyboard.press('3'); await wait3D(page);
+  nearCadState(await cadState(page), threeD, '3 restores the 3D camera');
+  await page.locator('#file').setInputFiles(file('B.PcbDoc')); await loaded(page, 'B.PcbDoc');
+  assert.equal(await control.getAttribute('aria-checked'), 'false', 'new PCB tabs still start in 2D');
+  await page.getByRole('tab', { name: 'A.PcbDoc', exact: true }).click(); await wait3D(page);
+  nearCadState(await cadState(page), threeD, 'the mode and camera stay with the original tab');
+  for (const name of ['Missing.PcbDoc', 'Sheet.SchDoc']) {
+    await page.locator('#file').setInputFiles(file(name)); await loaded(page, name);
+    await page.keyboard.press('3'); await page.keyboard.press('2');
+    assert.equal(await page.locator('#three-view').isHidden(), true, name + ' stays in 2D');
+    assert.equal(await control.getAttribute('aria-checked'), 'false');
+  }
+  assert.equal(requests.length, 4, 'mode shortcuts never upload a document again');
+});
+
+test('2 cancels a pending 3D import and 3 can reopen it safely', async t => {
+  const { page } = await openPage(t, { render: (route, name) => reply(route, threeBoardData(name)) });
+  let release; const blocked = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  await page.route('**/viewer-3d.js', async route => { await blocked; await route.continue().catch(() => {}); });
+  await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
+  const requested = page.waitForRequest('**/viewer-3d.js');
+  await page.keyboard.press('3'); await requested;
+  assert.equal(await page.locator('#view-mode-switch').getAttribute('aria-checked'), 'true');
+  await page.keyboard.press('2');
+  const response = page.waitForResponse('**/viewer-3d.js'); release(); await response; await settleView(page);
+  assert.equal(await page.locator('#three-view').isHidden(), true);
+  assert.equal(await page.locator('#view > svg').isVisible(), true);
+  assert.equal(await page.locator('#view-mode-switch').getAttribute('aria-checked'), 'false');
+  await page.keyboard.press('3'); await wait3D(page);
+  assert.equal(await page.locator('#view-mode-switch').getAttribute('aria-checked'), 'true');
+});
+
 test('a sliding view switch covers the inactive mode and supports keyboard activation and per-tab state', async t => {
   const { page } = await openPage(t, { render: (route, name) => reply(route,
     name.endsWith('.SchDoc') ? schematicData(name) : threeBoardData(name)) });

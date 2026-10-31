@@ -116,6 +116,8 @@ PLAYWRIGHT_CHANNEL=chrome node scripts/benchmark_browser_layout.cjs path/to/boar
 PCB tabs offer a sliding **2D / 3D** switch at the top-left of the drawing
 window. Its translucent cover slides over the inactive mode while keeping both
 labels readable; click it, or use Enter/Space while focused, to switch views.
+Press **2** for 2D or **3** for 3D when outside a text field or list. These
+shortcuts apply to PCB tabs after loading has finished.
 The local WebGL preview shows the board
 profile, curved edges, cutouts, through holes, slots and component STEP models.
 Embedded Altium STEP assets load automatically when entering 3D. Models retain
