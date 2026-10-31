@@ -2731,6 +2731,46 @@ test('floating 3D controls stack Top/Bottom and rotate five degrees in screen di
   nearCadState(await cadState(page), saved, 'arrow rotation survives mode switches');
 });
 
+test('held 3D arrows keep rotating and stop on release, cancellation, focus loss and mode changes', async t => {
+  const page = await openCadNavigation(t);
+  await page.locator('#three-body-list').selectOption('body-0');
+  const waitForRotation = async initial => page.waitForFunction(initial => {
+    const viewer = window.testViewer, eye = viewer.camera.position.clone().sub(viewer.controls.target).normalize();
+    const old = initial.position.map((v, i) => v - initial.target[i]), length = Math.hypot(...old);
+    return eye.toArray().reduce((sum, value, i) => sum + value * old[i] / length, 0) < Math.cos(Math.PI / 15);
+  }, initial);
+  const stopped = async message => {
+    const state = await cadState(page); await page.waitForTimeout(120);
+    nearCadState(await cadState(page), state, message); return state;
+  };
+  for (const direction of ['up', 'down', 'left', 'right']) {
+    const initial = await cadState(page), rect = await page.locator('#three-rotate-' + direction).boundingBox();
+    await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2); await page.mouse.down();
+    await waitForRotation(initial);
+    await page.mouse.move(700, 300); await page.mouse.up();
+    const state = await stopped(direction + ' stops even when released outside the button');
+    assert.deepEqual(state.target, initial.target, 'holding keeps the pivot');
+    const distance = s => Math.hypot(...s.position.map((v, i) => v - s.target[i]));
+    near(distance(state), distance(initial), 'holding keeps the zoom', 1e-7);
+    assert.deepEqual(await selected3DBodies(page), ['body-0']);
+  }
+  for (const key of ['Space', 'Enter']) {
+    await page.locator('#three-rotate-right').focus(); const initial = await cadState(page);
+    await page.keyboard.down(key); await waitForRotation(initial); await page.keyboard.up(key);
+    await stopped(key + ' release stops rotation');
+  }
+  const arrow = page.locator('#three-rotate-left');
+  const press = async () => { const rect = await arrow.boundingBox(); await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2); await page.mouse.down(); };
+  await press(); await arrow.dispatchEvent('pointercancel', { pointerId: 1 });
+  await stopped('pointer cancellation stops rotation'); await page.mouse.up();
+  await arrow.focus(); await page.keyboard.down('Space');
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await stopped('window focus loss stops rotation'); await page.keyboard.up('Space');
+  await press(); await page.keyboard.press('2'); await page.mouse.up();
+  await page.keyboard.press('3'); await wait3D(page);
+  await stopped('returning to 3D does not resume a previous hold');
+});
+
 test('3D Fit frames the board without rotating it through the button, F and empty-space double-click', async t => {
   const page = await openCadNavigation(t);
   const snapshot = () => page.evaluate(() => {

@@ -404,10 +404,10 @@ export class Board3D {
     this.controls.target.copy(this.center); this.controls.update(); this.render();
   }
 
-  rotateStep(horizontal, vertical) {
+  rotateStep(horizontal, vertical, degrees = 5) {
     if (!this.scene) return;
     this.controls.cancel(); this.cancelPick();
-    const angle = THREE.MathUtils.degToRad(5);
+    const angle = THREE.MathUtils.degToRad(degrees);
     this.controls.rotateBy(horizontal * angle, vertical * angle); this.render();
   }
 
