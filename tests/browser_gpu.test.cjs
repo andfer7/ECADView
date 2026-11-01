@@ -426,6 +426,36 @@ test('a real KiCad PCB uses retained WebGL and a schematic remains SVG', async t
   await page.locator('#view-mode-switch').click(); await ready(page);
 });
 
+for (const gpu of [true, false]) test(`KiCad named nets select tracks and saved inner plane fills (${gpu ? 'WebGL' : 'SVG'})`, async t => {
+  const page = await pageFor(t, {}, gpu ? undefined : () => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+      return type === 'webgl2' ? null : original.call(this, type, ...args);
+    };
+  });
+  await page.unroute('**/render');
+  await page.locator('#file').setInputFiles(resolve(__dirname, 'fixtures/kicad/named-nets.kicad_pcb'));
+  await page.waitForFunction(() => document.querySelector('#filename').textContent === 'named-nets.kicad_pcb' &&
+    document.querySelector('#busy').style.display === 'none');
+  if (gpu) await ready(page);
+  assert.deepEqual((await page.locator('#net-options option').evaluateAll(nodes => nodes.map(n => n.value))).sort(), ['/POWER', '1', 'GND']);
+  const track = await point(page, 10, 10); await page.mouse.click(track.x, track.y);
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+  near((await colors(page, [[10, 10]]))[0], [104, 224, 255], 6);
+  await page.locator('#net-clear').click();
+  await page.locator('#none').click();
+  const plane = page.locator('#layers label').filter({ has: page.getByRole('button', { name: 'Power plane', exact: true }) });
+  await plane.locator('input').check();
+  const expected = await plane.locator('.swatch').evaluate(el => getComputedStyle(el).backgroundColor.match(/\d+/g).slice(0, 3).map(Number));
+  near((await colors(page, [[10, 24]]))[0], expected);
+  await page.locator('#polygons-toggle').click(); near((await colors(page, [[10, 24]]))[0], [27, 29, 33]);
+  await page.locator('#polygons-toggle').click();
+  const fill = await point(page, 10, 24); await page.mouse.click(fill.x, fill.y);
+  assert.equal(await page.locator('#net-query').inputValue(), '/POWER');
+  near((await colors(page, [[10, 24]]))[0], [104, 224, 255], 6);
+  assert.match(await page.locator('#warnings').textContent(), /No saved copper-zone fills.*Ground plane/);
+});
+
 test('analytic KiCad pads, via rings and thick circular markings match SVG and retain picking and snaps', async t => {
   const page = await pageFor(t, {});
   await page.unroute('**/render');

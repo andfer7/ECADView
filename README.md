@@ -213,6 +213,10 @@ component and net searches, pin captions, cross-probing, and measurements use th
 same controls as Altium documents. Refill and save zones in KiCad to include
 their copper; this viewer does not calculate pours. Custom pad primitives are
 supported, while chamfered and trapezoidal pads use a rectangular approximation.
+Both numeric net IDs and directly stored net names are supported. Multilayer
+zones keep their saved fills and outlines on each source layer. Power layers
+without saved fills show an explanatory message; the layer name or type alone
+does not supply a plane's copper geometry.
 
 Schematic previews use embedded symbols, units, rotation and mirroring, pins,
 properties, wires, labels, junctions, and sheet boxes. Click bodies to select

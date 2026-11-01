@@ -42,6 +42,9 @@ KiCad tests cover analytic pads and via rings, positive/negative aperture margin
 thick circular markings, source-to-GPU pixel agreement, snapping and custom-pad
 fallbacks. GPU picking tests preserve hidden ancestors, visible descendants and
 explicit pointer modes while the interaction tree skips SVG paint traversal.
+`named-nets.kicad_pcb` covers directly stored KiCad net names without an ID table,
+literal numeric names, multilayer power fills, absent-plane diagnostics, and
+actual track/plane selection and visibility through both WebGL and SVG.
 
 Selection tests cover repeated clicks to deselect and reselect components and
 nets in both views, including selections from searches and cross-probing.

@@ -73,6 +73,8 @@ async function main() {
       clearInterval(timer); longtasks.push(...observer.takeRecords().map(e => e.duration)); observer.disconnect();
       gaps.sort((a, b) => a - b);
       return { renderer: document.querySelector('#renderer-status').textContent, events,
+        netCount: document.querySelectorAll('#net-options option').length,
+        savedRegionCount: document.querySelectorAll('#scene [data-primitive="region"]').length,
         rafMedianMs: gaps[Math.floor(gaps.length * .5)], rafP95Ms: gaps[Math.floor(gaps.length * .95)],
         rafMaxMs: gaps.at(-1), longtasks, geometry: { ...document.querySelector('.layout-webgl')?.dataset } };
     });

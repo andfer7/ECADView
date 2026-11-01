@@ -23,15 +23,17 @@ class PcbRenderer:
         self.directory = directory
         self.root, self.side, self.clip = root, side, clip
         self.pour_color, self.polygon_outlines = pour_color, polygon_outlines
-        self.layers, self.names = [], {}
+        self.layers, self.names, self.layer_types = [], {}, {}
         for layer in form(root, "layers")[1:]:
             if isinstance(layer, list) and len(layer) >= 2:
                 name = str(layer[1]); self.layers.append(name)
                 self.names[name] = str(layer[3]) if len(layer) > 3 else name
+                self.layer_types[name] = str(layer[2]) if len(layer) > 2 else ""
         self.colors = layer_colors([*self.layers, "Edge.Cuts", "Drills"])
         self.scene = ET.Element("g", {"id": "scene"})
         self.groups, self.edges, self.drills, self.polygon_ids = {}, [], [], []
         self.bounds, self.warnings = [], set()
+        self.filled_layers = set()
         self.net_names = {str(node[1]): str(node[2]) for node in forms(root, "net") if len(node) > 2}
         self.stats = dict(components=len(forms(root, "footprint")) + len(forms(root, "module")),
                           pads=0, tracks=0, vias=0, polygons=0, regions=0)
@@ -67,7 +69,14 @@ class PcbRenderer:
 
     def metadata(self, node, component="", primitive=""):
         net = form(node, "net")
-        name = str(net[2]) if len(net) > 2 else self.net_names.get(str(net[1]), "") if len(net) > 1 else ""
+        if len(net) > 2:
+            name = str(net[2])
+        elif len(net) > 1:
+            # New boards store (net "GND") directly, without a board-level ID
+            # table. A quoted numeric name is also a name, not a legacy ID.
+            name = net[1] if isinstance(net[1], str) else self.net_names.get(str(net[1]), "")
+        else:
+            name = ""
         name = value(node, "net_name", name)
         return {"data_component": component or None, "data_net": name or None, "data_primitive": primitive or None}
 
@@ -253,12 +262,14 @@ class PcbRenderer:
         if form(node, "keepout"):
             return
         self.stats["polygons"] += 1
-        default_layer = value(node, "layer", "F.Cu")
+        layers = [str(item) for item in form(node, "layers")[1:]] or [value(node, "layer", "F.Cu")]
+        default_layer = layers[0]
         for fill in forms(node, "filled_polygon"):
             points = [point(["root", xy], "xy") for xy in forms(form(fill, "pts"), "xy")]
             if len(points) < 3:
                 continue
             layer = value(fill, "layer", default_layer)
+            self.filled_layers.add(layer)
             element_ = self.shape(layer, make_valid(Polygon(points)), self.metadata(node, primitive="region"),
                                   fill=self.pour_color or self.color(layer))
             if element_ is not None:
@@ -267,9 +278,10 @@ class PcbRenderer:
         if self.polygon_outlines or not forms(node, "filled_polygon"):
             for polygon in forms(node, "polygon"):
                 points = [point(["root", xy], "xy") for xy in forms(form(polygon, "pts"), "xy")]
-                element_ = self.route(default_layer, points, 0.1, self.metadata(node, primitive="polygon-outline"), True)
-                if element_ is not None:
-                    self.polygon_ids.append(element_.get("id"))
+                for layer in layers:
+                    element_ = self.route(layer, points, 0.1, self.metadata(node, primitive="polygon-outline"), True)
+                    if element_ is not None:
+                        self.polygon_ids.append(element_.get("id"))
         if not forms(node, "filled_polygon"):
             self.warnings.add("Zones without saved copper fills are shown as outlines. Refill and save them in KiCad to view the pours.")
 
@@ -342,6 +354,11 @@ class PcbRenderer:
             elif kind.startswith("gr_") or kind in ("dimension", "target"):
                 self.graphic(node)
         profile, note = self.board_profile()
+        empty_planes = [self.names[layer] for layer in self.layers if layer.endswith(".Cu")
+                        and self.layer_types[layer] == "power" and self.allowed(layer) and layer not in self.filled_layers]
+        if empty_planes:
+            self.warnings.add("No saved copper-zone fills on power-plane layers: " + ", ".join(empty_planes) +
+                              ". Plane copper requires saved zone geometry.")
         if self.clip and not profile.is_empty:
             defs = element(self.scene, "defs")
             clip_path = element(defs, "clipPath", id="kc-board-clip")

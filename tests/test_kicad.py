@@ -33,6 +33,43 @@ def polygon_area(scene):
 
 
 class KiCadBoardTests(unittest.TestCase):
+    def test_named_nets_preserve_tracks_pads_vias_and_multilayer_plane_fills(self):
+        data = render_file(FIXTURES / 'named-nets.kicad_pcb')
+        root = ET.fromstring(data['svg'])
+        nets = {node.get('data-net') for node in root.iter() if node.get('data-net')}
+        self.assertEqual(nets, {'GND', '1', '/POWER'})
+        for primitive in ('track', 'arc', 'via', 'region'):
+            shapes = [n for n in root.iter() if n.get('data-primitive') == primitive]
+            self.assertTrue(shapes)
+            self.assertTrue(all(n.get('data-net') for n in shapes))
+        fills = [(g.get('data-layer-name'), n.get('data-net')) for g in root.find('s:g', NS)
+                 for n in g if n.get('data-primitive') == 'region']
+        self.assertEqual(fills, [('Power plane', '/POWER'), ('B.Cu', '/POWER')])
+        self.assertEqual(len(data['polygon_elements']), 2)
+        warning = next(w for w in data['warnings'] if 'No saved copper-zone fills' in w)
+        self.assertIn('Ground plane', warning)
+        self.assertNotIn('Power plane', warning)
+
+    def test_named_numeric_nets_do_not_resolve_as_legacy_ids(self):
+        from ecadview.kicad_pcb import PcbRenderer
+        root = load(FIXTURES / 'named-nets.kicad_pcb', 'kicad_pcb')
+        root.append(sexpdata.loads('(net 1 "LEGACY")'))
+        renderer = PcbRenderer(root, 'all', False, None, False)
+        for expression, expected in [('(segment (net "1"))', '1'), ('(segment (net 1))', 'LEGACY'),
+                                     ('(segment (net 99))', None), ('(segment (net ""))', None)]:
+            self.assertEqual(renderer.metadata(sexpdata.loads(expression))['data_net'], expected)
+
+    def test_unfilled_multilayer_zones_keep_outlines_on_each_declared_layer(self):
+        from ecadview.kicad_pcb import PcbRenderer
+        root = load(FIXTURES / 'named-nets.kicad_pcb', 'kicad_pcb')
+        zone = form(root, 'zone')
+        zone[:] = [n for n in zone if not isinstance(n, list) or str(n[0]) != 'filled_polygon']
+        data = PcbRenderer(root, 'all', False, None, False).render()
+        svg = ET.fromstring(data['svg'])
+        outlines = [(g.get('data-layer-name'), n.get('data-net')) for g in svg.find('s:g', NS)
+                    for n in g if n.get('data-primitive') == 'polygon-outline']
+        self.assertEqual(outlines, [('Power plane', '/POWER'), ('B.Cu', '/POWER')])
+
     def test_real_format_fixture_renders_all_views_and_preserves_source_bytes(self):
         path = FIXTURES / 'demo.kicad_pcb'
         original = hashlib.sha256(path.read_bytes()).digest()

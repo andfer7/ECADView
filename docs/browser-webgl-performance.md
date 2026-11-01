@@ -255,6 +255,17 @@ produced an expected `/geometry` error. The reference PCB stays outside the
 repository. Validation passed 138 Python tests (5 skipped), 123 browser tests
 (3 skipped), 20 GPU tests and a focused explicit-pointer-mode regression.
 
+Follow-up functional validation restores directly stored KiCad net names as
+well as legacy numeric IDs. The same board loads in 18.03 s with 1,428 selectable
+nets; browser clicks on saved power fills in `In3.Cu Power` and `In6.Cu GND`
+select `VCC_4V0_SYS`. This file has no saved GND-zone fills, including on
+`In1.Cu GND` and `In4.Cu GND`; the viewer reports absent fills rather than
+inferring copper from layer names/types. Multilayer zone outlines now follow
+every declared layer. A new fixture verifies track and inner-plane selection,
+pixels and polygon visibility in both WebGL and SVG. Validation passes 141
+Python tests (5 skipped) and 22 GPU tests. The benchmark reports net and saved
+region counts alongside timing results to expose missing interaction metadata.
+
 ## Representative LimeSDR result
 
 Measured locally on 2026-10-29, Apple M3 Pro, Chrome 156.0.8078.73, headless,
