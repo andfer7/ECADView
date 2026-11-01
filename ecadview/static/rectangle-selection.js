@@ -56,7 +56,8 @@ export function rectangleMatches(board, componentIndex, netIndex, box) {
     let hit = false;
     if ((r.width || r.height) && overlaps(r, box) && !(board.polygonsHidden && el.closest('.polygon-copper'))) {
       const paint = getComputedStyle(el);
-      hit = paint.visibility === 'visible' && (el.localName === 'image' || paint.fill !== 'none' || paint.stroke !== 'none') &&
+      const visible = board.svg.closest('.gpu-layout') ? !board.gpuHidden?.has(el) : paint.visibility === 'visible';
+      hit = visible && (el.localName === 'image' || paint.fill !== 'none' || paint.stroke !== 'none') &&
         (el.localName !== 'line' || lineTouches(el, box));
     }
     hits.set(el, hit); return hit;

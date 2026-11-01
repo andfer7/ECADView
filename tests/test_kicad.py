@@ -58,16 +58,15 @@ class KiCadBoardTests(unittest.TestCase):
         root = ET.fromstring(data['svg'])
         pads = [el for el in root.iter() if el.get('data-primitive') == 'pad']
         pad = next(el for el in pads if el.get('data-component') == 'R1' and el.get('data-pad-number') == '1')
-        coords = [float(v) for v in re.findall(r'-?\d+(?:\.\d+)?', pad.get('d'))]
-        self.assertAlmostEqual(min(coords[0::2]), 9)
-        self.assertAlmostEqual(max(coords[0::2]), 11)
-        self.assertAlmostEqual(min(coords[1::2]), 11)
-        self.assertAlmostEqual(max(coords[1::2]), 13)
+        self.assertTrue(pad.tag.endswith('circle'))
+        self.assertEqual((float(pad.get('cx')), float(pad.get('cy'))), (10, 12))
+        self.assertAlmostEqual(float(pad.get('r')) + float(pad.get('stroke-width')) / 2, 1)
+        self.assertAlmostEqual(float(pad.get('r')) - float(pad.get('stroke-width')) / 2, 0.4)
         self.assertEqual(pad.get('data-net'), 'GND')
         unconnected = next(el for el in pads if el.get('data-pad-number') == 'A2')
         self.assertEqual(unconnected.get('data-component'), 'R2')
         self.assertIsNone(unconnected.get('data-net'))
-        self.assertEqual(pad.get('fill-rule'), 'evenodd')
+        self.assertEqual(pad.get('fill'), 'none')
         self.assertEqual(data['layout_components'][0], {'name': 'R1', 'source_name': 'R1',
                           'source_id': '00000000-0000-0000-0000-000000000101'})
 
@@ -134,6 +133,24 @@ class KiCadBoardTests(unittest.TestCase):
                 for shape in group:
                     self.assertIsNone(shape.get('data-net'))
                     self.assertIsNone(shape.get('data-component'))
+
+    def test_analytic_pad_margins_preserve_dimensions_and_custom_primitives_keep_paths(self):
+        def change(root):
+            pads = forms(forms(root, 'footprint')[1], 'pad')
+            pads[0].extend(sexpdata.loads('((solder_mask_margin 0.2) (solder_paste_margin -0.1))'))
+            pads[1][3] = sexpdata.Symbol('custom')
+            pads[1].extend(sexpdata.loads('((options (anchor rect)) (primitives (gr_circle (center 1 0) (end 2 0) (fill yes))))'))
+        root = ET.fromstring(changed_document('kicad_pcb', change)['svg'])
+        pads = [node for node in root.iter() if node.get('data-component') == 'R2' and node.get('data-primitive') == 'pad']
+        self.assertEqual([node.tag.rsplit('}', 1)[-1] for node in pads], ['rect', 'path'])
+        for group in root.findall('s:g/s:g', NS):
+            if group.get('data-layer-role') in ('mask', 'paste') and group.get('data-layer-token', '').startswith('B.'):
+                pad, custom = list(group)[-2:]
+                self.assertTrue(pad.tag.endswith('rect'))
+                width, height, radius = (2.4, 1.9, 0.575) if group.get('data-layer-role') == 'mask' else (1.8, 1.3, 0.275)
+                self.assertEqual(tuple(float(pad.get(key)) for key in ('width', 'height', 'rx')), (width, height, radius))
+                self.assertTrue(custom.tag.endswith('path'))
+                self.assertTrue(custom.get('d'))
 
     def test_non_plated_holes_remove_board_material_without_copper(self):
         def change(root):

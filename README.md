@@ -103,6 +103,9 @@ and compiler still use the CPU; initial loading remains separate from navigation
 performance. Qt Essentials provides offscreen SVG bounds and font outlines for
 the compiler, and does not create a native viewer window. Qt Widgets, Qt OpenGL
 views and Qt WebEngine are excluded from the packaged launcher.
+KiCad pads, via rings and circular footprint markings use compact analytic
+shapes, including mask/paste margins and concentric round drills. Custom pads
+and offset/slotted drills retain their polygon geometry.
 
 See [browser performance notes](docs/browser-webgl-performance.md) for bounds,
 measurements and the reproducible browser benchmark:

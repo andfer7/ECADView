@@ -2,6 +2,7 @@
 
 import math
 import os
+from pathlib import Path
 import unittest
 from array import array
 
@@ -10,6 +11,7 @@ from PySide6.QtCore import QPointF
 from PySide6.QtGui import QGuiApplication
 from ecadview.geometry.document import GeometryDocument
 from ecadview.geometry.gpu_scene import build_scene
+from ecadview.rendering import render_file
 
 def application():
     return QGuiApplication.instance() or QGuiApplication([])
@@ -74,6 +76,25 @@ class GpuSceneCompilationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = application()
+
+    def test_kicad_simple_pads_and_vias_stay_analytic_with_world_snapping(self):
+        source = GeometryDocument(render_file(Path(__file__).parent / "fixtures/kicad/demo.kicad_pcb"))
+        scene = build_scene(source)
+        self.assertTrue(scene["supported"], scene["reason"])
+        rows, _ = unpack(scene)
+        for i, primitive in enumerate(source.primitives, 1):
+            node = source.elements[primitive.id]
+            kind = node.get("data-primitive")
+            if kind == "via" or primitive.component == "R2" and kind == "pad":
+                vertices = [row for row in rows if row[13] == i]
+                self.assertEqual(len(vertices), 4, primitive.id)
+                self.assertEqual({row[12] for row in vertices}, {5 if kind == "via" else 6})
+        centers = {(round(p.x(), 6), round(p.y(), 6)) for p, _ in source.snap_points}
+        self.assertEqual(centers, {(10, 12), (10, 8), (28, 20), (32, 20), (20, 12)})
+        via = next(p for p in source.primitives if source.elements[p.id].get("data-primitive") == "via")
+        self.assertAlmostEqual(via.bounds.width(), 1.5)
+        # The drilled centre must remain click-through above the terminating arc.
+        self.assertIsNone(source.pick(QPointF(20, 12), 0.02, {via.layer, *source.drill_layers}, False))
 
     def test_buffers_preserve_metadata_and_evenodd_voids(self):
         source = document()

@@ -426,6 +426,67 @@ test('a real KiCad PCB uses retained WebGL and a schematic remains SVG', async t
   await page.locator('#view-mode-switch').click(); await ready(page);
 });
 
+test('analytic KiCad pads, via rings and thick circular markings match SVG and retain picking and snaps', async t => {
+  const page = await pageFor(t, {});
+  await page.unroute('**/render');
+  const source = `(kicad_pcb (version 20240108)
+    (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (37 "F.SilkS" user) (44 "Edge.Cuts" user))
+    (net 1 "SIGNAL")
+    (footprint "Test" (at 10 10 90) (property "Reference" "U1")
+      (pad "1" smd rect (at 0 0 30) (size 4 2) (layers "F.Cu") (net 1 "SIGNAL"))
+      (pad "2" smd oval (at 0 7) (size 4 2) (layers "F.Cu") (net 1 "SIGNAL"))
+      (pad "3" smd circle (at 0 -7) (size 3 3) (layers "F.Cu") (net 1 "SIGNAL"))
+      (fp_circle (center -8 5) (end -8 5.5) (stroke (width 1)) (fill none) (layer "F.SilkS")))
+    (via (at 10 20) (size 4) (drill 2) (layers "F.Cu" "B.Cu") (net 1))
+    (gr_rect (start 0 0) (end 24 26) (layer "Edge.Cuts") (stroke (width 0.1))))`;
+  await page.locator('#file').setInputFiles({ name: 'Analytic.kicad_pcb', mimeType: 'application/octet-stream', buffer: Buffer.from(source) });
+  await ready(page);
+  for (const row of await page.locator('#layers label').all()) {
+    const name = await row.locator('.layer-name').textContent();
+    await row.locator('input').setChecked(['F.Cu', 'F.SilkS'].includes(name));
+  }
+  const samples = [[10, 10], [17, 10], [3, 10], [11.5, 20], [10, 20], [12.3, 20], [15, 18]];
+  const gpu = await colors(page, samples);
+  near(gpu[4], [27, 29, 33]); near(gpu[5], [27, 29, 33]);
+  assert.ok(gpu[6].some((v, i) => Math.abs(v - [27, 29, 33][i]) > 50), 'thick circle has a filled centre');
+  await page.locator('#view').evaluate(view => { view.classList.remove('gpu-layout'); view.querySelector('canvas').hidden = true; });
+  const svg = await colors(page, samples); gpu.forEach((color, i) => near(color, svg[i], 5));
+  await page.locator('#view').evaluate(view => { view.classList.add('gpu-layout'); view.querySelector('canvas').hidden = false; });
+  const snaps = await page.evaluate(async () => {
+    const { snapIndex } = await import('/static/measurement-tools.js');
+    return snapIndex({ svg: document.querySelector('#view > svg') }).map(p => [p.x, p.y]);
+  });
+  for (const center of [[10, 10], [17, 10], [3, 10], [10, 20]])
+    assert.ok(snaps.some(p => Math.hypot(p[0] - center[0], p[1] - center[1]) < 1e-6));
+  const before = await dataset(page), pad = await point(page, 10, 10);
+  await page.mouse.click(pad.x, pad.y);
+  assert.equal(await page.locator('#component-query').inputValue(), 'U1');
+  assert.equal((await dataset(page)).geometryUploads, before.geometryUploads);
+  near((await colors(page, [[10, 10]]))[0], [255, 224, 102]);
+});
+
+test('unpainted GPU interaction trees preserve source visibility and pointer rules', async t => {
+  const data = fixture();
+  data.svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"><g id="scene">
+    <g id="layer-top" data-layer-role="copper" fill="red">
+      <g visibility="hidden">
+        <rect data-net="HIDDEN" x="10" y="10" width="10" height="10"/>
+        <rect data-net="VISIBLE" visibility="visible" style="pointer-events:visiblePainted" x="30" y="10" width="10" height="10"/>
+      </g>
+      <rect data-net="IGNORED" style="pointer-events:none" x="50" y="10" width="10" height="10"/>
+    </g></g></svg>`;
+  const page = await pageFor(t, data); await ready(page);
+  for (const [x, expected] of [[15, ''], [35, 'VISIBLE'], [55, '']]) {
+    await page.locator('#net-clear').click();
+    const p = await point(page, x, 15); await page.mouse.click(p.x, p.y);
+    assert.equal(await page.locator('#net-query').inputValue(), expected);
+  }
+  const a = await point(page, 8, 8), b = await point(page, 42, 22);
+  await page.mouse.move(a.x, a.y); await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 5 }); await page.mouse.up();
+  assert.equal(await page.locator('#net-query').inputValue(), 'VISIBLE', 'rectangle selection excludes source-hidden graphics');
+});
+
 test('closing a tab during preparation cannot mount stale GPU geometry', async t => {
   let release, requested;
   const blocked = new Promise(resolve => { release = resolve; });

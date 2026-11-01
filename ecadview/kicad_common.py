@@ -90,10 +90,11 @@ def fmt(value_):
     return f"{value_:.6f}".rstrip("0").rstrip(".") if value_ else "0"
 
 
-def path_points(points, close=False):
+def path_points(points, close=False, *, spaced=False):
     if not points:
         return ""
-    return "M" + " L".join(f"{fmt(x)} {fmt(y)}" for x, y in points) + (" Z" if close else "")
+    move, line = ("M ", " L ") if spaced else ("M", " L")
+    return move + line.join(f"{fmt(x)} {fmt(y)}" for x, y in points) + (" Z" if close else "")
 
 
 def polygon_parts(geometry):
@@ -105,8 +106,8 @@ def polygon_parts(geometry):
 
 
 def geometry_path(geometry):
-    return " ".join(path_points(list(polygon.exterior.coords), True) + " " +
-                    " ".join(path_points(list(hole.coords), True) for hole in polygon.interiors)
+    return " ".join(path_points(list(polygon.exterior.coords), True, spaced=True) + " " +
+                    " ".join(path_points(list(hole.coords), True, spaced=True) for hole in polygon.interiors)
                     for polygon in polygon_parts(geometry))
 
 

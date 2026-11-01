@@ -62,6 +62,26 @@ export class LayoutWebGL {
     scene.indices = new Uint32Array(buffer, start + scene.vertex_bytes, scene.index_bytes / 4);
     return scene;
   }
+  static preparePicking(svg) {
+    // Hidden SVG avoids repainting the interaction tree on every camera move.
+    // SVG's painted/fill/stroke hit modes ignore visibility. Preserve the
+    // source visibility and pointer rules before applying that GPU-only mode.
+    const hidden = new WeakSet();
+    const modes = { auto: 'painted', visiblepainted: 'painted', visiblefill: 'fill', visiblestroke: 'stroke', visible: 'all' };
+    function visit(node, visibility = 'visible', pointer = 'visiblepainted') {
+      const ownVisibility = node.style.visibility || node.getAttribute('visibility');
+      const ownPointer = node.style.pointerEvents || node.getAttribute('pointer-events');
+      if (ownVisibility && ownVisibility !== 'inherit') visibility = ownVisibility;
+      if (ownPointer && ownPointer !== 'inherit') pointer = ownPointer.toLowerCase();
+      if (visibility !== 'visible') hidden.add(node);
+      // Non-visibility-sensitive source modes can intentionally hit hidden paint.
+      const requiresVisible = pointer === 'auto' || pointer.startsWith('visible');
+      node.style.setProperty('--layout-hit-test', requiresVisible && visibility !== 'visible' ? 'none' : modes[pointer] || pointer);
+      for (const child of node.children) visit(child, visibility, pointer);
+    }
+    visit(svg);
+    return hidden;
+  }
   release() {
     if (this.resources && !this.lost) {
       const gl = this.gl, r = this.resources;

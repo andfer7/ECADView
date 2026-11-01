@@ -114,7 +114,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       const scene = LayoutWebGL.decode(await response.arrayBuffer());
       if (!boards.includes(board) || board.request !== generation || controller.signal.aborted) return;
       board.gpuScene = scene; board.gpuStatus = 'WebGL 2';
-      netLabels.setBounds(board.svg, scene.caption_bounds || {});
+      board.gpuHidden = LayoutWebGL.preparePicking(board.svg);
+      netLabels.setBounds(board.svg, scene.caption_bounds || {}, board.gpuHidden);
     } catch (error) {
       if (error.name !== 'AbortError' && boards.includes(board) && board.request === generation) {
         board.gpuStatus = 'SVG: ' + error.message;
