@@ -7,7 +7,7 @@ in vec2 worldPosition;
 in vec2 localPosition;
 in vec4 shapeParameters;
 in vec4 sourceColor;
-in vec4 metadata;
+in uvec2 metadata;
 in vec2 worldExpansion;
 in vec2 localExpansion;
 uniform vec2 camera;
@@ -23,10 +23,10 @@ flat out vec4 color;
 flat out int shape;
 flat out int selection;
 void main() {
-    int objectID = max(0, int(metadata.y + 0.5));
+    int objectID = int(metadata.x);
     selection = int(texelFetch(objectFlags,
         ivec2(objectID % flagsWidth, objectID / flagsWidth), 0).r * 255.0 + 0.5);
-    shape = int(metadata.x + 0.5);
+    shape = int(metadata.y & 255u);
     parameters = shapeParameters;
     color = sourceColor;
     local = localPosition + localExpansion * pixelMetrics.y;
@@ -34,8 +34,8 @@ void main() {
     vec2 screen = (world - camera) * pixelMetrics.x;
     gl_Position = vec4(screen.x * 2.0 / viewport.x,
                        -screen.y * 2.0 / viewport.y, 0.0, 1.0);
-    bool hole = metadata.w > 0.5;
-    if ((showPolygons == 0 && metadata.z > 0.5)
+    bool hole = (metadata.y & 512u) != 0u;
+    if ((showPolygons == 0 && (metadata.y & 256u) != 0u)
         || (renderPass == 1 && (selection == 0 || hole))
         || (renderPass == 2 && !hole)) {
         gl_Position = vec4(2.0, 2.0, 0.0, 1.0);

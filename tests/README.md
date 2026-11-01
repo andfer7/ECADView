@@ -35,6 +35,9 @@ transparent parts, replacement and buffer disposal. Worker-pool tests check
 serial operation on two-core devices, a two-worker limit on larger devices,
 asset deduplication and cancellation of every pending conversion. Polygon tests
 compare the faster linear-path parser with the general parser byte for byte.
+Transport tests verify the packed integer metadata preserves float fields exactly.
+Board-finish tests compare RG8 and legacy RGBA rendering pixel for pixel and check
+that construction paths and temporary physical-map canvases are released.
 
 Selection tests cover repeated clicks to deselect and reselect components and
 nets in both views, including selections from searches and cross-probing.

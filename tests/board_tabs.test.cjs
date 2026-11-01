@@ -3177,6 +3177,44 @@ test('3D board finishes use actual outer copper, mask and silkscreen on both sid
   assert.deepEqual(result.hatchGap, [14,69,44,255], 'hatched copper paint servers retain their physical gaps');
 });
 
+test('compact board finishes match RGBA pixels and release their construction canvases', async t => {
+  const { page } = await openPage(t);
+  const result = await page.evaluate(async () => {
+    const THREE = await import('/static/three.module.min.js'), { Board3D } = await import('/static/viewer-3d.js');
+    const { boardPhysicalTexture, boardSurfaceMaterial } = await import('/static/studio-3d.js');
+    const host = document.createElement('div'); Object.assign(host.style, { width: '400px', height: '300px' }); document.body.append(host);
+    const viewer = new Board3D(host, () => {});
+    viewer.show({ board: [{ outline: [[-10,-10],[10,-10],[10,10],[-10,10]], holes: [] }], thickness: 1.6, bodies: [] });
+    await viewer.loading;
+    const physical = document.createElement('canvas'); physical.width = physical.height = 64;
+    const color = document.createElement('canvas'); color.width = color.height = 64;
+    const paint = physical.getContext('2d'), albedo = color.getContext('2d');
+    for (let y=0; y<64; y++) for (let x=0; x<64; x++) {
+      paint.fillStyle = `rgb(0,${40+y*3},${x*4})`; paint.fillRect(x,y,1,1);
+      albedo.fillStyle = y<32 ? '#807040' : '#10452c'; albedo.fillRect(x,y,1,1);
+    }
+    const copy = document.createElement('canvas'); copy.width = copy.height = 64; copy.getContext('2d').drawImage(physical,0,0);
+    const original = new THREE.CanvasTexture(physical), packed = boardPhysicalTexture(copy);
+    const map = new THREE.CanvasTexture(color); map.colorSpace = THREE.SRGBColorSpace;
+    const material = new THREE.MeshPhysicalMaterial({ map, roughnessMap: original, metalnessMap: original,
+      roughness: 1, metalness: 1, clearcoat: 0.22, clearcoatRoughness: 0.35, side: THREE.DoubleSide });
+    const compact = boardSurfaceMaterial(map, packed), mesh = viewer.boardMeshes[0];
+    const pixels = surface => {
+      mesh.material[0] = mesh.material[1] = surface; viewer.fit('iso'); viewer.render();
+      const gl = viewer.renderer.getContext(), data = new Uint8Array(gl.drawingBufferWidth*gl.drawingBufferHeight*4);
+      gl.readPixels(0,0,gl.drawingBufferWidth,gl.drawingBufferHeight,gl.RGBA,gl.UNSIGNED_BYTE,data); return data;
+    };
+    const before = pixels(material), after = pixels(compact);
+    const mismatch = after.reduce((sum,v,i)=>sum+(v!==before[i]),0);
+    const construction = Object.keys(mesh.geometry.parameters).length;
+    viewer.clear(); original.dispose(); material.dispose(); viewer.controls.dispose(); viewer.observer.disconnect(); viewer.environment.dispose(); viewer.renderer.dispose(); host.remove();
+    return { mismatch, bytes: packed.image.data.byteLength, canvasWidth: copy.width, construction };
+  });
+  assert.equal(result.mismatch, 0, 'two-channel finish maps preserve every rendered pixel');
+  assert.equal(result.bytes, 64*64*2); assert.equal(result.canvasWidth, 0);
+  assert.equal(result.construction, 0, 'finished board buffers do not retain construction curves');
+});
+
 test('3D studio shadows and mapped finishes render through WebGL and release their resources', async t => {
   const { page } = await openPage(t);
   const shaderErrors = [];
