@@ -54,11 +54,11 @@ export class LayoutWebGL {
     if (size % 4 || start > buffer.byteLength) throw new Error('Invalid WebGL scene header');
     const scene = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, size)));
     if (!scene.supported) throw new Error(scene.reason || 'This layout requires SVG.');
-    if (scene.version !== 1 || scene.stride !== 80 || scene.vertex_bytes % 80 || scene.index_bytes % 4 ||
+    if (scene.version !== 2 || scene.stride !== 72 || scene.vertex_bytes % 72 || scene.index_bytes % 4 ||
         start + scene.vertex_bytes + scene.index_bytes !== buffer.byteLength || buffer.byteLength > 160 * 1024 * 1024) {
       throw new Error('Invalid WebGL geometry buffers');
     }
-    scene.vertices = new Float32Array(buffer, start, scene.vertex_bytes / 4);
+    scene.vertices = new Uint8Array(buffer, start, scene.vertex_bytes);
     scene.indices = new Uint32Array(buffer, start + scene.vertex_bytes, scene.index_bytes / 4);
     return scene;
   }
@@ -82,10 +82,12 @@ export class LayoutWebGL {
       gl.bufferData(gl.ARRAY_BUFFER, scene.vertices, gl.STATIC_DRAW);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.indices); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, scene.indices, gl.STATIC_DRAW);
       for (const [name, size, offset] of [['worldPosition', 2, 0], ['localPosition', 2, 8], ['shapeParameters', 4, 16],
-        ['sourceColor', 4, 32], ['metadata', 4, 48], ['worldExpansion', 2, 64], ['localExpansion', 2, 72]]) {
+        ['sourceColor', 4, 32], ['worldExpansion', 2, 56], ['localExpansion', 2, 64]]) {
         const location = gl.getAttribLocation(this.program, name);
-        gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, size, gl.FLOAT, false, 80, offset);
+        gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, size, gl.FLOAT, false, 72, offset);
       }
+      const metadata = gl.getAttribLocation(this.program, 'metadata');
+      gl.enableVertexAttribArray(metadata); gl.vertexAttribIPointer(metadata, 2, gl.UNSIGNED_INT, 72, 48);
       const count = Math.max(1, scene.object_count), maximum = gl.getParameter(gl.MAX_TEXTURE_SIZE);
       this.flagsWidth = Math.min(1024, maximum, count); this.flagsHeight = Math.ceil(count / this.flagsWidth);
       if (this.flagsHeight > maximum) throw new Error('Layout exceeds the graphics selection limit');

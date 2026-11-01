@@ -170,6 +170,9 @@ The viewer retains up to three completed scenes within an estimated 512 MiB
 budget; older or oversized scenes rebuild when needed. Closing/reloading a tab
 or replacing its STEP models releases its cached scene. Leaving an unfinished
 3D view cancels outstanding conversion.
+RAM use is reduced with lossless packed 2D selection metadata, streamed compiler
+output, released extrusion construction paths, and two-channel roughness/metalness
+maps. Geometry precision, texture resolution and prepared-view caches are retained.
 Outer copper and printing are rasterized into maps up to 2048 pixels per side;
 these are visual finishes rather than additional editable solids. Blind/buried
 via bores and rigid-flex folding are not represented. Applicable approximations appear in

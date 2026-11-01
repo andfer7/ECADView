@@ -20,17 +20,39 @@ MAX_OUTPUT = 160 * 1024 * 1024
 _compiler = threading.BoundedSemaphore(1)
 
 
-def encode_scene(scene):
-    """A padded JSON header followed by two aligned binary GPU buffers."""
+def scene_chunks(scene):
+    """Aligned transport chunks, with lossless integer selection metadata."""
     keys = ("supported", "reason", "origin", "entries", "object_components",
             "object_nets", "object_count", "drill_layers", "stats", "stride", "caption_bounds", "snap_points")
     header = {key: scene[key] for key in keys if key in scene}
     vertices, indices = scene.get("vertices", b""), scene.get("indices", b"")
-    header.update(version=1, vertex_bytes=len(vertices), index_bytes=len(indices))
+    if scene.get("supported"):
+        import numpy as np
+
+        # Keep every coordinate/paint/expansion float bit for bit. Four float
+        # metadata fields become an integer object ID and packed shape/flags.
+        raw = np.frombuffer(vertices, dtype="<u4").reshape((-1, 20))
+        values = raw.view("<f4")
+        packed = np.empty((len(raw), 18), dtype="<u4")
+        packed[:, :12] = raw[:, :12]
+        packed[:, 12] = values[:, 13].astype("<u4")
+        packed[:, 13] = (values[:, 12].astype("<u4") |
+                         (values[:, 14].astype("<u4") << 8) |
+                         (values[:, 15].astype("<u4") << 9))
+        packed[:, 14:] = raw[:, 16:]
+        vertices = memoryview(packed).cast("B")
+    header.update(version=2, stride=72, vertex_bytes=len(vertices), index_bytes=len(indices))
+    if "stats" in header:
+        header["stats"] = {**header["stats"], "bytes": len(vertices) + len(indices)}
     metadata = json.dumps(header, default=lambda value: sorted(value),
                           separators=(",", ":")).encode()
     metadata += b" " * (-len(metadata) % 4)
-    return struct.pack("<I", len(metadata)) + metadata + vertices + indices
+    return struct.pack("<I", len(metadata)), metadata, vertices, indices
+
+
+def encode_scene(scene):
+    """A padded JSON header followed by two aligned binary GPU buffers."""
+    return b"".join(scene_chunks(scene))
 
 
 def worker(input_path, output_path):
@@ -56,7 +78,14 @@ def worker(input_path, output_path):
             {"x": point.x(), "y": point.y(), "layers": sorted(layers)}
             for point, layers in document.snap_points
         ]
-    Path(output_path).write_bytes(encode_scene(scene))
+    # Picking paths and the Qt/XML document are not part of the browser payload.
+    # Free them before packing, then write without concatenating large buffers.
+    scene.pop("caption_paths", None)
+    scene.pop("hole_paths", None)
+    del document, data
+    with Path(output_path).open("wb") as output:
+        for chunk in scene_chunks(scene):
+            output.write(chunk)
     # Retain the application until all Qt objects have finished their work.
     del app
 

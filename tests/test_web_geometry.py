@@ -37,14 +37,18 @@ class WebGeometryTests(unittest.TestCase):
                     child.wait()
 
     def test_binary_header_and_buffers_are_aligned(self):
-        data = encode_scene({"supported": True, "vertices": b"v" * 80,
+        values = [1.25, -2.5, 3.75, 4, 5, 6, 7, 8, .1, .2, .3, .4,
+                  6, 1234567, 1, 1, -.5, .5, -1, 1]
+        vertices = struct.pack("<20f", *values)
+        data = encode_scene({"supported": True, "vertices": vertices,
                              "indices": b"i" * 12, "object_nets": {"A": {3, 1}}})
         length, = struct.unpack_from("<I", data)
         self.assertEqual(length % 4, 0)
         header = json.loads(data[4:4 + length])
         self.assertEqual(header["object_nets"], {"A": [1, 3]})
-        self.assertEqual(header["vertex_bytes"], 80)
-        self.assertEqual(data[4 + length:], b"v" * 80 + b"i" * 12)
+        self.assertEqual((header["version"], header["stride"], header["vertex_bytes"]), (2, 72, 72))
+        expected = struct.pack("<12fII4f", *values[:12], 1234567, 6 | 256 | 512, *values[16:])
+        self.assertEqual(data[4 + length:], expected + b"i" * 12)
 
     def test_isolated_worker_compiles_and_preserves_selection(self):
         result = prepare_geometry(json.dumps({"svg": '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">

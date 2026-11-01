@@ -1,5 +1,34 @@
 import * as THREE from './three.module.min.js';
 
+export function boardPhysicalTexture(canvas) {
+  // Only roughness (G) and metalness (B) carry data. Preserve both bytes exactly
+  // in RG8 instead of retaining a four-channel canvas and GPU texture.
+  const { width, height } = canvas;
+  const pixels = canvas.getContext('2d').getImageData(0, 0, width, height).data;
+  const data = new Uint8Array(width * height * 2);
+  for (let i = 0, j = 0; i < data.length; i += 2, j += 4) {
+    data[i] = pixels[j + 2]; data[i + 1] = pixels[j + 1];
+  }
+  const texture = new THREE.DataTexture(data, width, height, THREE.RGFormat);
+  texture.flipY = true; texture.generateMipmaps = true;
+  texture.minFilter = THREE.LinearMipmapLinearFilter; texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  // The temporary drawing surface is no longer needed after packing.
+  canvas.width = canvas.height = 0;
+  return texture;
+}
+
+export function boardSurfaceMaterial(map, physical) {
+  const material = new THREE.MeshPhysicalMaterial({ map, roughnessMap: physical, metalnessMap: physical,
+    roughness: 1, metalness: 1, clearcoat: 0.22, clearcoatRoughness: 0.35, side: THREE.DoubleSide });
+  material.onBeforeCompile = shader => {
+    shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>',
+      THREE.ShaderChunk.metalnessmap_fragment.replace('texelMetalness.b', 'texelMetalness.r'));
+  };
+  material.customProgramCacheKey = () => 'board-rg-finish-v1';
+  return material;
+}
+
 export function studioEnvironment(renderer) {
   // A small procedural photographic studio: broad softboxes provide readable
   // reflections on leads and connector shells without network/HDR assets.

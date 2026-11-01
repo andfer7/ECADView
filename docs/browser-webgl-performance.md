@@ -146,6 +146,68 @@ the same regression-test pixels. Python validation passed 126 tests (5 skipped),
 and browser validation passed 135 tests (3 skipped), with additional focused
 checks after final buffer-ownership and replacement adjustments.
 
+## RAM reductions (#134, 2026-11-01)
+
+The transport now uses version 2 with 72-byte vertex records. Coordinates,
+analytic parameters, RGBA paint and expansion values retain their original
+float32 bits. Object ID and shape/polygon/hole flags use two uint32 fields in
+place of four floats. The offscreen reference compiler retains its 80-byte
+internal format; the browser and GPU retain the smaller wire format. Worker
+output is written in chunks after releasing the Qt/XML index and picking paths,
+avoiding large concatenated response copies at peak usage.
+
+Finished extrusions release their construction curves, and untextured component
+bodies omit unused UV buffers. Roughness and metalness retain their exact bytes
+in RG8 textures instead of RGBA canvases/textures. Resolution, mipmaps, filtering,
+anisotropy, STEP fidelity and cache limits remain the same.
+
+Measured on the supplied LimeSDR board, M3 Pro, Chrome 156 headless at 1440 × 900,
+comparing master `09584e7` with these changes:
+
+| Memory observation | Before | After |
+| --- | ---: | ---: |
+| Isolated compiler peak RSS | 809.2 MiB | 584.4 MiB |
+| Static 2D geometry, each CPU/GPU copy | 88.10 MiB | 80.12 MiB |
+| V8 backing storage after 2D load | 93.68 MiB | 85.70 MiB |
+| V8 JS heap after complete 3D load | 39.76 MiB | 30.68 MiB |
+| Physical-map storage per texel | 4 bytes | 2 bytes |
+
+Memory categories are separate observations, not additive total RAM. Physical
+maps now use V8-backed typed arrays instead of canvas storage, so 3D backing
+storage alone rises from 127.96 to 129.48 MiB despite the smaller texture and JS
+allocations. Chrome RSS snapshots varied substantially with allocation/reclamation
+timing; the component sizes above were stable across two runs per version.
+
+| Performance observation | Before | After |
+| --- | ---: | ---: |
+| Median interactive 2D load, two runs | 15.925 s | 15.886 s |
+| Median complete 3D load, two runs | 9.917 s | 9.926 s |
+| Median cached 3D return, two runs | 116 ms | 98 ms |
+| Median 3D render CPU submission | 4.45 ms | 4.40 ms |
+| 2D navigation callback p95 | 33.3–33.4 ms | 33.3 ms |
+| 3D navigation callback p95 | 16.7–16.8 ms | 16.7 ms |
+
+These timings show no material change within the observed run-to-run variation.
+The isolated compiler took 8.96 s before and 9.06 s after. Its full-board vertex
+fields reconstruct bit for bit from the packed format; indices and selection,
+caption and snap metadata match exactly. RG8 and legacy RGBA finishes render
+identical regression-test pixels. Each 3D frame still draws 907 calls and
+800,396 triangles. Callback cadence and CPU submission do not measure completed
+GPU/display FPS.
+
+Reproduce retained-memory snapshots (after GC), two six-second navigation
+workloads, load timings and cleanup observations with:
+
+```sh
+PLAYWRIGHT_CHANNEL=chrome node scripts/benchmark_browser_memory.cjs path/to/board.PcbDoc memory.json
+```
+
+Set `PCB_BENCH_ROOT` to a baseline checkout to use the same benchmark with an
+older server. Process RSS is recorded where `ps` and CDP expose it. The isolated
+compiler peak was measured separately with macOS `/usr/bin/time -l`; it is not
+included in the browser snapshots. The benchmark preserves current STEP worker
+parallelism and does not evict cached views to obtain the savings.
+
 ## Representative LimeSDR result
 
 Measured locally on 2026-10-29, Apple M3 Pro, Chrome 156.0.8078.73, headless,

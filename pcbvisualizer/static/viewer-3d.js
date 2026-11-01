@@ -2,7 +2,7 @@ import * as THREE from './three.module.min.js';
 import { CadControls } from './cad-controls.js';
 import { StepLoader } from './step-loader.js';
 import { boardSurfaces } from './board-surface.js';
-import { studioEnvironment, stepFinish, bodyMaterial, stepMaterial } from './studio-3d.js';
+import { studioEnvironment, stepFinish, bodyMaterial, stepMaterial, boardPhysicalTexture, boardSurfaceMaterial } from './studio-3d.js';
 
 const sceneFields = ['scene', 'pickMeshes', 'bodyMeshes', 'boardMeshes', 'studioLights', 'bounds', 'center', 'radius',
   'shadowDirty', 'shadowKey', 'selectionKey', 'bodyState', 'modelProgress', 'surfaceError', 'model', 'sourceSVG', 'ready', 'sceneBytes'];
@@ -37,7 +37,10 @@ function sceneBytes(scene) {
   for (const array of arrays) bytes += array.byteLength;
   for (const attribute of attributes) bytes += attribute.array.byteLength; // GPU buffers can have separate owners.
   for (const mesh of all.instances) bytes += mesh.instanceMatrix.array.byteLength * 2;
-  for (const texture of all.textures) bytes += (texture.image?.width || 0) * (texture.image?.height || 0) * 4 * 8 / 3;
+  for (const texture of all.textures) {
+    const channels = texture.format === THREE.RGFormat ? 2 : 4;
+    bytes += (texture.image?.width || 0) * (texture.image?.height || 0) * channels * 8 / 3;
+  }
   for (const shadow of all.shadows) if (shadow.map) bytes += shadow.map.width * shadow.map.height * 8;
   return bytes;
 }
@@ -198,6 +201,10 @@ export class Board3D {
       const shape = new THREE.Shape(data.outline.map(p => new THREE.Vector2(...p)));
       shape.holes = (data.holes || []).map(points => new THREE.Path(points.map(p => new THREE.Vector2(...p))));
       const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
+      // Rendering and picking use the finished buffers. ExtrudeGeometry otherwise
+      // retains every construction curve (including thousands of drill contours).
+      geometry.parameters = {};
+      if (bodyId !== null) geometry.deleteAttribute('uv');
       if (bodyId === null) {
         // Initialize UVs before any shadow or color pass uploads the geometry.
         // Replacing the attribute after the asynchronous finish load can leave
@@ -266,10 +273,9 @@ export class Board3D {
       if (generation !== this.generation || !surfaces.length) return;
       for (const surface of surfaces) {
         const map = new THREE.CanvasTexture(surface.color); map.colorSpace = THREE.SRGBColorSpace;
-        const physical = new THREE.CanvasTexture(surface.physical);
+        const physical = boardPhysicalTexture(surface.physical);
         for (const texture of [map, physical]) texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
-        const material = new THREE.MeshPhysicalMaterial({ map, roughnessMap: physical, metalnessMap: physical,
-          roughness: 1, metalness: 1, clearcoat: 0.22, clearcoatRoughness: 0.35, side: THREE.DoubleSide });
+        const material = boardSurfaceMaterial(map, physical);
         const cap = surface.side === 'top' ? 0 : 1;
         for (const mesh of this.boardMeshes) {
           mesh.material[cap].dispose(); mesh.material[cap] = material;
