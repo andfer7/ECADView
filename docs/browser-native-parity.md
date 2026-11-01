@@ -6,7 +6,7 @@ maintained standalone viewer describe the state before its retirement.
 Native-only follow-ups #87–#90 are no longer planned.
 
 
-Issue [#92](https://github.com/andfer7/PCB_Visualizer/issues/92) compares the
+Issue [#92](https://github.com/andfer7/ECADView/issues/92) compares the
 browser viewer against the 40 closed repository issues available on 2026-10-29,
 the merged standalone changes, and the final refinements requested in the chat.
 The table records user-visible behavior rather than requiring the browser to

@@ -330,7 +330,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pcbvisualizer"
+name = "ecadview"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

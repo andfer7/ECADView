@@ -11,9 +11,9 @@ from altium_monkey import AltiumPcbDoc
 from altium_monkey.altium_board import AltiumBoardOutline
 from altium_monkey.altium_pcb_enums import PcbBodyProjection
 
-from pcbvisualizer.rendering import render_file
-from pcbvisualizer.scene3d import build_scene, MIL_MM
-from pcbvisualizer.step_models import asset, local_step, MAX_MODEL_BYTES
+from ecadview.rendering import render_file
+from ecadview.scene3d import build_scene, MIL_MM
+from ecadview.step_models import asset, local_step, MAX_MODEL_BYTES
 
 BOX = Path(__file__).parent / "fixtures/step/box.step"
 
@@ -84,7 +84,7 @@ class StepModelsTests(unittest.TestCase):
             asset(b"x" * (MAX_MODEL_BYTES + 1), "large.step")
 
     def test_kicad_local_step_and_missing_reference_preserve_scale_rotation_and_side(self):
-        board = '''(kicad_pcb (version 20240108) (generator pcbvisualizer)
+        board = '''(kicad_pcb (version 20240108) (generator ecadview)
           (general (thickness 1.6)) (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
           (gr_rect (start 0 0) (end 40 30) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))
           (footprint "TEST" (layer "F.Cu") (at 10 10 90) (property "Reference" "U1")

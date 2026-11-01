@@ -12,7 +12,7 @@ after(async () => { await browser?.close(); });
 
 async function backend(t) {
   const child = spawn(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'),
-    ['-B', '-u', resolve(__dirname, '../pcb_viewer_gui.py'), '--no-open']);
+    ['-B', '-u', resolve(__dirname, '../ecadview.py'), '--no-open']);
   let output = '';
   child.stderr.on('data', data => { output += data; });
   const exited = new Promise(done => child.once('exit', (code, signal) => done({ code, signal })));

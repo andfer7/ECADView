@@ -11,8 +11,8 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtGui import QGuiApplication
 
-from pcbvisualizer.geometry.document import GeometryDocument
-from pcbvisualizer.geometry.gpu_scene import build_scene
+from ecadview.geometry.document import GeometryDocument
+from ecadview.geometry.gpu_scene import build_scene
 
 
 class RetainedPathTests(unittest.TestCase):
@@ -26,12 +26,12 @@ class RetainedPathTests(unittest.TestCase):
         data = {'name': 'linear', 'svg': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">'
                 '<g id="scene"><g id="layer-top">' + graphics + '</g></g></svg>'}
         optimized = build_scene(GeometryDocument(data))
-        with patch('pcbvisualizer.geometry.gpu_scene._spaced_linear_path', return_value=None):
+        with patch('ecadview.geometry.gpu_scene._spaced_linear_path', return_value=None):
             reference = build_scene(GeometryDocument(data))
         self.assertTrue(optimized['supported'])
         for key in ('vertices', 'indices', 'entries', 'object_nets'):
             self.assertEqual(optimized[key], reference[key], key)
-        from pcbvisualizer.geometry.gpu_scene import parse_path, UnsupportedScene
+        from ecadview.geometry.gpu_scene import parse_path, UnsupportedScene
         for invalid in ('M 0 0 L 1e999 2 Z', 'M 0 0 L 4 Z', 'M 0 0 L 1.2.3 2'):
             with self.subTest(invalid=invalid), self.assertRaises(UnsupportedScene):
                 parse_path(invalid)

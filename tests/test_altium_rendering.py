@@ -13,8 +13,8 @@ from altium_monkey import AltiumPcbDoc, PcbSvgRenderOptions
 from altium_monkey.altium_board import AltiumBoardOutline
 from altium_monkey.altium_pcb_svg_renderer import PcbSvgRenderer
 
-from pcbvisualizer.altium_rendering import IndexedPcbSvgRenderer
-from pcbvisualizer.rendering import prepare_embedded_fonts, resolve_polygon_nets
+from ecadview.altium_rendering import IndexedPcbSvgRenderer
+from ecadview.rendering import prepare_embedded_fonts, resolve_polygon_nets
 
 
 class IndexedAltiumRenderingTests(unittest.TestCase):

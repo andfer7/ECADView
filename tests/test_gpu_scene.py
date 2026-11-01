@@ -8,8 +8,8 @@ from array import array
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QGuiApplication
-from pcbvisualizer.geometry.document import GeometryDocument
-from pcbvisualizer.geometry.gpu_scene import build_scene
+from ecadview.geometry.document import GeometryDocument
+from ecadview.geometry.gpu_scene import build_scene
 
 def application():
     return QGuiApplication.instance() or QGuiApplication([])

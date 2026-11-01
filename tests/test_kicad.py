@@ -11,9 +11,9 @@ import xml.etree.ElementTree as ET
 import sexpdata
 from shapely.geometry import Polygon
 
-from pcbvisualizer.kicad_common import form, forms, load
-from pcbvisualizer.kicad_schematic import Connectivity
-from pcbvisualizer.rendering import render_file
+from ecadview.kicad_common import form, forms, load
+from ecadview.kicad_schematic import Connectivity
+from ecadview.rendering import render_file
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'kicad'
 NS = {'s': 'http://www.w3.org/2000/svg'}

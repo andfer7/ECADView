@@ -18,7 +18,7 @@ from urllib.parse import quote, urlsplit
 
 from altium_monkey import AltiumSchDoc, SchPointMils, make_sch_wire
 
-from pcbvisualizer.server import Handler
+from ecadview.server import Handler
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,10 +101,12 @@ class ServerTests(unittest.TestCase):
             with self.subTest(route=route):
                 status, headers, body = self.request("GET", route + "?version=test")
                 self.assertEqual(status, 200)
-                self.assertEqual(body, files("pcbvisualizer").joinpath("static", filename).read_bytes())
+                self.assertEqual(body, files("ecadview").joinpath("static", filename).read_bytes())
                 self.assertEqual(headers["Content-Type"], content_type + "; charset=utf-8")
                 self.assertEqual(int(headers["Content-Length"]), len(body))
         html = self.request("GET", "/")[2].decode()
+        self.assertIn('<title>ECADView</title>', html)
+        self.assertIn('<h1>ECADView</h1>', html)
         self.assertIn('href="/static/viewer.css"', html)
         self.assertIn('src="/static/viewer.js"', html)
 
@@ -113,7 +115,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "application/wasm")
         self.assertTrue(body.startswith(b"\0asm"))
-        self.assertEqual(body, files("pcbvisualizer").joinpath("static", "occt-import-js.wasm").read_bytes())
+        self.assertEqual(body, files("ecadview").joinpath("static", "occt-import-js.wasm").read_bytes())
 
     def test_unknown_and_unlisted_resource_paths_return_404(self):
         for path in ("/missing", "/static/../rendering.py", "/static/%2e%2e/server.py", "/static/index.html"):
@@ -166,7 +168,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/")[0], 200)
 
     def test_upload_passes_render_options_and_removes_temporary_file(self):
-        with patch("pcbvisualizer.server.render_file", return_value={"svg": "<svg/>"}) as render:
+        with patch("ecadview.server.render_file", return_value={"svg": "<svg/>"}) as render:
             status, _, body = self.request("POST", "/render?side=bottom&clip=1&pour=%23ff0000&outlines=1",
                                            b"board data", {"X-Filename": "board.PcbDoc"})
         self.assertEqual(status, 200)
@@ -184,22 +186,22 @@ class ServerTests(unittest.TestCase):
         self.assertRegex(json.loads(body)["error"], r"ValueError: .*PcbDoc.*SchDoc")
 
     def test_webgl_upload_requests_compact_geometry_metadata(self):
-        with patch("pcbvisualizer.server.render_file", return_value={"svg": "<svg/>"}) as render:
+        with patch("ecadview.server.render_file", return_value={"svg": "<svg/>"}) as render:
             status, _, body = self.request("POST", "/render", b"board", {"X-WebGL": "1"})
         self.assertEqual(status, 200)
         self.assertTrue(render.call_args.kwargs["native"])
         self.assertTrue(json.loads(body)["webgl"])
 
     def test_geometry_response_busy_and_error_routes(self):
-        with patch("pcbvisualizer.server.prepare_geometry", return_value=b"binary") as prepare:
+        with patch("ecadview.server.prepare_geometry", return_value=b"binary") as prepare:
             status, headers, body = self.request("POST", "/geometry", b"{}")
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "application/octet-stream")
         self.assertEqual(body, b"binary")
         prepare.assert_called_once_with(b"{}")
-        with patch("pcbvisualizer.server.prepare_geometry", return_value=None):
+        with patch("ecadview.server.prepare_geometry", return_value=None):
             self.assertEqual(self.request("POST", "/geometry", b"{}")[0], 503)
-        with patch("pcbvisualizer.server.prepare_geometry", side_effect=ValueError("Unsupported")):
+        with patch("ecadview.server.prepare_geometry", side_effect=ValueError("Unsupported")):
             status, _, body = self.request("POST", "/geometry", b"{}")
         self.assertEqual(status, 422)
         self.assertEqual(json.loads(body), {"error": "Unsupported"})
@@ -209,7 +211,7 @@ class ServerTests(unittest.TestCase):
 class LaunchTests(unittest.TestCase):
     def test_web_startup_opens_multiple_documents_in_one_session(self):
         paths = [ROOT / "tests/fixtures/kicad" / name for name in ("demo.kicad_pcb", "demo.kicad_sch")]
-        process = subprocess.Popen([sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py"), "--web", "--no-open", *map(str, paths)],
+        process = subprocess.Popen([sys.executable, "-B", "-u", str(ROOT / "ecadview.py"), "--web", "--no-open", *map(str, paths)],
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         output = queue.Queue()
         def read_output():
@@ -245,7 +247,7 @@ class LaunchTests(unittest.TestCase):
             reader.join(timeout=5); process.stdout.close()
 
     def test_kicad_startup_document_is_available_without_a_kicad_installation(self):
-        command = [sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py"),
+        command = [sys.executable, "-B", "-u", str(ROOT / "ecadview.py"),
                    str(ROOT / "tests" / "fixtures" / "kicad" / "demo.kicad_pcb"), "--no-open"]
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
@@ -286,8 +288,8 @@ class LaunchTests(unittest.TestCase):
             path = Path(tmp) / "initial.SchDoc"
             path.write_bytes(data)
             commands = (
-                ([sys.executable, "-B", "-u", str(ROOT / "pcb_viewer_gui.py")], tmp),
-                ([sys.executable, "-B", "-u", "-m", "pcbvisualizer"], ROOT),
+                ([sys.executable, "-B", "-u", str(ROOT / "ecadview.py")], tmp),
+                ([sys.executable, "-B", "-u", "-m", "ecadview"], ROOT),
             )
             for command, cwd in commands:
                 with self.subTest(command=command):

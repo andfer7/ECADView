@@ -4,7 +4,7 @@ const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 let probe;
 before(async () => {
-  const source = readFileSync(resolve(__dirname, '../pcbvisualizer/static/cross-probe.js'));
+  const source = readFileSync(resolve(__dirname, '../ecadview/static/cross-probe.js'));
   probe = await import('data:text/javascript;base64,' + source.toString('base64'));
 });
 const elements = rows => rows.map(dataset => ({ dataset }));

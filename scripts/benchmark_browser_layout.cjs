@@ -8,7 +8,7 @@ const { writeFileSync } = require('node:fs');
 const { once } = require('node:events');
 async function main() {
   const path = resolve(process.argv[2]), output = process.argv[3];
-  const server = spawn(resolve(__dirname, '../.venv/bin/python'), ['-B', '-u', resolve(__dirname, '../pcb_viewer_gui.py'), '--no-open']);
+  const server = spawn(resolve(__dirname, '../.venv/bin/python'), ['-B', '-u', resolve(__dirname, '../ecadview.py'), '--no-open']);
   let browser;
   try {
     const origin = await new Promise((done, reject) => {

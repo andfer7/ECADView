@@ -1,7 +1,7 @@
 ISO-10303-21;
 HEADER;
-FILE_DESCRIPTION(('PCBVisualizer test fixture'),'2;1');
-FILE_NAME('box.step','2026-10-29T00:00:00',('PCBVisualizer'),(''),'','','');
+FILE_DESCRIPTION(('ECADView test fixture'),'2;1');
+FILE_NAME('box.step','2026-10-29T00:00:00',('ECADView'),(''),'','','');
 FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
 ENDSEC;
 DATA;

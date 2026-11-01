@@ -13,10 +13,10 @@ import numpy as np
 from altium_monkey import AltiumPcbDoc
 from PySide6.QtGui import QColor, QGuiApplication
 
-from pcbvisualizer.geometry.document import GeometryDocument
-from pcbvisualizer.geometry.gpu_scene import build_scene
-from pcbvisualizer.layer_colors import BASE_COLORS, layer_colors
-from pcbvisualizer.rendering import render_file
+from ecadview.geometry.document import GeometryDocument
+from ecadview.geometry.gpu_scene import build_scene
+from ecadview.layer_colors import BASE_COLORS, layer_colors
+from ecadview.rendering import render_file
 
 APP = QGuiApplication.instance() or QGuiApplication([])
 FIXTURE = Path(__file__).parent / "fixtures/kicad/demo.kicad_pcb"
@@ -43,7 +43,7 @@ class LayerColorTests(unittest.TestCase):
                          {"F.Cu": colors["TOP"], "B.Cu": colors["BOTTOM"], "In1.Cu": colors["MID1"]})
 
     def test_rounding_collisions_are_resolved_and_existing_colors_reserved(self):
-        with patch("pcbvisualizer.layer_colors.hashlib.sha256") as digest:
+        with patch("ecadview.layer_colors.hashlib.sha256") as digest:
             digest.return_value.digest.return_value = bytes(32)
             first = layer_colors(["User.1", "User.2"])
             self.assertNotEqual(first["User.1"], first["User.2"])

@@ -1,3 +1,3 @@
 # Preserve upstream runtime/license bytes, including their CRLF line endings.
-pcbvisualizer/static/occt-import-js.* linguist-vendored whitespace=cr-at-eol
-pcbvisualizer/static/OCCT*-LICENSE.txt linguist-vendored -whitespace
+ecadview/static/occt-import-js.* linguist-vendored whitespace=cr-at-eol
+ecadview/static/OCCT*-LICENSE.txt linguist-vendored -whitespace

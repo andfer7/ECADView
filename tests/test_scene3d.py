@@ -12,8 +12,8 @@ from altium_monkey.altium_board import AltiumBoardOutline, BoardOutlineVertex
 from altium_monkey.altium_pcb_enums import PcbBodyProjection, PcbIpc4761ViaType
 from shapely.geometry import Point, Polygon
 
-from pcbvisualizer.rendering import render_file
-from pcbvisualizer.scene3d import build_scene, contour, MIL_MM
+from ecadview.rendering import render_file
+from ecadview.scene3d import build_scene, contour, MIL_MM
 
 
 def board():
@@ -110,7 +110,7 @@ class Scene3DTests(unittest.TestCase):
 
     def test_missing_outline_and_unknown_thickness_are_explicit(self):
         self.assertEqual(build_scene(AltiumPcbDoc())['board'], [])
-        with patch('pcbvisualizer.scene3d.resolved_layer_stack_from_pcbdoc',
+        with patch('ecadview.scene3d.resolved_layer_stack_from_pcbdoc',
                    return_value=SimpleNamespace(substacks=[])):
             scene = build_scene(board())
         self.assertEqual(scene['thickness'], 1.6)
@@ -135,7 +135,7 @@ class Scene3DTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'unsupported.PcbDoc'
             pcb.save(path)
-            with patch('pcbvisualizer.rendering.build_scene', side_effect=ValueError('unsupported body')):
+            with patch('ecadview.rendering.build_scene', side_effect=ValueError('unsupported body')):
                 data = render_file(path)
         self.assertIn('<svg', data['svg'])
         self.assertEqual(data['scene3d']['board'], [])

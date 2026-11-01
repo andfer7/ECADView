@@ -8,7 +8,7 @@ const { chromium } = require('playwright');
 let browser, server, origin;
 before(async () => {
   server = spawn(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'),
-    ['-B', '-u', resolve(__dirname, '../pcb_viewer_gui.py'), '--no-open']);
+    ['-B', '-u', resolve(__dirname, '../ecadview.py'), '--no-open']);
   origin = await new Promise((done, reject) => {
     let output = '', errors = '';
     const timer = setTimeout(() => reject(new Error(errors || 'Server startup timed out')), 20000);
@@ -84,7 +84,7 @@ for (const gpu of [true, false]) test(`real PCB layer colors match swatches and 
   });
   await page.unroute('**/render');
   const layers = ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu', 'F.Fab', 'B.Fab'];
-  const source = `(kicad_pcb (version 20240108) (generator pcbvisualizer)
+  const source = `(kicad_pcb (version 20240108) (generator ecadview)
     (general (thickness 1.6))
     (layers ${layers.map((layer, i) => `(${i} "${layer}" ${layer.endsWith('.Cu') ? 'signal' : 'user'})`).join(' ')}
       (44 "Edge.Cuts" user))

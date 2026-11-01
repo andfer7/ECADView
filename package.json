@@ -1,5 +1,5 @@
 {
-  "name": "pcbvisualizer-tests",
+  "name": "ecadview-tests",
   "private": true,
   "engines": {
     "node": ">=20"

@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, QRectF
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
-from pcbvisualizer.geometry.document import GeometryDocument
-from pcbvisualizer.rendering import render_file
+from ecadview.geometry.document import GeometryDocument
+from ecadview.rendering import render_file
 APP = QGuiApplication.instance() or QGuiApplication([])
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "kicad"
