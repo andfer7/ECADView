@@ -3593,6 +3593,98 @@ async function click3D(page, x, y, modifiers = []) {
   await page.locator('#three-view canvas').click({ position: { x: rect.width * x, y: rect.height * y }, modifiers });
 }
 
+test('STEP conversion uses a bounded pool, counts each asset once and cancels every pending worker', async t => {
+  const { page } = await openPage(t);
+  const results = await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js');
+    const results = [], OriginalWorker = window.Worker;
+    for (const cores of [2, 8]) {
+      Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, value: cores });
+      const stats = { active: 0, maximum: 0, created: 0, closed: 0, requests: 0 }; let block = false;
+      window.Worker = class {
+        constructor() { stats.created++; }
+        postMessage() {
+          stats.requests++; stats.active++; this.active = true; stats.maximum = Math.max(stats.maximum, stats.active);
+          if (!block) this.timer = setTimeout(() => {
+            stats.active--; this.active = false;
+            this.onmessage({ data: { meshes: [{ position: new Float32Array([0,0,0,1,0,0,0,1,0]), index: new Uint32Array([0,1,2]) }] } });
+          }, 30);
+        }
+        terminate() { clearTimeout(this.timer); if (this.active) stats.active--; this.active = false; stats.closed++; }
+      };
+      const host = document.createElement('div'); Object.assign(host.style, { width: '300px', height: '200px' }); document.body.append(host);
+      const viewer = new Board3D(host, () => {});
+      const model = prefix => ({ board: [{ outline: [[-5,-5],[5,-5],[5,5],[-5,5]], holes: [] }], thickness: 1.6,
+        bodies: Array.from({ length: 6 }, (_, i) => ({ id: prefix+i, model: prefix+(i%3), color: 0x555555, opacity: 1,
+          z: 1, height: 1, outline: [[0,0],[1,0],[1,1],[0,1]], holes: [], matrix: [1,0,0,0,0,1,0,0,0,0,1,0,i,0,1,1] })),
+        step_models: Object.fromEntries([0,1,2].map(i => [prefix+i, { data: 'test' }])) });
+      viewer.show(model('pool-'+cores)); await viewer.loading;
+      const complete = { ...stats, ready: viewer.ready, loaded: viewer.modelProgress.loaded };
+      block = true; viewer.show(model('cancel-'+cores)); const loading = viewer.loading;
+      viewer.hide(); await loading;
+      const cancelled = { active: stats.active, closed: stats.closed, mounted: Boolean(viewer.scene) };
+      viewer.clear(); viewer.controls.dispose(); viewer.observer.disconnect(); viewer.environment.dispose(); viewer.renderer.dispose(); host.remove();
+      results.push({ cores, complete, cancelled });
+    }
+    window.Worker = OriginalWorker; return results;
+  });
+  for (const { cores, complete, cancelled } of results) {
+    const pool = cores === 2 ? 1 : 2;
+    assert.equal(complete.maximum, pool); assert.equal(complete.created, pool);
+    assert.equal(complete.requests, 3, 'repeated bodies convert only once per distinct asset');
+    assert.equal(complete.loaded, 3); assert.equal(complete.ready, true);
+    assert.deepEqual(cancelled, { active: 0, closed: pool * 2, mounted: false });
+  }
+});
+
+test('instanced STEP components match separate draws, keep exact picking and release instance buffers', async t => {
+  const { page } = await openPage(t);
+  const errors = []; page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+  const result = await page.evaluate(async () => {
+    const THREE = await import('/static/three.module.min.js'), { Board3D } = await import('/static/viewer-3d.js');
+    const host = document.createElement('div'); Object.assign(host.style, { width: '600px', height: '400px' }); document.body.append(host);
+    const viewer = new Board3D(host, () => {}), state = { selected: new Set(), deleted: new Set() };
+    const bodies = Array.from({ length: 12 }, (_, i) => ({ id: 'part-' + i, name: 'R' + i, color: 0x888888,
+      opacity: i === 11 ? 0.5 : 1, z: 0.8, height: 2, outline: [[0,0],[1,0],[1,1],[0,1]], holes: [],
+      matrix: new THREE.Matrix4().makeTranslation((i % 4) * 6 - 9, Math.floor(i / 4) * 6 - 6, 1.8)
+        .scale(new THREE.Vector3(i === 10 ? -1 : 1, 1, 1)).toArray() }));
+    const geometry = new THREE.BoxGeometry(3, 3, 2), parts = [{ position: geometry.attributes.position.array,
+      index: geometry.index.array, normal: geometry.attributes.normal.array }];
+    const model = { board: [{ outline: [[-15,-12],[15,-12],[15,12],[-15,12]], holes: [] }], thickness: 1.6, bodies };
+    const capture = separate => {
+      viewer.clear(); viewer.show(model, null, state);
+      if (separate) for (const body of bodies) viewer.addStepBodies([body], parts); else viewer.addStepBodies(bodies, parts);
+      viewer.fit('top'); viewer.render();
+      const gl = viewer.renderer.getContext(), pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+      gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      return { checksum: pixels.reduce((n, v, i) => (n + v * (i % 251)) % 1000000007, 0), calls: viewer.renderer.info.render.calls };
+    };
+    const separate = capture(true), batched = capture(false), batches = viewer.scene.children.filter(mesh => mesh.isInstancedMesh);
+    const picked = bodies.map(body => {
+      const center = new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(body.matrix));
+      viewer.raycaster.setFromCamera(center.project(viewer.camera), viewer.camera);
+      return viewer.raycaster.intersectObjects(viewer.pickMeshes.filter(mesh => mesh.visible), false)[0]?.object.userData.bodyId;
+    });
+    const instances = batches.map(mesh => mesh.count); let disposed = 0;
+    // Replacing one member must leave the rest of its old batch intact.
+    viewer.addStepBodies([bodies[0]], parts); viewer.render();
+    const gl = viewer.renderer.getContext(), replacementPixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+    gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, replacementPixels);
+    const replacedChecksum = replacementPixels.reduce((n, v, i) => (n + v * (i % 251)) % 1000000007, 0);
+    batches.forEach(mesh => mesh.addEventListener('dispose', () => disposed++));
+    viewer.clear(); const afterClear = viewer.renderer.info.memory.geometries;
+    viewer.controls.dispose(); viewer.observer.disconnect(); viewer.environment.dispose(); viewer.renderer.dispose(); host.remove();
+    return { separate, batched, picked, instances, disposed, afterClear, replacedChecksum };
+  });
+  assert.equal(result.batched.checksum, result.separate.checksum, 'instancing preserves opaque, mirrored and transparent pixels');
+  assert.equal(result.replacedChecksum, result.batched.checksum, 'replacing one instance preserves the other bodies');
+  assert.ok(result.batched.calls < result.separate.calls / 2, 'repeated components share draw calls');
+  assert.deepEqual(result.instances, [10], 'transparent and mirrored components use separate draws');
+  assert.deepEqual(result.picked, Array.from({ length: 12 }, (_, i) => 'part-' + i));
+  assert.equal(result.disposed, 1, 'closing the scene releases instance buffers');
+  assert.equal(result.afterClear, 0); assert.deepEqual(errors, []);
+});
+
 test('3D selection clearly tints every STEP part and fallback body while preserving other instances and original finishes', async t => {
   const { page } = await openPage(t);
   const graphicsErrors = [];

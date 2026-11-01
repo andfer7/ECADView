@@ -2,6 +2,7 @@
 
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,6 +19,22 @@ class RetainedPathTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QGuiApplication.instance() or QGuiApplication([])
+
+    def test_spaced_linear_pours_match_general_parser_exactly(self):
+        graphics = ('<path id="p" data-net="GND" fill="red" fill-rule="evenodd" '
+                    'd="M 0 0 L 30 0 L 30 30 L 0 30 Z M 5 5 L 25 5 L 25 25 L 5 25 Z"/>')
+        data = {'name': 'linear', 'svg': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">'
+                '<g id="scene"><g id="layer-top">' + graphics + '</g></g></svg>'}
+        optimized = build_scene(GeometryDocument(data))
+        with patch('pcbvisualizer.geometry.gpu_scene._spaced_linear_path', return_value=None):
+            reference = build_scene(GeometryDocument(data))
+        self.assertTrue(optimized['supported'])
+        for key in ('vertices', 'indices', 'entries', 'object_nets'):
+            self.assertEqual(optimized[key], reference[key], key)
+        from pcbvisualizer.geometry.gpu_scene import parse_path, UnsupportedScene
+        for invalid in ('M 0 0 L 1e999 2 Z', 'M 0 0 L 4 Z', 'M 0 0 L 1.2.3 2'):
+            with self.subTest(invalid=invalid), self.assertRaises(UnsupportedScene):
+                parse_path(invalid)
 
     def assert_svg_coverage(self, graphic, inside, outside):
         document = GeometryDocument(

@@ -29,6 +29,13 @@ Navigation coverage includes scroll-to-pan, Ctrl-wheel pinch zoom, native Safari
 gesture event handling, cursor anchoring with SVG margins, redraw batching,
 measurement label positioning, and pending gestures during tab changes.
 
+Loading/rendering regressions compare instanced STEP output with separate draws,
+including per-component highlighting, picking, deletion/undo, mirrored and
+transparent parts, replacement and buffer disposal. Worker-pool tests check
+serial operation on two-core devices, a two-worker limit on larger devices,
+asset deduplication and cancellation of every pending conversion. Polygon tests
+compare the faster linear-path parser with the general parser byte for byte.
+
 Selection tests cover repeated clicks to deselect and reselect components and
 nets in both views, including selections from searches and cross-probing.
 They also check Shift selections, shared schematic graphics, remaining exact

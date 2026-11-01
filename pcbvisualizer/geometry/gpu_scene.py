@@ -21,6 +21,7 @@ from shapely.ops import polygonize, unary_union
 
 NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
 TOKENS = re.compile(r"[A-Za-z]|" + NUMBER)
+SPACED_LINEAR = re.compile(r"[^MLZ0-9eE+.\-\s]")
 TRANSFORMS = re.compile(r"([A-Za-z]+)\s*\(([^)]*)\)")
 IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 PAINT = (
@@ -156,8 +157,53 @@ def _arc(path, start, values):
         )
 
 
+def _spaced_linear_path(data, fill_rule):
+    """Fast path for the renderer's explicit, space-separated M/L/Z pours.
+
+    Compact, relative and curved SVG syntax goes through the general parser.
+    Avoid regex tokenization and per-segment command dispatch on large pours.
+    """
+    if not data.startswith("M ") or SPACED_LINEAR.search(data):
+        return None
+    tokens = data.split()
+    path = QPainterPath()
+    path.setFillRule(Qt.FillRule.OddEvenFill if fill_rule == "evenodd" else Qt.FillRule.WindingFill)
+    subpaths, points, index = [], None, 0
+    try:
+        while index < len(tokens):
+            command = tokens[index]
+            if command == "Z":
+                if points is None:
+                    return None
+                path.closeSubpath()
+                if points[-1] != points[0]:
+                    points.append(points[0])
+                index += 1
+                if index < len(tokens) and tokens[index] not in ("M", "Z"):
+                    return None
+                continue
+            if command not in ("M", "L") or index + 2 >= len(tokens):
+                return None
+            x, y = float(tokens[index + 1]), float(tokens[index + 2])
+            if not math.isfinite(x) or not math.isfinite(y):
+                raise UnsupportedScene("Non-finite SVG path")
+            if command == "M":
+                path.moveTo(x, y)
+                points = [(x, y)]
+                subpaths.append(points)
+            else:
+                path.lineTo(x, y)
+                points.append((x, y))
+            index += 3
+    except (ValueError, IndexError):
+        return None
+    return path, subpaths
+
+
 def parse_path(data, fill_rule="nonzero"):
     """Return a Qt path and exact linear subpaths, or None when curved."""
+    if linear := _spaced_linear_path(data, fill_rule):
+        return linear
     tokens = TOKENS.findall(data)
     if TOKENS.sub("", data).strip(" ,\t\r\n"):
         raise UnsupportedScene("Invalid SVG path data")

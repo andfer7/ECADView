@@ -8,8 +8,9 @@ const sceneFields = ['scene', 'pickMeshes', 'bodyMeshes', 'boardMeshes', 'studio
   'shadowDirty', 'shadowKey', 'selectionKey', 'bodyState', 'modelProgress', 'surfaceError', 'model', 'sourceSVG', 'ready', 'sceneBytes'];
 
 function resources(scene) {
-  const geometries = new Set(), materials = new Set(), textures = new Set(), shadows = new Set();
+  const geometries = new Set(), materials = new Set(), textures = new Set(), shadows = new Set(), instances = new Set();
   scene?.traverse(object => {
+    if (object.isInstancedMesh) instances.add(object);
     if (object.shadow) shadows.add(object.shadow);
     if (object.geometry) geometries.add(object.geometry);
     for (const material of Array.isArray(object.material) ? object.material : [object.material]) if (material) {
@@ -17,7 +18,7 @@ function resources(scene) {
       for (const value of Object.values(material)) if (value?.isTexture) textures.add(value);
     }
   });
-  return { geometries, materials, textures, shadows };
+  return { geometries, materials, textures, shadows, instances };
 }
 
 function disposeScene(scene) {
@@ -26,12 +27,16 @@ function disposeScene(scene) {
 }
 
 function sceneBytes(scene) {
-  const all = resources(scene), arrays = new Set();
+  const all = resources(scene), arrays = new Set(), attributes = new Set();
   let bytes = 0;
   for (const geometry of all.geometries) {
-    for (const attribute of [...Object.values(geometry.attributes), geometry.index]) if (attribute) arrays.add(attribute.array);
+    for (const attribute of [...Object.values(geometry.attributes), geometry.index]) if (attribute) {
+      arrays.add(attribute.array); attributes.add(attribute);
+    }
   }
-  for (const array of arrays) bytes += array.byteLength * 2; // CPU arrays and GPU buffers.
+  for (const array of arrays) bytes += array.byteLength;
+  for (const attribute of attributes) bytes += attribute.array.byteLength; // GPU buffers can have separate owners.
+  for (const mesh of all.instances) bytes += mesh.instanceMatrix.array.byteLength * 2;
   for (const texture of all.textures) bytes += (texture.image?.width || 0) * (texture.image?.height || 0) * 4 * 8 / 3;
   for (const shadow of all.shadows) if (shadow.map) bytes += shadow.map.width * shadow.map.height * 8;
   return bytes;
@@ -171,6 +176,9 @@ export class Board3D {
     this.shadowDirty = true; this.shadowKey = null; this.selectionKey = null;
     this.modelProgress = { loaded: 0, total: 0, failed: [] }; this.surfaceError = null;
     this.scene = new THREE.Scene();
+    // The worker can fetch WASM and convert models while the main thread builds
+    // the board's often large drilled mesh. Its results resume after show returns.
+    const generation = this.generation, steps = this.loadSteps(model, generation);
     this.environment ||= studioEnvironment(this.renderer);
     this.scene.environment = this.environment.texture; this.scene.environmentIntensity = 0.5;
     this.scene.background = new THREE.Color(0x242a32);
@@ -237,8 +245,7 @@ export class Board3D {
     this.resize();
     this.restoreCamera(state);
     this.updateBodies(bodies);
-    const generation = this.generation;
-    this.loading = Promise.all([this.loadSteps(model, generation), this.loadSurfaces(sourceSVG, model, generation)]).then(() => {
+    this.loading = Promise.all([steps, this.loadSurfaces(sourceSVG, model, generation)]).then(() => {
       if (generation !== this.generation) return;
       this.stepLoader?.close(); this.stepLoader = null;
       this.ready = true; this.sceneBytes = sceneBytes(this.scene);
@@ -291,22 +298,29 @@ export class Board3D {
     };
     progress();
     if (!requests.size) return;
-    this.stepLoader = new StepLoader();
-    for (const [key, bodies] of requests) {
-      try {
-        const parts = await this.stepLoader.load(key, assets[key]);
+    // Bound WASM memory/CPU use while allowing two independent assets to convert
+    // concurrently on multicore machines. Repeated bodies still convert once.
+    const count = requests.size > 1 && (navigator.hardwareConcurrency || 2) >= 4 ? 2 : 1;
+    const loaders = Array.from({ length: count }, () => new StepLoader()), pending = requests.entries();
+    this.stepLoader = { close: () => loaders.forEach(loader => loader.close()) };
+    await Promise.all(loaders.map(async loader => {
+      for (const [key, bodies] of pending) {
+        try {
+          const parts = await loader.load(key, assets[key]);
+          if (generation !== this.generation) return;
+          this.addStepBodies([...bodies.values()], parts);
+          loaded++;
+        } catch (error) {
+          if (generation !== this.generation) return;
+          failed.push(`${assets[key]?.name || 'Model'}: ${error.message}`);
+        }
+        progress();
+        // Give orbit/pan and tab controls a turn between converted assets.
+        await new Promise(resolve => setTimeout(resolve, 0));
         if (generation !== this.generation) return;
-        this.addStepBodies([...bodies.values()], parts);
-        loaded++;
-      } catch (error) {
-        if (generation !== this.generation) return;
-        failed.push(`${assets[key]?.name || 'Model'}: ${error.message}`);
       }
-      progress();
-      // Give orbit/pan and tab controls a turn between converted assets.
-      await new Promise(resolve => setTimeout(resolve, 0));
-      if (generation !== this.generation) return;
-    }
+    }));
+    if (generation !== this.generation) return;
     this.renderer.shadowMap.needsUpdate = true; this.render();
   }
 
@@ -314,13 +328,26 @@ export class Board3D {
     const ids = new Set(bodies.map(body => body.id));
     const replaced = this.bodyMeshes.filter(entry => ids.has(entry.id));
     const removed = new Set(replaced.map(entry => entry.mesh));
-    for (const { mesh, edges } of replaced) {
-      this.scene.remove(mesh, edges);
-      mesh.geometry.dispose(); mesh.material.dispose();
+    const remaining = this.bodyMeshes.filter(entry => !ids.has(entry.id)), retiredBatches = new Set();
+    const retainedGeometry = new Set(remaining.map(entry => entry.mesh.geometry));
+    const retainedBatches = new Set(remaining.map(entry => entry.batch));
+    for (const { mesh, edges, batch, instance } of replaced) {
+      if (batch) {
+        retiredBatches.add(batch);
+        batch.setMatrixAt(instance, new THREE.Matrix4().makeScale(0, 0, 0)); batch.instanceMatrix.needsUpdate = true;
+      } else {
+        this.scene.remove(mesh);
+        if (!retainedGeometry.has(mesh.geometry)) { mesh.geometry.dispose(); retainedGeometry.add(mesh.geometry); }
+        mesh.material.dispose();
+      }
+      if (edges) this.scene.remove(edges);
       edges?.geometry.dispose(); edges?.material.dispose();
     }
+    for (const batch of retiredBatches) if (!retainedBatches.has(batch)) {
+      this.scene.remove(batch); batch.dispose(); batch.geometry.dispose(); batch.material.dispose();
+    }
     this.pickMeshes = this.pickMeshes.filter(mesh => !removed.has(mesh));
-    this.bodyMeshes = this.bodyMeshes.filter(entry => !ids.has(entry.id));
+    this.bodyMeshes = remaining;
     const geometries = parts.map(part => {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(part.position, 3));
@@ -332,17 +359,44 @@ export class Board3D {
       geometry.computeBoundingBox(); geometry.computeBoundingSphere();
       return geometry;
     });
-    for (const body of bodies) for (const [index, geometry] of geometries.entries()) {
-      const material = stepMaterial({ color: parts[index].color ? 0xffffff : body.color,
-        vertexColors: Boolean(parts[index].color),
-        opacity: body.opacity, transparent: body.opacity < 1, side: THREE.DoubleSide });
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.name = body.name; mesh.userData.bodyId = body.id; mesh.userData.step = true;
-      mesh.matrixAutoUpdate = false; mesh.matrix.fromArray(body.matrix);
-      mesh.castShadow = true; mesh.receiveShadow = true;
-      this.scene.add(mesh);
-      if (body.opacity > 0) this.pickMeshes.push(mesh);
-      this.bodyMeshes.push({ id: body.id, mesh });
+    const groups = new Map(), matrix = new THREE.Matrix4();
+    for (const body of bodies) {
+      // Mirrored transforms and transparent sorting need individual draws.
+      const batchable = body.opacity === 1 && matrix.fromArray(body.matrix).determinant() > 0;
+      const key = batchable ? `${body.color}` : body;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(body);
+    }
+    for (const group of groups.values()) for (const [index, source] of geometries.entries()) {
+      const instanced = group.length > 1;
+      let geometry = source, batch = null;
+      const body = group[0], material = stepMaterial({ color: parts[index].color ? 0xffffff : body.color,
+        vertexColors: Boolean(parts[index].color), opacity: body.opacity,
+        transparent: body.opacity < 1, side: THREE.DoubleSide }, instanced);
+      if (instanced) {
+        // Share immutable vertex/index arrays, but keep per-batch highlights.
+        geometry = new THREE.BufferGeometry();
+        // Separate attribute owners allow one batch to be disposed independently.
+        geometry.setIndex(new THREE.BufferAttribute(source.index.array, 1));
+        for (const [name, attribute] of Object.entries(source.attributes))
+          geometry.setAttribute(name, new THREE.BufferAttribute(attribute.array, attribute.itemSize, attribute.normalized));
+        geometry.boundingBox = source.boundingBox; geometry.boundingSphere = source.boundingSphere;
+        geometry.setAttribute('instanceHighlight', new THREE.InstancedBufferAttribute(new Float32Array(group.length), 1));
+        batch = new THREE.InstancedMesh(geometry, material, group.length);
+        batch.castShadow = batch.receiveShadow = true;
+        this.scene.add(batch);
+      }
+      group.forEach((body, instance) => {
+        // Individual proxies preserve exact body picking, bounds and CAD edits.
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = body.name; mesh.userData.bodyId = body.id; mesh.userData.step = true;
+        mesh.matrixAutoUpdate = false; mesh.matrix.fromArray(body.matrix); mesh.updateMatrixWorld(true);
+        mesh.castShadow = mesh.receiveShadow = true;
+        if (batch) batch.setMatrixAt(instance, mesh.matrix); else this.scene.add(mesh);
+        if (body.opacity > 0) this.pickMeshes.push(mesh);
+        this.bodyMeshes.push({ id: body.id, mesh, batch, instance });
+      });
+      if (batch) { batch.computeBoundingBox(); batch.computeBoundingSphere(); }
     }
     this.shadowDirty = true; this.updateBodies(this.bodyState);
   }
@@ -369,11 +423,19 @@ export class Board3D {
     this.bodyState = state;
     const key = [...(state?.deleted || [])].sort().join(','), selectionKey = [...(state?.selected || [])].sort().join(',');
     if (!this.shadowDirty && key === this.shadowKey && selectionKey === this.selectionKey) { this.render(); return; }
-    for (const { id, mesh, edges, edgeColor, edgeOpacity } of this.bodyMeshes) {
+    for (const { id, mesh, edges, edgeColor, edgeOpacity, batch, instance } of this.bodyMeshes) {
+      const visible = mesh.visible;
       mesh.visible = !state?.deleted.has(id);
       if (edges) edges.visible = mesh.visible;
       const selected = Boolean(state?.selected.has(id));
-      mesh.material.userData.highlight.value = selected ? 1 : 0;
+      if (batch) {
+        const highlight = batch.geometry.attributes.instanceHighlight;
+        if (highlight.getX(instance) !== +selected) { highlight.setX(instance, +selected); highlight.needsUpdate = true; }
+        if (visible !== mesh.visible) {
+          batch.setMatrixAt(instance, mesh.visible ? mesh.matrix : new THREE.Matrix4().makeScale(0, 0, 0));
+          batch.instanceMatrix.needsUpdate = true;
+        }
+      } else mesh.material.userData.highlight.value = selected ? 1 : 0;
       if (edges) {
         edges.material.color.setHex(selected ? 0x35c2d8 : edgeColor);
         edges.material.opacity = selected ? 1 : edgeOpacity;

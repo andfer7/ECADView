@@ -96,6 +96,56 @@ guarantee for arbitrary CAD documents or machines. Reproduce with:
 PLAYWRIGHT_CHANNEL=chrome node scripts/benchmark_browser_cross_probe.cjs result.json
 ```
 
+## Loading and 3D rendering improvements (2026-10-31)
+
+Large space-separated linear SVG paths use a smaller parsing loop while compact,
+relative and curved paths retain the general SVG parser. This preserves the
+coordinates, fill rules and tessellation precision of large copper pours.
+
+STEP conversion starts before the initial drilled board mesh is built. Devices
+reporting at least four logical cores use at most two conversion workers;
+smaller or unknown devices use one. Each distinct model converts once, repeated
+components reuse the result, and leaving an unfinished scene closes every worker.
+Two WASM runtimes can temporarily use more memory than the serial converter.
+
+Repeated opaque STEP components with matching material colors use instanced GPU
+draws. Individual geometry proxies retain exact picking and bounds; each instance
+has its own highlight and visibility. Transparent and mirrored transforms retain
+separate draws. Scene eviction releases instance buffers as well as geometry,
+materials and textures, and the existing scene budget includes those buffers.
+
+The load benchmark exercises the real server, supplied board, 2D WebGL compiler,
+STEP converter and 3D renderer at 1440 × 900. It measures upload-to-interactive
+2D, first complete 3D, cached 3D return, and twenty successive 5° render calls:
+
+```sh
+PLAYWRIGHT_CHANNEL=chrome node scripts/benchmark_browser_load.cjs path/to/board.PcbDoc result.json
+```
+
+Render-call duration measures CPU submission, not completed GPU work or displayed
+FPS. Browser/OS caches, competing work and thermal conditions affect timings;
+these local observations are not a cross-machine performance guarantee.
+
+One before/after pair on the supplied LimeSDR board, Apple M3 Pro (12 logical
+cores), Chrome 156.0.8078.74 headless, compared master `59d0269` with these changes:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Upload to interactive 2D | 16.67 s | 15.36 s |
+| WebGL geometry request | 9.68 s | 8.73 s |
+| First complete 3D view, including STEP | 14.07 s | 9.19 s |
+| Median CPU render submission, 20 rotations | 9.05 ms | 2.10 ms |
+| 3D draw calls per frame | 2,190 | 907 |
+| 3D triangles per frame | 800,396 | 800,396 |
+
+The cached 3D return took 70 ms in the final run. No application or shader errors
+were reported. The full reference board's optimized 2D buffers and metadata
+matched the original compiler exactly (ignoring elapsed-time diagnostics and
+unordered drill-layer listing). Instanced and separate STEP draws also produced
+the same regression-test pixels. Python validation passed 126 tests (5 skipped),
+and browser validation passed 135 tests (3 skipped), with additional focused
+checks after final buffer-ownership and replacement adjustments.
+
 ## Representative LimeSDR result
 
 Measured locally on 2026-10-29, Apple M3 Pro, Chrome 156.0.8078.73, headless,
