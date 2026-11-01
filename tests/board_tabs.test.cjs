@@ -3425,6 +3425,40 @@ with tempfile.TemporaryDirectory() as tmp:
   assert.equal(resources.filter(url => url.endsWith('occt-import-js.wasm')).length, 1, 'converted model is reused after remount');
 });
 
+test('KiCad embedded STEP uploads resolve direct and external references with real 3D picking and cache reuse', async t => {
+  const { page } = await openPage(t); await page.unroute('**/render');
+  const resources = []; page.on('request', request => resources.push(request.url()));
+  await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js'), show = Board3D.prototype.show;
+    Board3D.prototype.show = function (...args) { window.testViewer = this; return show.apply(this, args); };
+  });
+  await page.locator('#file').setInputFiles(resolve(__dirname, 'fixtures/kicad/embedded-step.kicad_pcb'));
+  await loadedDocument(page, 'embedded-step.kicad_pcb');
+  assert.ok(!resources.some(url => url.includes('occt-import-js')), '2D does not start tessellation');
+  const svgBefore = await page.locator('#scene').evaluate(el => el.outerHTML);
+  await set3DMode(page, true); await wait3D(page);
+  await page.waitForFunction(() => window.testViewer?.ready);
+  assert.equal(await page.locator('#step-status').textContent(), 'STEP models: 1/1 loaded');
+  assert.equal(await page.locator('#three-body-list option').count(), 2);
+  assert.equal(await page.evaluate(() => new Set(window.testViewer.bodyMeshes.filter(e => e.mesh.userData.step).map(e => e.id)).size), 2);
+  await page.locator('#three-top').click(); await click3D(page, 0.35, 0.55);
+  assert.deepEqual(await selected3DBodies(page), ['kc-body-0-0']);
+  const selected = await image3D(page);
+  await page.keyboard.press('Delete');
+  assert.equal(await page.locator('#three-body-list option').count(), 1);
+  assert.ok(!(await image3D(page)).equals(selected));
+  await page.locator('#three-undo').click();
+  await page.locator('#three-clear').click(); await page.locator('#three-bottom').click();
+  await click3D(page, 0.65, 0.58);
+  assert.deepEqual(await selected3DBodies(page), ['kc-body-1-0']);
+  const scene = await page.evaluate(() => window.testViewer.scene.uuid);
+  await set3DMode(page, false);
+  assert.equal(await page.locator('#scene').evaluate(el => el.outerHTML), svgBefore);
+  await set3DMode(page, true); await wait3D(page);
+  assert.equal(await page.evaluate(() => window.testViewer.scene.uuid), scene);
+  assert.equal(resources.filter(url => url.endsWith('occt-import-js.wasm')).length, 1);
+});
+
 test('missing KiCad STEP references can be supplied locally without changing the board or losing body edits', async t => {
   const source = `(kicad_pcb (version 20240108) (generator ecadview)
     (general (thickness 1.6)) (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))

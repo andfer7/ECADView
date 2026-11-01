@@ -82,6 +82,7 @@ async function main() {
     await page.keyboard.press('3');
     await page.waitForFunction(() => window.benchmarkViewer?.ready, undefined, { timeout: 180000 });
     const first3D = Date.now() - three;
+    if (process.env.PCB_BENCH_SCREENSHOT) await page.screenshot({ path: resolve(process.env.PCB_BENCH_SCREENSHOT) });
     const frames = await page.evaluate(() => {
       const viewer = window.benchmarkViewer, times = [];
       for (let i = 0; i < 20; i++) {
@@ -94,7 +95,11 @@ async function main() {
     const warm3D = Date.now() - warm;
     const data = await page.evaluate(() => {
       const gl = window.benchmarkViewer.renderer.getContext(), debug = gl.getExtension('WEBGL_debug_renderer_info');
+      const viewer = window.benchmarkViewer;
       return { profile: window.loadProfile, cores: navigator.hardwareConcurrency,
+        models: { ...viewer.modelProgress,
+          availableAssets: Object.values(viewer.model.step_models || {}).filter(asset => asset.data).length,
+          stepBodies: new Set(viewer.bodyMeshes.filter(entry => entry.mesh.userData.step).map(entry => entry.id)).size },
         gpu: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
         resources: performance.getEntriesByType('resource')
           .filter(r => ['/render', '/geometry'].includes(new URL(r.name).pathname))

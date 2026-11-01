@@ -266,6 +266,36 @@ pixels and polygon visibility in both WebGL and SVG. Validation passes 141
 Python tests (5 skipped) and 22 GPU tests. The benchmark reports net and saved
 region counts alongside timing results to expose missing interaction metadata.
 
+## Embedded KiCad STEP models (2026-11-01)
+
+The loader now reads native board and footprint `embedded_files` payloads using
+base64/Zstandard decoding. Explicit `kicad-embed://` references respect their
+scope. Readable external STEP files remain authoritative; unavailable paths can
+use an unambiguous embedded filename. Content hashes share repeated assets, and
+the decoder transcodes each used embedded model to the existing compressed
+browser-worker transport. Decoding is bounded to 32 MiB per model and 64 MiB of
+unique decoded content per board. Invalid, ambiguous and unavailable models keep
+the existing missing-model behavior; tessellation remains deferred until 3D.
+
+The supplied `barebones.kicad_pcb` contains 13 embedded STEP files. Six match
+646 component placements; its other 76 referenced STEP assets are external and
+unavailable to this browser upload. Real Chrome/OpenCascade validation confirms
+all six matched assets convert and 646 STEP component bodies reach the scene.
+The frame renders 467,740 triangles with 134 draw calls, including the board.
+The 1,428 nets, 104 saved regions and existing 2D geometry are retained.
+
+One local M3 Pro / Chrome 156 headless run at 1440 × 900 loaded interactive 2D in
+18.70 s, entered complete 3D in 2.73 s and restored cached 3D in 38 ms. The newly
+built macOS application also loaded this exact board: 17.93 s for 2D, 2.32 s for
+3D and 37 ms for cached 3D. Its bundled compiler and Zstandard decoder produced
+the same 646 bodies, with no application/conversion errors; closing the last
+viewer stopped the packaged backend. These are single local observations, not
+cross-machine guarantees. Windows/Linux bundles were not exercised.
+
+The load benchmark now reports available model assets, conversion progress and
+actual STEP-body counts. Set `PCB_BENCH_SCREENSHOT` to a local PNG path to save
+the completed 3D view alongside the JSON measurements.
+
 ## Representative LimeSDR result
 
 Measured locally on 2026-10-29, Apple M3 Pro, Chrome 156.0.8078.73, headless,
