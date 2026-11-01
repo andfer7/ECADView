@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 import sexpdata
 from shapely.geometry import Polygon
 
-from ecadview.kicad_common import form, forms, load
+from ecadview.kicad_common import angle, form, forms, load
 from ecadview.kicad_schematic import Connectivity
 from ecadview.rendering import render_file
 
@@ -33,6 +33,20 @@ def polygon_area(scene):
 
 
 class KiCadBoardTests(unittest.TestCase):
+    def test_unlocked_text_without_rotation_renders_and_preserves_explicit_angles(self):
+        path = FIXTURES / 'unlocked-text.kicad_pcb'
+        before = path.read_bytes()
+        data = render_file(path)
+        root = ET.fromstring(data['svg'])
+        reference = next(n for n in root.findall('.//s:text', NS) if ''.join(n.itertext()) == 'STICK1')
+        self.assertEqual((reference.get('x'), reference.get('y')), ('9.5', '15'))
+        self.assertIsNone(reference.get('transform'))
+        value = next(n for n in root.findall('.//s:text', NS) if ''.join(n.itertext()) == 'PointingStick')
+        self.assertEqual(value.get('transform'), 'rotate(-45 11 15)')
+        self.assertEqual(data['stats']['components'], 1)
+        self.assertEqual(data['scene3d']['thickness'], 0.8)
+        self.assertEqual(path.read_bytes(), before)
+
     def test_named_nets_preserve_tracks_pads_vias_and_multilayer_plane_fills(self):
         data = render_file(FIXTURES / 'named-nets.kicad_pcb')
         root = ET.fromstring(data['svg'])
@@ -282,6 +296,15 @@ class KiCadSchematicTests(unittest.TestCase):
 
 
 class KiCadInputTests(unittest.TestCase):
+    def test_optional_rotation_accepts_unlocked_but_still_rejects_invalid_numbers(self):
+        for position, expected in [('1 2', 0), ('1 2 unlocked', 0), ('1 2 0 unlocked', 0),
+                                   ('1 2 37.5 unlocked', 37.5), ('1 2 -90 unlocked', -90)]:
+            with self.subTest(position=position):
+                self.assertEqual(angle(sexpdata.loads(f'(node (at {position}))')), expected)
+        for invalid in ('not-an-angle', 'nan', 'inf'):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                angle(sexpdata.loads(f'(node (at 1 2 {invalid}))'))
+
     def test_legacy_board_atoms_keep_lisp_punctuation_literal(self):
         source = (FIXTURES / 'demo.kicad_pcb').read_text().replace('(footprint ', '(module ')
         for name in ('K_[1', 'K_]1', "K_'1", "'quoted", 'R;1', r'R\1'):

@@ -45,6 +45,8 @@ explicit pointer modes while the interaction tree skips SVG paint traversal.
 `named-nets.kicad_pcb` covers directly stored KiCad net names without an ID table,
 literal numeric names, multilayer power fills, absent-plane diagnostics, and
 actual track/plane selection and visibility through both WebGL and SVG.
+`unlocked-text.kicad_pcb` covers footprint text whose optional angle is omitted
+before the `unlocked` flag, preserving explicit rotations, labels and net picking.
 
 Selection tests cover repeated clicks to deselect and reselect components and
 nets in both views, including selections from searches and cross-probing.
