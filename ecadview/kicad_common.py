@@ -49,7 +49,9 @@ def point(node, key="at"):
 
 def angle(node):
     at = form(node, "at")
-    return number(at[3]) if len(at) > 3 else 0.0
+    # Footprint text permits (at X Y [ANGLE] [unlocked]); the flag can
+    # occupy the optional angle slot when the rotation is omitted.
+    return number(at[3]) if len(at) > 3 and str(at[3]) != "unlocked" else 0.0
 
 
 def flag(node, key):

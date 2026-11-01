@@ -403,6 +403,27 @@ test('cross-probing retains PCB buffers while viewing schematics, draws the fitt
   assert.equal(await page.evaluate(() => window.bufferBalance), 0, 'closing the hidden PCB frees its resident buffers');
 });
 
+for (const gpu of [true, false]) test(`KiCad unlocked text without an angle loads with selectable copper (${gpu ? 'WebGL' : 'SVG'})`, async t => {
+  const page = await pageFor(t, {}, gpu ? undefined : () => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+      return type === 'webgl2' ? null : original.call(this, type, ...args);
+    };
+  });
+  await page.unroute('**/render');
+  await page.locator('#file').setInputFiles(resolve(__dirname, 'fixtures/kicad/unlocked-text.kicad_pcb'));
+  await page.waitForFunction(() => document.querySelector('#filename').textContent === 'unlocked-text.kicad_pcb' &&
+    document.querySelector('#busy').style.display === 'none');
+  if (gpu) await ready(page);
+  const reference = page.locator('#scene text').filter({ hasText: 'STICK1' });
+  assert.equal(await reference.count(), 1);
+  assert.equal(await reference.getAttribute('transform'), null);
+  const value = page.locator('#scene text').filter({ hasText: 'PointingStick' });
+  assert.equal(await value.getAttribute('transform'), 'rotate(-45 11 15)');
+  const route = await point(page, 15, 10); await page.mouse.click(route.x, route.y);
+  assert.equal(await page.locator('#net-query').inputValue(), 'GND');
+});
+
 test('a real KiCad PCB uses retained WebGL and a schematic remains SVG', async t => {
   const page = await pageFor(t, {});
   await page.unroute('**/render');
