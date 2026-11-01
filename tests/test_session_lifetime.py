@@ -3,8 +3,8 @@ from http.client import HTTPConnection
 import threading
 import unittest
 
-from pcbvisualizer.server import Handler, ViewerServer
-from pcbvisualizer.session_lifetime import ViewerLifetime
+from ecadview.server import Handler, ViewerServer
+from ecadview.session_lifetime import ViewerLifetime
 
 
 class LifetimeTests(unittest.TestCase):

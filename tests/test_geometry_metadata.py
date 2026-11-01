@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QGuiApplication
 
-from pcbvisualizer.geometry.document import GeometryDocument
+from ecadview.geometry.document import GeometryDocument
 
 APP = QGuiApplication.instance() or QGuiApplication([])
 

@@ -15,9 +15,9 @@ from altium_monkey import AltiumPcbDoc
 from altium_monkey.altium_pcbdoc_layer_stack_builder import PcbDocLayerStackTemplate
 from PySide6.QtGui import QGuiApplication
 
-from pcbvisualizer.geometry.document import GeometryDocument
-from pcbvisualizer.kicad_common import form, load
-from pcbvisualizer.rendering import copper_layer_order, render_file
+from ecadview.geometry.document import GeometryDocument
+from ecadview.kicad_common import form, load
+from ecadview.rendering import copper_layer_order, render_file
 
 APP = QGuiApplication.instance() or QGuiApplication([])
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad" / "demo.kicad_pcb"
@@ -116,7 +116,7 @@ class LayerListTests(unittest.TestCase):
                     document.info()["layer_list"], document.info()["layers"]
                 )
         with patch(
-            "pcbvisualizer.rendering.resolved_layer_stack_from_pcbdoc",
+            "ecadview.rendering.resolved_layer_stack_from_pcbdoc",
             side_effect=ValueError("missing stack"),
         ):
             self.assertEqual(copper_layer_order(AltiumPcbDoc()), [])

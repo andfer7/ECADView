@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from pcbvisualizer.web_geometry import encode_scene, prepare_geometry, _compiler, _run_worker
+from ecadview.web_geometry import encode_scene, prepare_geometry, _compiler, _run_worker
 
 
 class WebGeometryTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class WebGeometryTests(unittest.TestCase):
             children.append(child)
             return child
         try:
-            with patch("pcbvisualizer.web_geometry.subprocess.Popen", side_effect=launch):
+            with patch("ecadview.web_geometry.subprocess.Popen", side_effect=launch):
                 with self.assertRaisesRegex(ValueError, "Viewer closed"):
                     _run_worker([sys.executable, "-c", "import time; time.sleep(60)"], stopping)
             self.assertEqual(len(children), 1)
@@ -77,7 +77,7 @@ class WebGeometryTests(unittest.TestCase):
     def test_preparation_is_bounded_and_recovers_after_timeout(self):
         with _compiler:
             self.assertIsNone(prepare_geometry(b"{}"))
-        with patch("pcbvisualizer.web_geometry.subprocess.run", side_effect=subprocess.TimeoutExpired("worker", 90)):
+        with patch("ecadview.web_geometry.subprocess.run", side_effect=subprocess.TimeoutExpired("worker", 90)):
             with self.assertRaisesRegex(ValueError, "timed out"):
                 prepare_geometry(b"{}")
         self.assertTrue(_compiler.acquire(blocking=False))

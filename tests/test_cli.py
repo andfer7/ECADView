@@ -3,16 +3,25 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
-from pcbvisualizer import cli
+from ecadview import cli
 
 FIXTURE = Path(__file__).parent / 'fixtures/kicad/demo.kicad_pcb'
 
 class BrowserLaunchTests(unittest.TestCase):
+    def test_installed_console_command_points_to_the_renamed_package(self):
+        from importlib.metadata import distribution
+
+        commands = [entry for entry in distribution('ecadview').entry_points
+                    if entry.group == 'console_scripts']
+        self.assertEqual([(entry.name, entry.value) for entry in commands],
+                         [('ecadview', 'ecadview.cli:main')])
+        self.assertIs(commands[0].load(), cli.main)
+
     def launch(self, args):
         server = Mock()
         server.server_address = ('127.0.0.1', 12345)
         server.serve_forever.side_effect = KeyboardInterrupt
-        with (patch.object(sys, 'argv', ['pcbvisualizer', *map(str, args)]),
+        with (patch.object(sys, 'argv', ['ecadview', *map(str, args)]),
               patch.object(cli, 'ViewerServer', return_value=server) as factory,
               patch.object(cli.threading, 'Timer') as timer,
               patch.object(cli, 'render_file', return_value={'name': FIXTURE.name, 'svg': '<svg/>'}) as render):
@@ -20,7 +29,7 @@ class BrowserLaunchTests(unittest.TestCase):
         factory.assert_called_once_with(('127.0.0.1', 0 if '--port' not in args else 8000), cli.Handler)
         server.serve_forever.assert_called_once()
         server.server_close.assert_called_once()
-        self.assertFalse(any(name.startswith('pcbvisualizer.desktop') for name in sys.modules))
+        self.assertFalse(any(name.startswith('ecadview.desktop') for name in sys.modules))
         return timer, render
 
     def test_no_arguments_open_browser_and_an_empty_local_session(self):
@@ -48,15 +57,15 @@ class BrowserLaunchTests(unittest.TestCase):
     def test_server_is_closed_when_serving_fails(self):
         server = Mock(server_address=('127.0.0.1', 12345))
         server.serve_forever.side_effect = RuntimeError('serving failed')
-        with (patch.object(sys, 'argv', ['pcbvisualizer', '--no-open']),
+        with (patch.object(sys, 'argv', ['ecadview', '--no-open']),
               patch.object(cli, 'ViewerServer', return_value=server)):
             with self.assertRaisesRegex(RuntimeError, 'serving failed'):
                 cli.main()
         server.server_close.assert_called_once()
 
     def test_geometry_worker_dispatch_never_starts_a_server_or_browser(self):
-        with (patch.object(sys, 'argv', ['PCBVisualizer', '--web-geometry-worker', 'input.json', 'scene.bin']),
-              patch('pcbvisualizer.web_geometry.worker') as worker,
+        with (patch.object(sys, 'argv', ['ECADView', '--web-geometry-worker', 'input.json', 'scene.bin']),
+              patch('ecadview.web_geometry.worker') as worker,
               patch.object(cli, 'ViewerServer') as server,
               patch.object(cli.threading, 'Timer') as timer):
             cli.main()
@@ -81,8 +90,8 @@ class DefaultEntryPointTests(unittest.TestCase):
         for kind in ('script', 'module'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
                 record = Path(tmp) / 'browser-url.txt'
-                invocation = (f'runpy.run_path({str(root / "pcb_viewer_gui.py")!r}, run_name="__main__")' if kind == 'script'
-                              else 'runpy.run_module("pcbvisualizer", run_name="__main__")')
+                invocation = (f'runpy.run_path({str(root / "ecadview.py")!r}, run_name="__main__")' if kind == 'script'
+                              else 'runpy.run_module("ecadview", run_name="__main__")')
                 bootstrap = f'''import runpy, sys, webbrowser
 class RecordingBrowser:
     def open(self, url):
@@ -90,7 +99,7 @@ class RecordingBrowser:
             handle.write(url)
         return True
 webbrowser.register("chrome", None, RecordingBrowser())
-sys.argv = ["pcbvisualizer"]
+sys.argv = ["ecadview"]
 {invocation}
 '''
                 process = subprocess.Popen([sys.executable, '-B', '-c', bootstrap], cwd=root,

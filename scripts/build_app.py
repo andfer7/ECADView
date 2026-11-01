@@ -8,7 +8,7 @@ if __name__ == "__main__":
     root = Path(__file__).resolve().parents[1]
     run(
         [
-            str(root / "scripts" / "PCBVisualizer.spec"),
+            str(root / "scripts" / "ECADView.spec"),
             "--noconfirm",
             "--clean",
             "--distpath",

@@ -82,7 +82,7 @@ class Handler(BaseHTTPRequestHandler):
             self._viewer_session()
         elif url.path in STATIC_ROUTES:
             filename, content_type = STATIC_ROUTES[url.path]
-            body = files("pcbvisualizer").joinpath("static", filename).read_bytes()
+            body = files("ecadview").joinpath("static", filename).read_bytes()
             self._send(200, body, content_type)
         elif url.path == "/initial":
             data, Handler.initial = Handler.initial, None

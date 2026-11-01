@@ -12,7 +12,7 @@ let browser, server, origin;
 
 before(async () => {
   server = spawn(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'),
-    ['-B', '-u', resolve(__dirname, '../pcb_viewer_gui.py'), '--no-open']);
+    ['-B', '-u', resolve(__dirname, '../ecadview.py'), '--no-open']);
   origin = await new Promise((resolve, reject) => {
     let output = '', errors = '';
     const timer = setTimeout(() => reject(new Error(`Viewer startup timed out: ${errors}`)), 20000);
@@ -1388,7 +1388,7 @@ test('loads and uploads a real schematic through the Python server', {
   skip: !process.env.SCH_TEST_FILE, timeout: 60000,
 }, async t => {
   const app = spawn(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'),
-    ['-B', '-u', resolve(__dirname, '../pcb_viewer_gui.py'), process.env.SCH_TEST_FILE, '--no-open']);
+    ['-B', '-u', resolve(__dirname, '../ecadview.py'), process.env.SCH_TEST_FILE, '--no-open']);
   t.after(() => app.kill());
   const url = await new Promise((resolve, reject) => {
     let output = '';
@@ -1470,7 +1470,7 @@ test('uploads the affected layout through the real Python server', {
   skip: !process.env.PCB_TEST_FILE, timeout: 60000,
 }, async t => {
   const app = spawn(process.env.PCB_TEST_PYTHON || resolve(__dirname, '../.venv/bin/python'),
-    ['-B', '-u', resolve(__dirname, '../pcb_viewer_gui.py'), '--no-open']);
+    ['-B', '-u', resolve(__dirname, '../ecadview.py'), '--no-open']);
   t.after(() => app.kill());
   const url = await new Promise((resolve, reject) => {
     let output = '';
@@ -3426,7 +3426,7 @@ with tempfile.TemporaryDirectory() as tmp:
 });
 
 test('missing KiCad STEP references can be supplied locally without changing the board or losing body edits', async t => {
-  const source = `(kicad_pcb (version 20240108) (generator pcbvisualizer)
+  const source = `(kicad_pcb (version 20240108) (generator ecadview)
     (general (thickness 1.6)) (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
     (gr_rect (start 0 0) (end 50 30) (stroke (width .1) (type default)) (fill none) (layer "Edge.Cuts"))
     (footprint "TEST" (layer "F.Cu") (at 13 19) (property "Reference" "U1")

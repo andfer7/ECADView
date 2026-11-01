@@ -1,4 +1,4 @@
-"""Run the viewer with ``python -m pcbvisualizer``."""
+"""Run the viewer with ``python -m ecadview``."""
 
 from .cli import main
 

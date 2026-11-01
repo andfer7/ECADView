@@ -1,4 +1,4 @@
-# PCBVisualizer
+# ECADView
 
 A local browser-based Altium and KiCad PCB and schematic viewer. Open `.PcbDoc`,
 `.SchDoc`, `.kicad_pcb`, `.kicad_sch`, and legacy KiCad `.sch` files in separate
@@ -20,16 +20,16 @@ Requires Python 3.12 or newer. Install the locked environment with uv:
 
 ```sh
 uv sync --locked
-uv run pcbvisualizer
+uv run ecadview
 ```
 
 These entry points all open the same browser interface, with or without files:
 
 ```sh
-python pcb_viewer_gui.py
-python pcb_viewer_gui.py board.PcbDoc sheet.SchDoc
-python -m pcbvisualizer board.kicad_pcb sheet.kicad_sch
-pcbvisualizer legacy.sch
+python ecadview.py
+python ecadview.py board.PcbDoc sheet.SchDoc
+python -m ecadview board.kicad_pcb sheet.kicad_sch
+ecadview legacy.sch
 ```
 
 Without uv, install with `python -m pip install .` in your Python environment.
@@ -37,9 +37,9 @@ Chrome is preferred by default, with a system-browser fallback. Select a browser
 or start only the local server:
 
 ```sh
-pcbvisualizer --browser default
-pcbvisualizer --browser firefox board.PcbDoc
-pcbvisualizer --no-open --port 8000
+ecadview --browser default
+ecadview --browser firefox board.PcbDoc
+ecadview --no-open --port 8000
 ```
 
 `--web` remains accepted for existing scripts, but is no longer needed.
@@ -186,8 +186,8 @@ Build a self-contained local backend and launcher for the current operating syst
 uv run --locked --group build python scripts/build_app.py
 ```
 
-On macOS, open `dist/PCBVisualizer.app`. On Windows/Linux, launch the executable
-under `dist/PCBVisualizer/` and keep its supporting files together. It starts
+On macOS, open `dist/ECADView.app`. On Windows/Linux, launch the executable
+under `dist/ECADView/` and keep its supporting files together. It starts
 the local backend and opens the same browser interface, with no Python or uv
 installation required on the receiving computer. A browser must be installed.
 Close the last viewer browser tab/window to stop it automatically.
@@ -246,8 +246,8 @@ models remain unsupported. Source files are never modified.
 ## Project layout
 
 ```text
-pcb_viewer_gui.py          Compatibility launcher
-pcbvisualizer/
+ecadview.py               Script launcher
+ecadview/
   __main__.py, cli.py      Browser startup and isolated worker dispatch
   rendering.py            Format dispatch and compact SVG/selection metadata
   geometry/               Offscreen document bounds, glyphs and GPU compilation
@@ -260,14 +260,14 @@ pcbvisualizer/
   static/                 Browser interface, WebGL renderers and bundled assets
 scripts/
   build_app.py            Packaged local backend/browser launcher
-  PCBVisualizer.spec      Offscreen Qt dependencies and packaged resources
+  ECADView.spec            Offscreen Qt dependencies and packaged resources
   benchmark_browser_layout.cjs Browser navigation/selection measurements
 tests/                    Python geometry/parser/server and browser regressions
 ```
 
 Frontend resources ship with the Python package. Launching does not depend on
 the current directory. Three.js 0.180.0 and OrbitControls are bundled under the
-MIT license in `pcbvisualizer/static/THREE-LICENSE.txt`.
+MIT license in `ecadview/static/THREE-LICENSE.txt`.
 STEP conversion uses [occt-import-js 0.0.23](https://github.com/kovacsv/occt-import-js)
 and OpenCascade, with LGPL 2.1 license texts in `static/OCCT-IMPORT-LICENSE.txt`
 and `static/OCCT-LICENSE.txt`. The importer is separately replaceable; its source,

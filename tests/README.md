@@ -4,7 +4,7 @@ The Python suite covers format parsing, compact SVG metadata, physical copper
 stacks, 3D geometry, offscreen font/bounds processing, retained WebGL compilation,
 reference raster comparisons, isolated compiler limits, HTTP resources and
 browser startup. The native Qt window/canvas tests and benchmarks were retired
-with that interface. Reference raster code lives in `pcbvisualizer/geometry/`;
+with that interface. Reference raster code lives in `ecadview/geometry/`;
 it validates compiler geometry and does not create viewer windows.
 
 ```sh
@@ -70,7 +70,7 @@ project's Python environment:
 
 Server tests cover the packaged frontend resources, unknown paths, initial
 document loading, upload rendering and errors, and both the original script and
-`python -m pcbvisualizer` launch commands. A generated schematic exercises actual
+`python -m ecadview` launch commands. A generated schematic exercises actual
 parsing and rendering without an external fixture.
 
 Set `PCB_TEST_FILE` to the path of the affected GasWellShutoff.PcbDoc to also

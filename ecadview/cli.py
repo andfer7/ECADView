@@ -44,7 +44,7 @@ def main() -> None:
         from .web_geometry import worker
         worker(sys.argv[2], sys.argv[3])
         return
-    ap = argparse.ArgumentParser(description="Local browser-based Altium and KiCad PCB and schematic viewer")
+    ap = argparse.ArgumentParser(description="ECADView: local browser-based Altium and KiCad PCB and schematic viewer")
     ap.add_argument("documents", nargs="*", type=Path, help="Altium or KiCad documents to open in tabs")
     ap.add_argument("--web", action="store_true", help="compatibility option; the browser viewer is now the default")
     ap.add_argument("--port", type=int, default=None, help="local server port (default: random free port)")
@@ -65,7 +65,7 @@ def main() -> None:
 
     server = ViewerServer(("127.0.0.1", args.port or 0), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
-    print(f"PCB viewer running at {url}   (Close the viewer or Ctrl+C to stop)")
+    print(f"ECADView running at {url}   (Close the viewer or Ctrl+C to stop)")
 
     if not args.no_open:
         threading.Timer(0.3, open_in_browser, args=(url, args.browser or "chrome")).start()
