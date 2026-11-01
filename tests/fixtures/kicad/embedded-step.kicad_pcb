@@ -1,0 +1,26 @@
+(kicad_pcb (version 20260206) (generator pcbnew)
+  (general (thickness 1.6))
+  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
+  (gr_rect (start 0 0) (end 50 30) (stroke (width 0.1)) (fill none) (layer "Edge.Cuts"))
+  (footprint "TEST" (layer "F.Cu") (at 13 19) (property "Reference" "U1")
+    (model "kicad-embed://box.step" (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0))))
+  (footprint "TEST" (layer "B.Cu") (at 37 9) (property "Reference" "U2")
+    (model "${KIPRJMOD}/unavailable/box.step" (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0))))
+  (embedded_files (file (name "box.step") (type model)
+    (data |KLUv/WCPCWUcAHbpfyYAjcwDbycOtiY6jnIk9mAcAw4kG4Wuwu20QDungBxWI5b+f+tDCHYAcAB2
+      AHHnqzMu17vZrVWr8mXRqLtei4ZltytbBubHJbhbY3pHKoyxYhZibRBGyUAJBebc1DfTm+jnQwkd
+      ug/CoagcwGixmhnojYeSgd1DxEfhKTA+iO5jTHQewVUtC2PM+u7satZmL87i61g0NHtVC1k0/Bs6
+      6fRGbzcVq6aITskdYwvZuMtuGluVRB+KHmiS/lD/1P9/ktQhav5EST+5RxIUQb9IhyT6vNNpkdIi
+      o0VCT6cvkpmuRTZ3tiOp5coRPcBpdkc0Z63qqKb7In+RdJHPkmmNOQOss4qapOihh/7iTOl8Ix3a
+      RAlhlS9CYl2cZbV6nk42q9bKleCqFWUYl/GyW+VwHdD4wdC4C+zO2uKyvrvubDercdbV9hGrt3vz
+      XO9VNUcCWPzIlbO54ixW02rbYo50LsYXc+7GBFxM3DdHOMh+ZItjRUkVCZWDyYTxD4OCEcGYWW2A
+      uy7WWDtuDrf5///n/edPlBTRqZGiB6L+j9P36U5N0ylvpkiCHiiCnp8VdUk5zFoVZ9xvt6BWP90Z
+      xxvpTMtq96omrZyak0RRKt7nUTyFLoHxPUgcpgjTtOPm67CXBEnYwBg1SBA8ioQBoZtAua3IpTVI
+      WfAgugSuk/C+yiSA0ajBbGlGRESSgiSlYQyQSETMOB2BIEkNcUZmZCQQGUlTOoRKb9QcTuE0yQZB
+      PEvJ2Wrx4uQBINoB80HYYAtTenoYA59AAFKjAwix4S0O52ZDa7/9+1PUeTj1xWENHjTPDPwOJ4E4
+      3003qEEAWXsjqtskULgYgRk50NYT2VIw1fEDqR2v0EpQuWWKMM9VYXX8f3Lfa8Y2kP/4WQihLLmh
+      QnwqO3Af6IHRdn32A9wapryijNO9aEgTQEoIBERL3gIRnNIIZh8EkgHr11VlY2Gx2/o1Je0ebN+G
+      CNffFNCcPdrDfr/ZojOAgWlT5SRi51xakV7Cfl3QDWyoQ/H09BuztE7l+UNIX2RiC/EQQ/q02vWi
+      05tT8kxmj0HNrjGq9u6fphKsgtnNBjJsXOjEnbeUWTdIhjFSLL4oo+pU1BAJQ7DBeLK7AQPFWKsY
+      2AWdR5V9CCTCYAdOHdnmZVID7cNLfRRpOuYFH0JiYp/EvUrtOD5eAtnjbaYeyE6Csiz+CuQ2qCLf
+      xv+wNawC|))))

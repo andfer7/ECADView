@@ -162,6 +162,11 @@ the bundled OpenCascade WASM in a worker, check lazy loading and reuse, actual
 STEP picking and deletion/undo, missing external model uploads, invalid-model
 fallback and cancellation when leaving 3D. The runtime is served locally with
 the correct WebAssembly MIME type and is included in the Python package.
+`embedded-step.kicad_pcb` stores the same authored STEP as native KiCad
+base64/Zstandard data. Python and browser coverage exercises direct embedded URIs,
+external-path filename fallback, footprint/board scopes, local-file precedence,
+deduplication, ambiguous and invalid assets, decoded-size limits, top/bottom
+picking, deletion/undo and completed-view reuse.
 Realistic board-finish tests check source-to-3D alignment, both sides' copper,
 mask apertures and silkscreen, exclusion of internal copper and measurement
 overlays, and independence from 2D visibility/highlighting. Browser coverage

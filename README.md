@@ -123,7 +123,7 @@ Press **2** for 2D or **3** for 3D when outside a text field or list. These
 shortcuts apply to PCB tabs after loading has finished.
 The local WebGL preview shows the board
 profile, curved edges, cutouts, through holes, slots and component STEP models.
-Embedded Altium STEP assets load automatically when entering 3D. Models retain
+Embedded Altium and KiCad STEP assets load automatically when entering 3D. Models retain
 their colors, rotations, offsets and board side; repeated models share geometry.
 Conversion runs in a browser worker using bundled OpenCascade WebAssembly, so
 2D loading never waits for tessellation and the viewer stays usable while models
@@ -241,12 +241,20 @@ individually; uploading a parent sheet does not load its project files.
 
 KiCad 3D previews show closed Edge.Cuts board profiles, cutouts, through drills,
 slots, and the saved board thickness. Tiny outline endpoint gaps up to 0.002 mm
-are joined when constructing the profile. STEP component references opened from
+are joined when constructing the profile. STEP files embedded in the board or
+footprint load automatically, including from browser uploads. Explicit
+`kicad-embed://` references use the footprint's embedded files before the board's.
+External references use a readable local file first, then an unambiguous matching
+embedded filename when that file is unavailable. Repeated models share assets
+and GPU geometry. KiCad's base64/Zstandard payloads decode locally with a 32 MiB
+per-model and 64 MiB aggregate decoded-content limit; corrupt or unsupported
+assets retain the missing-model UI without preventing other components loading.
+STEP component references opened from
 the command line resolve relative to the board directory, `${KIPRJMOD}` and
 configured environment variables such as `${KICAD9_3DMODEL_DIR}`. Model scale,
 rotation and offsets are respected, including legacy KiCad 5 model offsets.
 Browser uploads cannot access adjacent files: use **Add STEP models…** to select
-the referenced files. Matching uses filenames; give models distinct filenames
+any remaining external files. Matching uses filenames; give models distinct filenames
 when different reference paths share a name. VRML and other non-STEP component
 models remain unsupported. Source files are never modified.
 

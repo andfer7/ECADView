@@ -5,10 +5,14 @@ import hashlib
 import math
 import os
 from pathlib import Path
+from urllib.parse import unquote
+import zlib
 
 import numpy as np
+import zstandard
 
 MAX_MODEL_BYTES = 32 * 1024 * 1024
+MAX_EMBEDDED_BYTES = 64 * 1024 * 1024
 
 
 def rotation(x=0, y=0, z=0):
@@ -78,6 +82,77 @@ def local_step(reference, directory):
         return None
 
 
+class _EmbeddedSteps:
+    """Resolve KiCad's board/footprint-local, base64/Zstandard STEP files once."""
+
+    def __init__(self, root):
+        self.board = self.index(root)
+        self.cache, self.assets, self.bytes = {}, {}, 0
+
+    @staticmethod
+    def index(node):
+        from .kicad_common import form, forms, value
+
+        files = {}
+        for row in forms(form(node, "embedded_files"), "file"):
+            name = value(row, "name")
+            if name.lower().endswith((".step", ".stp")):
+                files.setdefault(name, []).append(row)
+        return files
+
+    def load(self, reference, footprint):
+        from .kicad_common import form, value
+
+        explicit = reference.startswith("kicad-embed://")
+        if "://" in reference and not explicit:
+            return None
+        name = unquote(reference[len("kicad-embed://"):]) if explicit else reference.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        row = None
+        for scope in (footprint, self.board):
+            matches = scope.get(name, []) if explicit else [row for path, rows in scope.items()
+                if path.replace("\\", "/").rsplit("/", 1)[-1].casefold() == name for row in rows]
+            if matches:
+                # A local embedded file shadows the board's file, including a
+                # corrupt or ambiguous one. Never silently substitute another.
+                row = matches[0] if len(matches) == 1 else None
+                break
+        if row is None:
+            return None
+        identifier = id(row)
+        if identifier not in self.cache:
+            self.cache[identifier] = None
+            try:
+                parts = form(row, "data")[1:]
+                if any(isinstance(part, list) for part in parts):
+                    return None
+                if sum(len(str(part)) for part in parts) > 4 * ((MAX_MODEL_BYTES + 2) // 3) + 2:
+                    return None
+                encoded = "".join(str(part) for part in parts).removeprefix("|").removesuffix("|")
+                compressed = base64.b64decode(encoded, validate=True)
+                limit = MAX_MODEL_BYTES
+                size = zstandard.frame_content_size(compressed)
+                if len(compressed) > MAX_MODEL_BYTES or size > limit:
+                    return None
+                # Check the frame's size before allocation. Unknown-size frames
+                # also get an explicit bounded output buffer and window limit.
+                data = zstandard.ZstdDecompressor(max_window_size=MAX_MODEL_BYTES // 1024).decompress(
+                    compressed, max_output_size=limit + 1, allow_extra_data=False)
+                if not data or len(data) > limit or b"ISO-10303-21" not in data[:1024]:
+                    return None
+                key = hashlib.sha256(data).hexdigest()
+                # The existing browser worker accepts deflate, not Zstandard.
+                # Transcode once while retaining the decoded-content cache key.
+                if key not in self.assets:
+                    if self.bytes + len(data) > MAX_EMBEDDED_BYTES:
+                        return None
+                    self.assets[key] = {"name": value(row, "name"), "data": base64.b64encode(zlib.compress(data)).decode("ascii"), "compressed": True}
+                    self.bytes += len(data)
+                self.cache[identifier] = key, self.assets[key]
+            except (ValueError, zstandard.ZstdError):
+                pass  # Missing-model UI remains available; other models load.
+        return self.cache[identifier]
+
+
 def kicad_models(root, directory, origin, thickness):
     from .kicad_common import angle, flag, form, forms, number, point, scalar, value
 
@@ -86,7 +161,9 @@ def kicad_models(root, directory, origin, thickness):
         return np.array([number(item) for item in row[1:4]]) if len(row) == 4 else np.array(default, dtype=float)
 
     assets, bodies, missing = {}, [], 0
+    embedded, resolved = _EmbeddedSteps(root), {}
     for index, footprint in enumerate(forms(root, "footprint") + forms(root, "module")):
+        local_files = embedded.index(footprint)
         properties = {str(p[1]): str(p[2]) for p in forms(footprint, "property") if len(p) > 2}
         name = properties.get("Reference") or next((str(t[2]) for t in forms(footprint, "fp_text")
                                                     if len(t) > 2 and str(t[1]) == "reference"), "Component")
@@ -106,9 +183,12 @@ def kicad_models(root, directory, origin, thickness):
             position = np.array([x - origin[0], origin[1] - y, (-1 if bottom else 1) * thickness / 2]) + fp_rotation @ offset
             transform = fp_rotation @ rotation(*(-xyz(model, "rotate", [0, 0, 0]))) @ np.diag(xyz(model, "scale", [1, 1, 1]))
             key = "external-" + hashlib.sha256(reference.encode()).hexdigest()
-            data = local_step(reference, directory)
-            if data:
-                key, entry = asset(data, reference)
+            lookup = (index if local_files else -1, reference)
+            if lookup not in resolved:
+                data = local_step(reference, directory) if not reference.startswith("kicad-embed://") else None
+                resolved[lookup] = asset(data, reference) if data else embedded.load(reference, local_files)
+            if resolved[lookup]:
+                key, entry = resolved[lookup]
                 assets.setdefault(key, entry)
             else:
                 assets.setdefault(key, {"name": reference})
