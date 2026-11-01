@@ -75,6 +75,51 @@ async function colors(page, coords) {
 }
 const near = (actual, expected, tolerance = 3) => actual.forEach((v, i) => assert.ok(Math.abs(v - expected[i]) <= tolerance, `${actual} != ${expected}`));
 
+for (const gpu of [true, false]) test(`real PCB layer colors match swatches and remain stable through visibility changes (${gpu ? 'WebGL' : 'SVG'})`, async t => {
+  const page = await pageFor(t, {}, gpu ? undefined : () => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+      return type === 'webgl2' ? null : original.call(this, type, ...args);
+    };
+  });
+  await page.unroute('**/render');
+  const layers = ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu', 'F.Fab', 'B.Fab'];
+  const source = `(kicad_pcb (version 20240108) (generator pcbvisualizer)
+    (general (thickness 1.6))
+    (layers ${layers.map((layer, i) => `(${i} "${layer}" ${layer.endsWith('.Cu') ? 'signal' : 'user'})`).join(' ')}
+      (44 "Edge.Cuts" user))
+    ${layers.map((layer, i) => `(gr_rect (start ${i * 8 + 1} 2) (end ${i * 8 + 7} 8)
+      (stroke (width 0.1) (type solid)) (fill solid) (layer "${layer}"))`).join(' ')}
+    (gr_rect (start 0 0) (end 48 10) (stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts")))`;
+  await page.locator('#file').setInputFiles({ name: 'Layer colors.kicad_pcb', mimeType: 'application/octet-stream', buffer: Buffer.from(source) });
+  await page.waitForFunction(() => document.getElementById('filename').textContent === 'Layer colors.kicad_pcb' &&
+    document.getElementById('busy').style.display === 'none');
+  if (gpu) await ready(page);
+  else assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('gpu-layout')), false);
+  for (const checkbox of await page.locator('#layers input').all()) await checkbox.setChecked(true);
+  const swatches = await page.locator('#layers .swatch').evaluateAll(nodes => nodes.map(node => getComputedStyle(node).backgroundColor));
+  assert.equal(new Set(swatches).size, swatches.length, 'every layer has a distinct swatch');
+  const expected = await page.evaluate(layers => layers.map(layer => {
+    const row = [...document.querySelectorAll('#layers label')].find(row => row.querySelector('.layer-name').textContent === layer);
+    const group = [...document.querySelectorAll('#scene > g')].find(group => group.dataset.layerName === layer);
+    const color = getComputedStyle(row.querySelector('.swatch')).backgroundColor;
+    const probe = document.createElement('span'); probe.style.color = group.dataset.color; document.body.append(probe);
+    const painted = getComputedStyle(probe).color; probe.remove();
+    if (color !== painted) throw new Error(`${layer} swatch differs from SVG metadata`);
+    return color.match(/\d+/g).map(Number).slice(0, 3);
+  }), layers);
+  const coords = layers.map((_, i) => [i * 8 + 4, 5]);
+  (await colors(page, coords)).forEach((pixel, i) => near(pixel, expected[i]));
+  const inner = page.locator('#layers label').filter({ has: page.getByRole('button', { name: 'In1.Cu', exact: true }) });
+  await inner.locator('input').setChecked(false);
+  near((await colors(page, [coords[1]]))[0], [27, 29, 33]);
+  await inner.locator('input').setChecked(true);
+  await inner.locator('.layer-name').click();
+  (await colors(page, coords)).forEach((pixel, i) => near(pixel, expected[i]));
+  assert.deepEqual(await page.locator('#layers .swatch').evaluateAll(nodes => nodes.map(node => getComputedStyle(node).backgroundColor)), swatches);
+  if (gpu && process.env.LAYER_COLOR_SCREENSHOT) await page.screenshot({ path: process.env.LAYER_COLOR_SCREENSHOT });
+});
+
 test('layout startup shows WebGL progress and blocks early navigation until the first accelerated draw', async t => {
   const page = await pageFor(t, {});
   let releaseRender, releaseGeometry, renderStarted, geometryStarted;
