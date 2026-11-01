@@ -146,6 +146,7 @@
 #view.gpu-layout > svg { position: relative; z-index: 1; }
 #view.gpu-layout #net-labels, #view.gpu-layout #toast { z-index: 2; }
 #view.gpu-layout #measure-label { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
-/* Opacity suppresses SVG painting while retaining its precise native hit
-   targets and transforms. Measurement annotations stay visible above it. */
-#view.gpu-layout > svg #scene { opacity: 0 !important; filter: none !important; }
+/* Visibility skips SVG paint traversal during camera changes. The retained
+   source hit modes still test exact fills/strokes; measurements stay visible. */
+#view.gpu-layout > svg #scene { opacity: 0 !important; visibility: hidden; filter: none !important; }
+#view.gpu-layout > svg #scene, #view.gpu-layout > svg #scene * { pointer-events: var(--layout-hit-test, painted) !important; }

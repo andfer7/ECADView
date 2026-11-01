@@ -23,15 +23,17 @@ class PcbRenderer:
         self.directory = directory
         self.root, self.side, self.clip = root, side, clip
         self.pour_color, self.polygon_outlines = pour_color, polygon_outlines
-        self.layers, self.names = [], {}
+        self.layers, self.names, self.layer_types = [], {}, {}
         for layer in form(root, "layers")[1:]:
             if isinstance(layer, list) and len(layer) >= 2:
                 name = str(layer[1]); self.layers.append(name)
                 self.names[name] = str(layer[3]) if len(layer) > 3 else name
+                self.layer_types[name] = str(layer[2]) if len(layer) > 2 else ""
         self.colors = layer_colors([*self.layers, "Edge.Cuts", "Drills"])
         self.scene = ET.Element("g", {"id": "scene"})
         self.groups, self.edges, self.drills, self.polygon_ids = {}, [], [], []
         self.bounds, self.warnings = [], set()
+        self.filled_layers = set()
         self.net_names = {str(node[1]): str(node[2]) for node in forms(root, "net") if len(node) > 2}
         self.stats = dict(components=len(forms(root, "footprint")) + len(forms(root, "module")),
                           pads=0, tracks=0, vias=0, polygons=0, regions=0)
@@ -67,7 +69,14 @@ class PcbRenderer:
 
     def metadata(self, node, component="", primitive=""):
         net = form(node, "net")
-        name = str(net[2]) if len(net) > 2 else self.net_names.get(str(net[1]), "") if len(net) > 1 else ""
+        if len(net) > 2:
+            name = str(net[2])
+        elif len(net) > 1:
+            # New boards store (net "GND") directly, without a board-level ID
+            # table. A quoted numeric name is also a name, not a legacy ID.
+            name = net[1] if isinstance(net[1], str) else self.net_names.get(str(net[1]), "")
+        else:
+            name = ""
         name = value(node, "net_name", name)
         return {"data_component": component or None, "data_net": name or None, "data_primitive": primitive or None}
 
@@ -82,6 +91,14 @@ class PcbRenderer:
         self.count += 1
         return element(self.group(layer), "path", id=f"kc-shape-{self.count}", d=geometry_path(geometry),
                        fill_rule="evenodd", stroke="none", **(metadata or {}), **style)
+
+    def primitive(self, layer, kind, metadata=None, **attributes):
+        """Keep simple KiCad shapes analytic in SVG and the WebGL compiler."""
+        if not self.allowed(layer):
+            return None
+        self.count += 1
+        return element(self.group(layer), kind, id=f"kc-shape-{self.count}",
+                       **(metadata or {}), **attributes)
 
     def route(self, layer, points, stroke_width, metadata=None, closed=False):
         if len(points) < 2:
@@ -110,6 +127,22 @@ class PcbRenderer:
                 group = element(self.group(layer), "g", **self.metadata(node, component, "text"))
                 draw_text(group, node, text, position=p, color=self.colors[layer])
             return
+        if kind in ("fp_circle", "gr_circle") and layer != "Edge.Cuts":
+            center, end = point(node, "center"), point(node, "end")
+            radius = scalar(node, "radius", math.dist(center, end))
+            if radius <= 0:
+                return
+            center = rotate(center, -rotation)
+            center = (center[0]+position[0], center[1]+position[1])
+            filled = value(node, "fill") in ("yes", "solid")
+            stroke_width = width(node)
+            extent = radius + (0 if filled else stroke_width / 2)
+            self.bounds.append((center[0]-extent, center[1]-extent, center[0]+extent, center[1]+extent))
+            self.primitive(layer, "circle", self.metadata(node, component, "graphic"),
+                           cx=fmt(center[0]), cy=fmt(center[1]), r=fmt(radius),
+                           fill=None if filled else "none", stroke="none" if filled else None,
+                           stroke_width=None if filled else fmt(stroke_width))
+            return
         points, closed = graphic_points(node)
         if points:
             points = [(p[0] + position[0], p[1] + position[1]) for p in [rotate(p, -rotation) for p in points]]
@@ -131,6 +164,7 @@ class PcbRenderer:
         if w <= 0 or h <= 0:
             return
         shape = str(node[3]) if len(node) > 3 else "rect"
+        radius = 0
         if shape == "circle":
             geometry = Point(0, 0).buffer(w / 2, quad_segs=24)
         elif shape == "oval":
@@ -156,6 +190,7 @@ class PcbRenderer:
                 self.warnings.add(f"KiCad {shape} pads are shown with rectangular outlines.")
         drill = form(node, "drill")
         hole = GeometryCollection()
+        concentric_drill = None
         if len(drill) > 1:
             values = [number(item) for item in drill[1:] if not isinstance(item, list) and str(item) != "oval"]
             if values and values[0] > 0:
@@ -164,6 +199,8 @@ class PcbRenderer:
                 endpoints = [(-half, 0), (half, 0)] if dx >= dy else [(0, -half), (0, half)]
                 hole = LineString(endpoints).buffer(min(dx, dy) / 2, quad_segs=16)
                 offset = point(drill, "offset"); hole = translate(hole, *offset)
+                if dx == dy and offset == (0, 0):
+                    concentric_drill = dx / 2
         def place(geometry_):
             return translate(rotate_geometry(geometry_, -angle(node), origin=(0, 0)), *position)
         hole = place(hole)
@@ -185,7 +222,24 @@ class PcbRenderer:
             # Mask apertures and paste are not electrical pads. Keeping their
             # metadata separate prevents net probing from revealing them over copper.
             attributes = metadata if layer.endswith(".Cu") else {"data_primitive": "pad-aperture"}
-            self.shape(layer, copper.difference(hole), attributes)
+            simple = shape in ("circle", "oval", "rect", "roundrect") and (
+                hole.is_empty or shape == "circle" and concentric_drill is not None and concentric_drill < w/2+clearance)
+            if simple and not copper.is_empty:
+                self.remember(copper)
+                # Rotate about the world-space centre, also used by SVG/Qt snapping.
+                transform = f"rotate({fmt(-angle(node))} {fmt(position[0])} {fmt(position[1])})" if angle(node) else None
+                if shape == "circle":
+                    outer, inner = w/2+clearance, concentric_drill or 0
+                    self.primitive(layer, "circle", attributes, cx=fmt(position[0]), cy=fmt(position[1]),
+                                   r=fmt((outer+inner)/2 if inner else outer),
+                                   fill="none" if inner else None, stroke=None if inner else "none",
+                                   stroke_width=fmt(outer-inner) if inner else None)
+                else:
+                    corner = max(0, (min(w, h) / 2 if shape == "oval" else radius) + clearance)
+                    self.primitive(layer, "rect", attributes, x=fmt(position[0]-w/2-clearance), y=fmt(position[1]-h/2-clearance),
+                                   width=fmt(w+2*clearance), height=fmt(h+2*clearance), rx=fmt(corner), stroke="none", transform=transform)
+            else:
+                self.shape(layer, copper.difference(hole), attributes)
 
     def footprint(self, node):
         properties = {str(p[1]): str(p[2]) for p in forms(node, "property") if len(p) > 2}
@@ -208,12 +262,14 @@ class PcbRenderer:
         if form(node, "keepout"):
             return
         self.stats["polygons"] += 1
-        default_layer = value(node, "layer", "F.Cu")
+        layers = [str(item) for item in form(node, "layers")[1:]] or [value(node, "layer", "F.Cu")]
+        default_layer = layers[0]
         for fill in forms(node, "filled_polygon"):
             points = [point(["root", xy], "xy") for xy in forms(form(fill, "pts"), "xy")]
             if len(points) < 3:
                 continue
             layer = value(fill, "layer", default_layer)
+            self.filled_layers.add(layer)
             element_ = self.shape(layer, make_valid(Polygon(points)), self.metadata(node, primitive="region"),
                                   fill=self.pour_color or self.color(layer))
             if element_ is not None:
@@ -222,9 +278,10 @@ class PcbRenderer:
         if self.polygon_outlines or not forms(node, "filled_polygon"):
             for polygon in forms(node, "polygon"):
                 points = [point(["root", xy], "xy") for xy in forms(form(polygon, "pts"), "xy")]
-                element_ = self.route(default_layer, points, 0.1, self.metadata(node, primitive="polygon-outline"), True)
-                if element_ is not None:
-                    self.polygon_ids.append(element_.get("id"))
+                for layer in layers:
+                    element_ = self.route(layer, points, 0.1, self.metadata(node, primitive="polygon-outline"), True)
+                    if element_ is not None:
+                        self.polygon_ids.append(element_.get("id"))
         if not forms(node, "filled_polygon"):
             self.warnings.add("Zones without saved copper fills are shown as outlines. Refill and save them in KiCad to view the pours.")
 
@@ -270,14 +327,24 @@ class PcbRenderer:
                 self.stats["vias"] += 1
                 position = point(node)
                 hole = Point(position).buffer(scalar(node, "drill") / 2, quad_segs=16)
-                via = Point(position).buffer(scalar(node, "size") / 2, quad_segs=20).difference(hole)
+                outer, inner = scalar(node, "size") / 2, scalar(node, "drill") / 2
+                if outer > 0 and inner < outer:
+                    self.bounds.append((position[0]-outer, position[1]-outer, position[0]+outer, position[1]+outer))
                 copper_layers = [layer for layer in self.layers if layer.endswith(".Cu")]
                 endpoints = [str(item) for item in form(node, "layers")[1:]]
                 if len(endpoints) == 2 and all(layer in copper_layers for layer in endpoints):
                     a, b = sorted(copper_layers.index(layer) for layer in endpoints)
                     for layer in copper_layers[a:b+1]:
-                        self.shape(layer, via, {**self.metadata(node, primitive="via"),
-                                               "data_snap_x": position[0], "data_snap_y": position[1]})
+                        if outer <= 0 or inner >= outer:
+                            continue
+                        attributes = {**self.metadata(node, primitive="via"),
+                                      "data_snap_x": position[0], "data_snap_y": position[1]}
+                        if inner > 0:
+                            self.primitive(layer, "circle", attributes, cx=fmt(position[0]), cy=fmt(position[1]),
+                                           r=fmt((outer+inner)/2), fill="none", stroke_width=fmt(outer-inner))
+                        else:
+                            self.primitive(layer, "circle", attributes, cx=fmt(position[0]), cy=fmt(position[1]),
+                                           r=fmt(outer), stroke="none")
                 if set(endpoints) == {"F.Cu", "B.Cu"}:
                     self.drills.append(hole)
                 else:
@@ -287,6 +354,11 @@ class PcbRenderer:
             elif kind.startswith("gr_") or kind in ("dimension", "target"):
                 self.graphic(node)
         profile, note = self.board_profile()
+        empty_planes = [self.names[layer] for layer in self.layers if layer.endswith(".Cu")
+                        and self.layer_types[layer] == "power" and self.allowed(layer) and layer not in self.filled_layers]
+        if empty_planes:
+            self.warnings.add("No saved copper-zone fills on power-plane layers: " + ", ".join(empty_planes) +
+                              ". Plane copper requires saved zone geometry.")
         if self.clip and not profile.is_empty:
             defs = element(self.scene, "defs")
             clip_path = element(defs, "clipPath", id="kc-board-clip")

@@ -103,6 +103,9 @@ and compiler still use the CPU; initial loading remains separate from navigation
 performance. Qt Essentials provides offscreen SVG bounds and font outlines for
 the compiler, and does not create a native viewer window. Qt Widgets, Qt OpenGL
 views and Qt WebEngine are excluded from the packaged launcher.
+KiCad pads, via rings and circular footprint markings use compact analytic
+shapes, including mask/paste margins and concentric round drills. Custom pads
+and offset/slotted drills retain their polygon geometry.
 
 See [browser performance notes](docs/browser-webgl-performance.md) for bounds,
 measurements and the reproducible browser benchmark:
@@ -210,6 +213,10 @@ component and net searches, pin captions, cross-probing, and measurements use th
 same controls as Altium documents. Refill and save zones in KiCad to include
 their copper; this viewer does not calculate pours. Custom pad primitives are
 supported, while chamfered and trapezoidal pads use a rectangular approximation.
+Both numeric net IDs and directly stored net names are supported. Multilayer
+zones keep their saved fills and outlines on each source layer. Power layers
+without saved fills show an explanatory message; the layer name or type alone
+does not supply a plane's copper geometry.
 
 Schematic previews use embedded symbols, units, rotation and mirroring, pins,
 properties, wires, labels, junctions, and sheet boxes. Click bodies to select

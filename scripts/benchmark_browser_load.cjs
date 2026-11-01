@@ -8,8 +8,8 @@ const { writeFileSync } = require('node:fs');
 
 async function main() {
   if (!process.argv[2]) throw new Error('Provide a PCB document path');
-  const path = resolve(process.argv[2]), root = resolve(__dirname, '..');
-  const server = spawn(resolve(root, '.venv/bin/python'), ['-B', '-u', resolve(root, 'ecadview.py'), '--no-open']);
+  const path = resolve(process.argv[2]), root = process.env.PCB_BENCH_ROOT || resolve(__dirname, '..');
+  const server = spawn(resolve(root, '.venv/bin/python'), ['-B', '-u', resolve(root, 'ecadview.py'), '--no-open'], { cwd: root });
   let browser;
   try {
     const origin = await new Promise((done, reject) => {
@@ -52,9 +52,33 @@ async function main() {
     });
     const start = Date.now();
     await page.locator('#file').setInputFiles(path);
-    await page.waitForFunction(() => document.querySelector('#view.gpu-layout') &&
+    await page.waitForFunction(() => document.querySelector('#view > svg') &&
       document.querySelector('#busy').style.display === 'none', undefined, { timeout: 180000 });
-    const load = Date.now() - start, three = Date.now();
+    const load = Date.now() - start;
+    const layout = await page.evaluate(async () => {
+      const view = document.querySelector('#view'), rect = view.getBoundingClientRect(), gaps = [], longtasks = [];
+      const observer = new PerformanceObserver(list => longtasks.push(...list.getEntries().map(e => e.duration)));
+      observer.observe({ type: 'longtask' });
+      const begin = performance.now(); let previous, events = 0;
+      const timer = setInterval(() => {
+        const elapsed = performance.now() - begin, zoom = elapsed < 2000 || elapsed > 4000;
+        view.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: zoom,
+          clientX: rect.x + rect.width * .55, clientY: rect.y + rect.height * .45,
+          deltaX: zoom ? 0 : 3, deltaY: zoom ? (elapsed < 2000 ? -1.5 : 1.5) : 1 })); events++;
+      }, 16);
+      await new Promise(done => requestAnimationFrame(function frame(now) {
+        if (previous !== undefined) gaps.push(now - previous); previous = now;
+        if (performance.now() - begin < 6000) requestAnimationFrame(frame); else done();
+      }));
+      clearInterval(timer); longtasks.push(...observer.takeRecords().map(e => e.duration)); observer.disconnect();
+      gaps.sort((a, b) => a - b);
+      return { renderer: document.querySelector('#renderer-status').textContent, events,
+        netCount: document.querySelectorAll('#net-options option').length,
+        savedRegionCount: document.querySelectorAll('#scene [data-primitive="region"]').length,
+        rafMedianMs: gaps[Math.floor(gaps.length * .5)], rafP95Ms: gaps[Math.floor(gaps.length * .95)],
+        rafMaxMs: gaps.at(-1), longtasks, geometry: { ...document.querySelector('.layout-webgl')?.dataset } };
+    });
+    const three = Date.now();
     await page.keyboard.press('3');
     await page.waitForFunction(() => window.benchmarkViewer?.ready, undefined, { timeout: 180000 });
     const first3D = Date.now() - three;
@@ -77,7 +101,7 @@ async function main() {
           .map(r => ({ path: new URL(r.name).pathname, ms: r.duration, size: r.decodedBodySize })),
         heap: performance.memory?.usedJSHeapSize };
     });
-    const result = { document: path, browser: browser.version(), load, first3D, warm3D, frames, ...data, errors };
+    const result = { document: path, browser: browser.version(), load, layout, first3D, warm3D, frames, ...data, errors };
     if (process.argv[3]) writeFileSync(process.argv[3], JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result, null, 2));
     if (errors.length) throw new Error('Browser reported errors');

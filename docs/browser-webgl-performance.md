@@ -14,7 +14,7 @@ resident. Navigation updates camera uniforms; component/net selection updates
 an R8 object-ID lookup, with a faded context pass, highlight pass and hole pass.
 Layer drawing follows the SVG sibling order, including the last-enabled layer.
 
-The SVG scene stays transparent above the canvas for browser-native picking,
+The SVG scene stays unpainted above the canvas for browser-native picking,
 search bounds, cross-probing and measurement coordinates. Measurement graphics
 remain visible on top. This still requires an SVG interaction tree and its
 viewBox transform; it does not remove all DOM costs. Caption placement waits
@@ -207,6 +207,64 @@ older server. Process RSS is recorded where `ps` and CDP expose it. The isolated
 compiler peak was measured separately with macOS `/usr/bin/time -l`; it is not
 included in the browser snapshots. The benchmark preserves current STEP worker
 parallelism and does not evict cached views to obtain the savings.
+
+## Dense KiCad boards (2026-11-01)
+
+Simple pads, their mask/paste margins, concentric round drilled pads, via rings
+and circular footprint graphics retain analytic SVG shapes. Custom pads and
+offset/slotted drill cutouts retain polygon geometry. Board profiles and 3D
+drill geometry keep the existing precision. Copper paths use explicit spaced
+commands to take the compiler's linear-path fast path.
+
+This avoids expensive stroke self-intersections on tiny footprint circles,
+especially polarity dots whose stroke reaches the centre. The compiler renders
+those as analytic disks. It also keeps dense multilayer boards below the existing
+128 MiB compilation budget without raising that limit.
+
+The browser now skips SVG paint traversal with visibility rather than relying
+on group opacity alone. GPU-only pointer modes preserve original SVG visibility
+and pointer rules, including hidden ancestors with visible descendants. Captions
+and rectangle selection use the original visibility; SVG fallback restores the
+normal drawing. Measurements remain outside the unpainted scene.
+
+The load benchmark also records a six-second wheel/pinch navigation sequence,
+long tasks and renderer status, including SVG fallback. `PCB_BENCH_ROOT` selects
+an unchanged baseline checkout. Run the same browser and file in each checkout;
+navigation callback intervals measure browser scheduling, not displayed FPS.
+
+The supplied `barebones.kicad_pcb` contains 1,033 footprints, 5,968 pads and
+1,901 vias across eight copper layers. On an M3 Pro with Chrome 156.0.8078.74
+headless at 1440 × 900, one baseline run of master `14bca57` and two final runs
+gave the following observations:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Upload to interactive 2D | 98.48 s | 17.49–18.16 s |
+| Renderer | SVG after compiler timeout | WebGL 2 |
+| Geometry request | 90.19 s, timed out | 12.26–12.52 s |
+| Document response size | 64.54 MB | 11.63 MB |
+| Navigation callback median | 33.3 ms | 16.7 ms |
+| Navigation callback p95 | 50.0 ms | 33.4 ms |
+| Worst navigation callback gap | 1,116.6 ms | 49.9–50.1 ms |
+| Navigation long tasks | 1,020–1,108 ms | none observed |
+
+The final GPU buffers occupy 93.78 MiB, upload once and remain resident throughout
+navigation. Both final runs reported no application errors. These are local
+observations, not a cross-machine performance guarantee; the baseline timeout
+produced an expected `/geometry` error. The reference PCB stays outside the
+repository. Validation passed 138 Python tests (5 skipped), 123 browser tests
+(3 skipped), 20 GPU tests and a focused explicit-pointer-mode regression.
+
+Follow-up functional validation restores directly stored KiCad net names as
+well as legacy numeric IDs. The same board loads in 18.03 s with 1,428 selectable
+nets; browser clicks on saved power fills in `In3.Cu Power` and `In6.Cu GND`
+select `VCC_4V0_SYS`. This file has no saved GND-zone fills, including on
+`In1.Cu GND` and `In4.Cu GND`; the viewer reports absent fills rather than
+inferring copper from layer names/types. Multilayer zone outlines now follow
+every declared layer. A new fixture verifies track and inner-plane selection,
+pixels and polygon visibility in both WebGL and SVG. Validation passes 141
+Python tests (5 skipped) and 22 GPU tests. The benchmark reports net and saved
+region counts alongside timing results to expose missing interaction metadata.
 
 ## Representative LimeSDR result
 

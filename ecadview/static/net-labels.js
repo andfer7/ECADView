@@ -1,16 +1,25 @@
 // Screen-space net and component pin captions leave SVG hit targets unchanged.
+function captionBounds(shape, paint, primitive) {
+  const bounds = shape.getBBox();
+  if (shape.localName !== 'circle' || !['pad', 'via'].includes(primitive) || paint.stroke === 'none') return bounds;
+  // SVG getBBox omits stroke width; annular pads/vias use a circular stroke.
+  const radius = (parseFloat(paint.strokeWidth) || 0) / 2;
+  return { x: bounds.x - radius, y: bounds.y - radius, width: bounds.width + 2 * radius, height: bounds.height + 2 * radius };
+}
+
 export class NetLabels {
   constructor(container) {
     this.container = container;
     this.candidates = new WeakMap();
     this.bounds = new WeakMap();
+    this.hidden = new WeakMap();
     this.widths = new Map();
     this.context = document.createElement('canvas').getContext('2d');
     const font = getComputedStyle(container);
     this.context.font = `${font.fontWeight} ${font.fontSize} ${font.fontFamily}`;
   }
 
-  setBounds(svg, bounds) { this.bounds.set(svg, bounds); this.candidates.delete(svg); }
+  setBounds(svg, bounds, hidden = new WeakSet()) { this.bounds.set(svg, bounds); this.hidden.set(svg, hidden); this.candidates.delete(svg); }
 
   *index(svg) {
     if (this.candidates.has(svg)) return this.candidates.get(svg);
@@ -33,9 +42,9 @@ export class NetLabels {
           via: source.dataset.primitive === 'via', primitive: source.dataset.primitive });
         continue;
       }
-      const paint = getComputedStyle(shape), bounds = shape.getBBox();
+      const paint = getComputedStyle(shape), bounds = captionBounds(shape, paint, source.dataset.primitive);
       if (!bounds.width && !bounds.height || paint.fill === 'none' && paint.stroke === 'none') continue;
-      const route = paint.stroke !== 'none' && typeof shape.getTotalLength === 'function' &&
+      const route = !['pad', 'via'].includes(source.dataset.primitive) && paint.stroke !== 'none' && typeof shape.getTotalLength === 'function' &&
         (paint.fill === 'none' || shape.matches('line, polyline') || ['track', 'arc'].includes(source.dataset.primitive));
       candidates.push({ shape, name: net?.dataset.net || '', pin: pin.trim() ? pin : '', bounds, route, via: source.dataset.primitive === 'via',
         length: route ? shape.getTotalLength() : 0, stroke: parseFloat(paint.strokeWidth) || 0,
@@ -53,7 +62,7 @@ export class NetLabels {
   update(board, deferred = false) {
     this.cancel();
     this.container.replaceChildren();
-    const generation = this.generation, work = this.layout(board);
+    const generation = this.generation, work = this.layout(board, deferred);
     if (!deferred) { while (!work.next().done) { /* SVG compatibility path */ } return; }
     this.container.dataset.pending = '1';
     const step = () => {
@@ -64,7 +73,7 @@ export class NetLabels {
     this.timer = setTimeout(step, 0);
   }
 
-  *layout(board) {
+  *layout(board, gpu = false) {
     const svg = board?.svg;
     // At fit-to-board scale the labels would obscure the layout overview.
     if (board?.kind !== 'pcb' || board.mode === '3d' || !svg?.isConnected || board.home.w / svg.viewBox.baseVal.width < 2) return;
@@ -91,13 +100,13 @@ export class NetLabels {
         if (rect.width < minimumWidth || rect.height < 18) continue;
       }
       const paint = getComputedStyle(shape);
-      if (paint.display === 'none' || paint.visibility !== 'visible' || !shape.getClientRects().length) continue;
+      if (paint.display === 'none' || (gpu ? this.hidden.get(svg)?.has(shape) : paint.visibility !== 'visible') || !shape.getClientRects().length) continue;
       const matrix = shape.getScreenCTM();
       if (!matrix) continue;
       if (world && !item.bounds) {
-        item.bounds = shape.getBBox(); item.stroke = parseFloat(paint.strokeWidth) || 0;
+        item.bounds = captionBounds(shape, paint, item.primitive); item.stroke = parseFloat(paint.strokeWidth) || 0;
         item.fixedStroke = paint.vectorEffect === 'non-scaling-stroke';
-        item.route = paint.stroke !== 'none' && typeof shape.getTotalLength === 'function' &&
+        item.route = !['pad', 'via'].includes(item.primitive) && paint.stroke !== 'none' && typeof shape.getTotalLength === 'function' &&
           (paint.fill === 'none' || shape.matches('line, polyline') || ['track', 'arc'].includes(item.primitive));
         item.length = item.route ? shape.getTotalLength() : 0;
       }

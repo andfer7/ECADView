@@ -622,7 +622,12 @@ class _Builder:
                 self.ellipse(cx, cy, rx, ry, 0, fill, matrix, metadata)
                 analytic_fill = True
             if stroke is not None and not dashed and rx == ry and width > 0:
-                self.ellipse(cx, cy, rx, ry, width, stroke, matrix, metadata)
+                if width >= 2 * rx:
+                    # A stroke reaching the centre is a disk, with no inner edge
+                    # to antialias. Common for KiCad footprint polarity dots.
+                    self.ellipse(cx, cy, rx + width / 2, ry + width / 2, 0, stroke, matrix, metadata)
+                else:
+                    self.ellipse(cx, cy, rx, ry, width, stroke, matrix, metadata)
                 analytic_stroke = True
         elif kind == "rect":
             x, y, w, h = get("x"), get("y"), get("width"), get("height")
