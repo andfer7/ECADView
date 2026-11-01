@@ -181,7 +181,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
     elif side == "bottom":
         svg = pcb.to_surface_svg(PCB_SurfaceSide.BOTTOM, options=options)
     else:
-        renderer = IndexedPcbSvgRenderer(pcb, options, compact_metadata=native)
+        renderer = IndexedPcbSvgRenderer(pcb, options, compact_metadata=native, distinct_layer_colors=True)
         svg = renderer.render_board(pcb)
     # An unsupported 3D record must not prevent opening the existing 2D view.
     try:

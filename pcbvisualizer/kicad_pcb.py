@@ -15,11 +15,7 @@ from .kicad_common import (
     load, number, path_points, point, polygon_parts, rotate, scalar, svg_document, value, width,
 )
 from .step_models import kicad_models
-
-
-COLORS = {"F.Cu": "#e64c4c", "B.Cu": "#5088ee", "F.SilkS": "#f5e8a8", "B.SilkS": "#d0b9ed",
-          "Edge.Cuts": "#c0a000", "F.Mask": "#37986e", "B.Mask": "#29734f",
-          "F.Paste": "#a9a9a9", "B.Paste": "#888888", "Drills": "#b7b7b7"}
+from .layer_colors import layer_colors
 
 
 class PcbRenderer:
@@ -32,6 +28,7 @@ class PcbRenderer:
             if isinstance(layer, list) and len(layer) >= 2:
                 name = str(layer[1]); self.layers.append(name)
                 self.names[name] = str(layer[3]) if len(layer) > 3 else name
+        self.colors = layer_colors([*self.layers, "Edge.Cuts", "Drills"])
         self.scene = ET.Element("g", {"id": "scene"})
         self.groups, self.edges, self.drills, self.polygon_ids = {}, [], [], []
         self.bounds, self.warnings = [], set()
@@ -43,6 +40,7 @@ class PcbRenderer:
 
     def group(self, layer):
         if layer not in self.groups:
+            color = self.color(layer)
             copper = layer.endswith(".Cu")
             role = "copper" if copper else "drill" if layer == "Drills" else "mask" if layer.endswith(".Mask") else "paste" if layer.endswith(".Paste") else "mechanical"
             token = {"F.Cu": "TOP", "B.Cu": "BOTTOM", "F.SilkS": "TOPOVERLAY", "B.SilkS": "BOTTOMOVERLAY",
@@ -52,9 +50,15 @@ class PcbRenderer:
             self.groups[layer] = element(self.scene, "g", id="board-outline" if layer == "Edge.Cuts" else f"kc-layer-{len(self.groups)}",
                 data_layer_name=self.names.get(layer, layer), data_layer_token=token,
                 data_layer_role=role,
-                data_color=COLORS.get(layer, "#bd9bca"), fill=COLORS.get(layer, "#bd9bca"),
-                stroke=COLORS.get(layer, "#bd9bca"), stroke_linecap="round", stroke_linejoin="round")
+                data_color=color, fill=color,
+                stroke=color, stroke_linecap="round", stroke_linejoin="round")
         return self.groups[layer]
+
+    def color(self, layer):
+        # Some graphics refer to layers omitted from the declaration table.
+        if layer not in self.colors:
+            self.colors.update(layer_colors([layer], existing=self.colors))
+        return self.colors[layer]
 
     def allowed(self, layer):
         if self.side == "all" or layer in ("Edge.Cuts", "Drills"):
@@ -104,7 +108,7 @@ class PcbRenderer:
             self.remember(Point(p).buffer(2))
             if self.allowed(layer):
                 group = element(self.group(layer), "g", **self.metadata(node, component, "text"))
-                draw_text(group, node, text, position=p, color=COLORS.get(layer, "#bd9bca"))
+                draw_text(group, node, text, position=p, color=self.colors[layer])
             return
         points, closed = graphic_points(node)
         if points:
@@ -211,7 +215,7 @@ class PcbRenderer:
                 continue
             layer = value(fill, "layer", default_layer)
             element_ = self.shape(layer, make_valid(Polygon(points)), self.metadata(node, primitive="region"),
-                                  fill=self.pour_color or COLORS.get(layer, "#bd9bca"))
+                                  fill=self.pour_color or self.color(layer))
             if element_ is not None:
                 self.polygon_ids.append(element_.get("id"))
             self.stats["regions"] += 1

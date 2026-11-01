@@ -42,12 +42,13 @@ class _CompactStrokeText(AltiumPcbText):
 
 
 class IndexedPcbSvgRenderer(PcbSvgRenderer):
-    def __init__(self, pcb, options, *, compact_metadata=False):
+    def __init__(self, pcb, options, *, compact_metadata=False, distinct_layer_colors=False):
         super().__init__(options)
         self._pcb = pcb
         self._stack_cached = False
         self.resolved_stack = None
         self._compact_metadata = compact_metadata
+        self._distinct_layer_colors = distinct_layer_colors
         self._signatures = {}
         self._collections = {}
         self._layer_refs = {}
@@ -85,6 +86,25 @@ class IndexedPcbSvgRenderer(PcbSvgRenderer):
         self._stack_cached = False
         self.resolved_stack = None
         return super().render_board(pcbdoc, *args, **kwargs)
+
+    def _collect_visible_layers(self, pcbdoc, *, force_all=False):
+        layers = super()._collect_visible_layers(pcbdoc, force_all=force_all)
+        if self._distinct_layer_colors:
+            from .layer_colors import layer_colors
+
+            colors = layer_colors(layer.ref.token for layer in layers)
+            self.options.layer_colors.update({layer.ref: colors[layer.ref.token] for layer in layers})
+        return layers
+
+    def _render_drill_layer_group(self, ctx, drill_primitives, *, clip_path_id=None):
+        lines = super()._render_drill_layer_group(ctx, drill_primitives, clip_path_id=clip_path_id)
+        if lines and self._distinct_layer_colors and self.options.include_metadata:
+            from .layer_colors import BASE_COLORS
+
+            # Knockout holes keep their background paint; only their inspector
+            # swatch needs a reserved color instead of the generic gray fallback.
+            lines[0] = lines[0].replace("<g ", f'<g data-color="{BASE_COLORS["DRILLS"]}" ', 1)
+        return lines
 
     def _resolved_layer_stack_safe(self, pcbdoc):
         if pcbdoc is not self._pcb:

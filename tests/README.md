@@ -99,6 +99,11 @@ pad shapes and ordinary copper, selection overlays, click-through to routes,
 layer controls, and per-tab visibility. Python rendering checks verify the
 source polygon links against SVG IDs in full, top, and bottom views.
 
+Layer-color coverage checks distinct palettes for inner copper, planes, extended
+mechanical and KiCad technical layers, stable source identities and matching SVG
+paint/WebGL buffers. Real browser pixel checks compare layer swatches with both
+WebGL and SVG output before and after hiding, restoring and raising a layer.
+
 Net-label tests cover zoom-dependent visibility, literal net names, mirrored
 pads and rotated routes, drill holes, clipping, occlusion and label collisions.
 They also exercise pan/resize alignment, hidden layers and pours, tab changes,
