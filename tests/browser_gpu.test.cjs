@@ -270,6 +270,37 @@ test('GPU draws source transforms, pours, cutouts, slots, transparency and layer
   near((await colors(page, [[30, 48]]))[0], [255, 0, 0]);
 });
 
+for (const gpu of [true, false]) test(`pin and net captions stay above a raised layer while clicks reach it (${gpu ? 'WebGL' : 'SVG'})`, async t => {
+  const data = { ...fixture(), webgl: gpu, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"><g id="scene">
+    <g id="layer-top" data-layer-name="Top copper" data-layer-role="copper">
+      <rect data-primitive="pad" data-component="U1" data-pad-number="7" data-net="SIGNAL" x="46" y="37" width="8" height="6" fill="red"/>
+    </g>
+    <g id="layer-bottom" data-layer-name="Bottom copper" data-layer-role="copper">
+      <rect data-component="COVER" x="45" y="36" width="10" height="8" fill="blue"/>
+    </g></g></svg>` };
+  const page = await pageFor(t, data);
+  if (gpu) await ready(page);
+  const top = page.getByRole('button', { name: 'Top copper', exact: true });
+  await top.click();
+  for (let i = 0; i < 4; i++) await page.locator('#zoom-in').click();
+  const caption = page.locator('#net-labels .copper-label');
+  await caption.waitFor();
+  await page.getByRole('button', { name: 'Bottom copper', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#net-labels').dataset.pending === '0');
+  assert.deepEqual(await caption.locator('span').allTextContents(), ['7', 'SIGNAL']);
+  const clip = await caption.boundingBox();
+  const withCaption = await page.screenshot({ clip });
+  await caption.evaluate(el => { el.style.visibility = 'hidden'; });
+  assert.ok(!withCaption.equals(await page.screenshot({ clip })), 'caption text changes the pixels above the covering layer');
+  await caption.evaluate(el => { el.style.visibility = ''; });
+  await page.mouse.click(clip.x + clip.width / 2, clip.y + clip.height / 2);
+  assert.equal(await page.locator('#component-query').inputValue(), 'COVER');
+  await page.keyboard.press('Escape');
+  await page.locator('#layers label').filter({ has: top }).locator('input').uncheck();
+  await page.waitForFunction(() => document.querySelector('#net-labels').dataset.pending === '0');
+  assert.equal(await caption.count(), 0, 'hiding the source copper removes its captions');
+});
+
 test('exact SVG picking drives GPU selection without clones or geometry uploads; holes stay open', async t => {
   const page = await pageFor(t); await ready(page);
   const start = await dataset(page);
