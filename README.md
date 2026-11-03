@@ -154,6 +154,13 @@ Hold an arrow to keep rotating; release to stop. Space or Enter also works while
 an arrow is focused.
 Each tab remembers its rotation centre, camera and mode.
 
+Cross-probing from a schematic opens the PCB in its current 2D or 3D mode.
+Selections from layout clicks and searches also carry into 3D. Selected
+components appear gold on their bodies and footprints, including footprints
+without a 3D model. Selected outer-layer net copper appears cyan on its own
+face. Inner-layer net copper appears lavender on both faces. Press Escape or
+click **Clear** to clear the highlights.
+
 Click a body to select it; its visible parts turn cyan, including dark plastics
 and reflective metal. Clear the selection to restore its original finish.
 Shift-click for multiple bodies, and use Delete /

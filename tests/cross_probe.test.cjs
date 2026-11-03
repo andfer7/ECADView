@@ -36,6 +36,18 @@ test('terminal lookup uses the first equal schematic name and reverse component 
   assert.deepEqual(probe.schematicComponents('U1', schematic, unlinked), ['first','second']);
 });
 
+test('component probes match owned 3D bodies without pads or footprint graphics', () => {
+  const layout = probe.indexLayout([], [
+    { name: 'U17', source_id: 'source-1', source_name: 'U1' },
+    { name: 'U3', source_id: 'no-geometry', source_name: 'U2' },
+  ], [{ name: 'Package A', component: 'U17' }, { name: 'Package B', component: 'U17' },
+    { name: 'U2' }, { name: 'U3', component: null }]);
+  assert.deepEqual(probe.matchingComponents('source-1', row('U1'), layout), ['U17']);
+  assert.deepEqual(probe.matchingComponents('', row('U2'), layout), ['U2']);
+  assert.deepEqual(probe.matchingComponents('no-geometry', row('U2'), layout), []);
+  assert.deepEqual(probe.matchingComponents('', row('Package A'), layout), []);
+});
+
 test('pin connectivity wins over aliases; reverse net matching preserves case and separates ambiguous candidates', () => {
   const layout = probe.indexLayout(elements([
     { component:'P1', padNumber:'1', net:'UPPER' }, { component:'P1', padDesignator:'2', net:'OTHER' },

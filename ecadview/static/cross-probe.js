@@ -4,7 +4,7 @@ export const identity = value => String(value || '').trim().toLowerCase();
 const padKey = (component, pin) => JSON.stringify([identity(component), identity(pin)]);
 const add = (map, key, value) => { if (!map.has(key)) map.set(key, []); map.get(key).push(value); };
 
-export function indexLayout(elements, links) {
+export function indexLayout(elements, links, bodies = []) {
   const names = new Set(), netNames = new Set(), padNets = new Map();
   for (const { dataset } of elements) {
     const { component, padNumber, padDesignator, net } = dataset;
@@ -15,6 +15,9 @@ export function indexLayout(elements, links) {
     if (!padNets.has(key)) padNets.set(key, new Set());
     padNets.get(key).add(net);
   }
+  // STEP-only footprints can have a selectable body without any 2D primitives.
+  // Legacy scenes used the body name for its owner; an explicit null is unowned.
+  for (const { name, component = name } of bodies) if (component) names.add(component);
   const byName = new Map(), sourceLinks = new Map(), sourcesByName = new Map();
   for (const link of links) {
     const name = identity(link.name);

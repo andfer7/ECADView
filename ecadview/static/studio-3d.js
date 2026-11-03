@@ -19,13 +19,22 @@ export function boardPhysicalTexture(canvas) {
 }
 
 export function boardSurfaceMaterial(map, physical) {
-  const material = new THREE.MeshPhysicalMaterial({ map, roughnessMap: physical, metalnessMap: physical,
-    roughness: 1, metalness: 1, clearcoat: 0.22, clearcoatRoughness: 0.35, side: THREE.DoubleSide });
+  const material = new THREE.MeshPhysicalMaterial(map ? { map, roughnessMap: physical, metalnessMap: physical,
+    roughness: 1, metalness: 1, clearcoat: 0.22, clearcoatRoughness: 0.35, side: THREE.DoubleSide } :
+    { color: 0x0e452c, roughness: 0.48, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.34 });
   material.onBeforeCompile = shader => {
     shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>',
       THREE.ShaderChunk.metalnessmap_fragment.replace('texelMetalness.b', 'texelMetalness.r'));
+    // The emissive texture slot supplies the probe's RGBA and UVs. Blend after
+    // tone mapping so even polished copper shows the same highlight color.
+    shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', '')
+      .replace('#include <tonemapping_fragment>', `#include <tonemapping_fragment>
+        #ifdef USE_EMISSIVEMAP
+          vec4 probe = texture2D(emissiveMap, vEmissiveMapUv);
+          gl_FragColor.rgb = mix(gl_FragColor.rgb, probe.rgb, probe.a * 0.9);
+        #endif`);
   };
-  material.customProgramCacheKey = () => 'board-rg-finish-v1';
+  material.customProgramCacheKey = () => 'board-rg-finish-probe-v2';
   return material;
 }
 
@@ -76,17 +85,19 @@ export function bodyMaterial(parameters, instanced = false) {
   material.onBeforeCompile = shader => {
     shader.uniforms.bodyHighlight = material.userData.highlight;
     shader.uniforms.bodyHighlightColor = { value: new THREE.Color(0x35c2d8) };
-    shader.fragmentShader = 'uniform float bodyHighlight; uniform vec3 bodyHighlightColor;\n' + shader.fragmentShader;
+    shader.uniforms.probeColor = { value: new THREE.Color(0xffe066) };
+    shader.fragmentShader = 'uniform float bodyHighlight; uniform vec3 bodyHighlightColor, probeColor;\n' + shader.fragmentShader;
     if (instanced) {
       shader.vertexShader = 'attribute float instanceHighlight; varying float vBodyHighlight;\n' + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvBodyHighlight = instanceHighlight;');
       shader.fragmentShader = 'varying float vBodyHighlight;\n' + shader.fragmentShader;
     }
     // Apply after tone mapping so bright metal reflections cannot wash it out.
-    shader.fragmentShader = shader.fragmentShader.replace('#include <tonemapping_fragment>',
-      '#include <tonemapping_fragment>\ngl_FragColor.rgb = mix(gl_FragColor.rgb, bodyHighlightColor, ' + (instanced ? 'vBodyHighlight' : 'bodyHighlight') + ' * 0.8);');
+    shader.fragmentShader = shader.fragmentShader.replace('#include <tonemapping_fragment>', `#include <tonemapping_fragment>
+      float highlight = ${instanced ? 'vBodyHighlight' : 'bodyHighlight'};
+      if (highlight > 0.5) gl_FragColor.rgb = mix(gl_FragColor.rgb, highlight > 1.5 ? probeColor : bodyHighlightColor, 0.8);`);
   };
-  material.customProgramCacheKey = () => 'body-highlight-v2-' + instanced;
+  material.customProgramCacheKey = () => 'body-highlight-v3-' + instanced;
   return material;
 }
 
@@ -100,6 +111,6 @@ export function stepMaterial(parameters, instanced = false) {
     shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vPhysicalFinish.x;');
     shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = vPhysicalFinish.y;');
   };
-  material.customProgramCacheKey = () => 'step-physical-finish-highlight-v3-' + instanced;
+  material.customProgramCacheKey = () => 'step-physical-finish-highlight-v4-' + instanced;
   return material;
 }

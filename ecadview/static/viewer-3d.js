@@ -1,11 +1,11 @@
 import * as THREE from './three.module.min.js';
 import { CadControls } from './cad-controls.js';
 import { StepLoader } from './step-loader.js';
-import { boardSurfaces } from './board-surface.js';
+import { boardSurfaces, boardProbeSurfaces } from './board-surface.js';
 import { studioEnvironment, stepFinish, bodyMaterial, stepMaterial, boardPhysicalTexture, boardSurfaceMaterial } from './studio-3d.js';
 
 const sceneFields = ['scene', 'pickMeshes', 'bodyMeshes', 'boardMeshes', 'studioLights', 'bounds', 'center', 'radius',
-  'shadowDirty', 'shadowKey', 'selectionKey', 'bodyState', 'modelProgress', 'surfaceError', 'model', 'sourceSVG', 'ready', 'sceneBytes'];
+  'shadowDirty', 'shadowKey', 'selectionKey', 'bodyState', 'probeKey', 'modelProgress', 'surfaceError', 'model', 'sourceSVG', 'ready', 'sceneBytes'];
 
 function resources(scene) {
   const geometries = new Set(), materials = new Set(), textures = new Set(), shadows = new Set(), instances = new Set();
@@ -124,6 +124,7 @@ export class Board3D {
     this.controls.enabled = false;
     for (const field of sceneFields) this[field] = null;
     this.ready = false; this.loading = null;
+    this.probeRequest = null; this.surfacesReady = null; this.probeComponents = null;
     this.pickMeshes = [];
     this.bodyMeshes = [];
     this.boardMeshes = [];
@@ -157,18 +158,18 @@ export class Board3D {
     this.cache.clear();
   }
 
-  show(model, state, bodies, sourceSVG) {
+  show(model, state, bodies, sourceSVG, probe) {
     this.hide();
     const saved = this.cache.get(model);
     if (saved) {
       this.cache.delete(model);
       if (saved.sourceSVG === sourceSVG) {
         Object.assign(this, saved);
-        this.loading = Promise.resolve();
         this.renderer.shadowMap.needsUpdate = false;
         this.controls.minDistance = this.radius * 0.01; this.controls.maxDistance = this.radius * 100;
         this.controls.enabled = true;
-        this.restoreCamera(state); this.resize(); this.updateBodies(bodies);
+        this.restoreCamera(state); this.resize();
+        this.loading = this.setProbe(probe, bodies ?? null);
         this.onModels?.(this.modelProgress);
         if (this.surfaceError) this.onModels?.({ surfaceError: this.surfaceError });
         return;
@@ -226,8 +227,7 @@ export class Board3D {
         if (previous !== null) geometry.addGroup(first, normals.count - first, previous);
       }
       const material = bodyId === null ? [
-        new THREE.MeshPhysicalMaterial({ color: 0x0e452c, roughness: 0.48, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.34 }),
-        new THREE.MeshPhysicalMaterial({ color: 0x0e452c, roughness: 0.48, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.34 }),
+        boardSurfaceMaterial(), boardSurfaceMaterial(),
         new THREE.MeshStandardMaterial({ color: 0x867552, roughness: 0.85, metalness: 0 }),
       ] : bodyMaterial({ color, roughness: 0.6, metalness: 0,
         opacity, transparent: opacity < 1 });
@@ -242,7 +242,7 @@ export class Board3D {
         new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: (bodyId === null ? 0.07 : 0.14) * opacity }));
       edges.position.z = z; this.scene.add(edges);
       edges.visible = mesh.visible;
-      if (bodyId !== null) this.bodyMeshes.push({ id: bodyId, mesh, edges, edgeColor, edgeOpacity: 0.14 * opacity });
+      if (bodyId !== null) this.bodyMeshes.push({ id: bodyId, component: data.component, mesh, edges, edgeColor, edgeOpacity: 0.14 * opacity });
     };
     model.board.forEach(part => addSolid(part, -model.thickness / 2, model.thickness, 0x16764f, 1, 0xbcc28a));
     model.bodies.forEach((body, index) => addSolid(body, body.z, body.height, body.color, body.opacity,
@@ -251,13 +251,58 @@ export class Board3D {
     this.controls.enabled = true;
     this.resize();
     this.restoreCamera(state);
-    this.updateBodies(bodies);
-    this.loading = Promise.all([steps, this.loadSurfaces(sourceSVG, model, generation)]).then(() => {
+    this.surfacesReady = this.loadSurfaces(sourceSVG, model, generation);
+    this.loading = Promise.all([steps, this.surfacesReady, this.setProbe(probe, bodies ?? null)]).then(() => {
       if (generation !== this.generation) return;
       this.stepLoader?.close(); this.stepLoader = null;
       this.ready = true; this.sceneBytes = sceneBytes(this.scene);
       this.trimCache(this.sceneBytes, 1);
     });
+  }
+
+  async setProbe(probe, bodies = this.bodyState) {
+    const components = [...(probe?.components || [])].sort(), nets = [...(probe?.nets || [])].sort();
+    const key = components.length || nets.length ? JSON.stringify([components, nets]) : null;
+    const request = this.probeRequest = {};
+    this.probeComponents = new Set(components);
+    if (this.probeKey && this.probeKey !== key) {
+      this.applyProbeSurfaces([]); this.probeKey = null;
+    }
+    this.updateBodies(bodies);
+    if (key === this.probeKey) return;
+    try {
+      const [surfaces] = await Promise.all([boardProbeSurfaces(this.sourceSVG, this.model, probe,
+        Math.min(2048, this.renderer.capabilities.maxTextureSize)), this.surfacesReady]);
+      // A new probe, tab switch or Escape can supersede an SVG decode.
+      if (request !== this.probeRequest) return;
+      this.applyProbeSurfaces(surfaces); this.probeKey = key;
+      this.render();
+    } catch (error) {
+      if (request === this.probeRequest) this.onModels?.({ surfaceError: 'Probe highlight unavailable: ' + error.message });
+    }
+  }
+
+  applyProbeSurfaces(surfaces) {
+    for (const [cap, side] of ['top', 'bottom'].entries()) {
+      const surface = surfaces.find(item => item.side === side);
+      const map = surface ? new THREE.CanvasTexture(surface.color) : null;
+      if (map) {
+        map.colorSpace = THREE.SRGBColorSpace;
+        map.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+      }
+      const materials = new Set(this.boardMeshes.map(mesh => mesh.material[cap]));
+      const retired = new Set();
+      for (const material of materials) {
+        if (material.emissiveMap) retired.add(material.emissiveMap);
+        if (Boolean(map) !== Boolean(material.emissiveMap)) material.needsUpdate = true;
+        material.emissiveMap = map;
+      }
+      for (const texture of retired) texture.dispose();
+    }
+    if (this.ready) {
+      this.sceneBytes = sceneBytes(this.scene);
+      this.trimCache(this.sceneBytes, 1);
+    }
   }
 
   restoreCamera(state) {
@@ -400,7 +445,7 @@ export class Board3D {
         mesh.castShadow = mesh.receiveShadow = true;
         if (batch) batch.setMatrixAt(instance, mesh.matrix); else this.scene.add(mesh);
         if (body.opacity > 0) this.pickMeshes.push(mesh);
-        this.bodyMeshes.push({ id: body.id, mesh, batch, instance });
+        this.bodyMeshes.push({ id: body.id, component: body.component, mesh, batch, instance });
       });
       if (batch) { batch.computeBoundingBox(); batch.computeBoundingSphere(); }
     }
@@ -427,24 +472,26 @@ export class Board3D {
 
   updateBodies(state) {
     this.bodyState = state;
-    const key = [...(state?.deleted || [])].sort().join(','), selectionKey = [...(state?.selected || [])].sort().join(',');
+    const key = [...(state?.deleted || [])].sort().join(',');
+    const selectionKey = JSON.stringify([[...(state?.selected || [])].sort(), [...(this.probeComponents || [])]]);
     if (!this.shadowDirty && key === this.shadowKey && selectionKey === this.selectionKey) { this.render(); return; }
-    for (const { id, mesh, edges, edgeColor, edgeOpacity, batch, instance } of this.bodyMeshes) {
+    for (const { id, mesh, component = mesh.name, edges, edgeColor, edgeOpacity, batch, instance } of this.bodyMeshes) {
       const visible = mesh.visible;
       mesh.visible = !state?.deleted.has(id);
       if (edges) edges.visible = mesh.visible;
-      const selected = Boolean(state?.selected.has(id));
+      const selected = state?.selected.has(id), probed = this.probeComponents?.has(component);
+      const tint = selected ? 1 : probed ? 2 : 0;
       if (batch) {
         const highlight = batch.geometry.attributes.instanceHighlight;
-        if (highlight.getX(instance) !== +selected) { highlight.setX(instance, +selected); highlight.needsUpdate = true; }
+        if (highlight.getX(instance) !== tint) { highlight.setX(instance, tint); highlight.needsUpdate = true; }
         if (visible !== mesh.visible) {
           batch.setMatrixAt(instance, mesh.visible ? mesh.matrix : new THREE.Matrix4().makeScale(0, 0, 0));
           batch.instanceMatrix.needsUpdate = true;
         }
-      } else mesh.material.userData.highlight.value = selected ? 1 : 0;
+      } else mesh.material.userData.highlight.value = tint;
       if (edges) {
-        edges.material.color.setHex(selected ? 0x35c2d8 : edgeColor);
-        edges.material.opacity = selected ? 1 : edgeOpacity;
+        edges.material.color.setHex(selected ? 0x35c2d8 : probed ? 0xffe066 : edgeColor);
+        edges.material.opacity = tint ? 1 : edgeOpacity;
       }
     }
     if (this.shadowDirty || key !== this.shadowKey) this.updateBounds();
