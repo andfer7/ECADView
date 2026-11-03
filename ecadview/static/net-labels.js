@@ -7,6 +7,19 @@ function captionBounds(shape, paint, primitive) {
   return { x: bounds.x - radius, y: bounds.y - radius, width: bounds.width + 2 * radius, height: bounds.height + 2 * radius };
 }
 
+function hitsCaptionCopper(shape, layer, x, y) {
+  const top = document.elementFromPoint(x, y);
+  if (shape.contains(top)) return true;
+  if (!layer || !top?.closest('#scene > g') || layer.contains(top)) return false;
+  // Ignore paint on other PCB layers, but keep the browser's exact clipped
+  // hit geometry, same-layer paint order and drill cutouts.
+  for (const hit of document.elementsFromPoint(x, y)) {
+    if (shape.contains(hit)) return true;
+    if (layer.contains(hit) || hit.closest('[data-hole-owner], [data-primitive$="-hole"]')) return false;
+  }
+  return false;
+}
+
 export class NetLabels {
   constructor(container) {
     this.container = container;
@@ -78,7 +91,7 @@ export class NetLabels {
     // At fit-to-board scale the labels would obscure the layout overview.
     if (board?.kind !== 'pcb' || board.mode === '3d' || !svg?.isConnected || board.home.w / svg.viewBox.baseVal.width < 2) return;
     const view = this.container.getBoundingClientRect(), occupied = [], fragment = document.createDocumentFragment();
-    const candidates = yield* this.index(svg);
+    const candidates = yield* this.index(svg), placedPads = new Set();
     const rootMatrix = svg.getScreenCTM();
     let deadline = performance.now() + 4;
     for (const item of candidates) {
@@ -111,6 +124,11 @@ export class NetLabels {
         item.length = item.route ? shape.getTotalLength() : 0;
       }
       const { bounds, route } = item;
+      const layer = shape.closest('#scene > g');
+      // A through pad or via can have a copper shape on every layer.
+      const padKey = item.via || pin || shape.closest('[data-primitive="pad"]') ?
+        JSON.stringify([pin, name, Math.round((rect.left + rect.right) / 2), Math.round((rect.top + rect.bottom) / 2)]) : null;
+      if (placedPads.has(padKey)) continue;
       const scale = Math.min(Math.hypot(matrix.a, matrix.b), Math.hypot(matrix.c, matrix.d));
       const pinRow = { text: pin, kind: 'pin-label' }, netRow = { text: name, kind: 'net-label' };
       // Prefer both rows, then preserve the pin number when the pad is cramped.
@@ -164,12 +182,9 @@ export class NetLabels {
           const box = { left: anchor.x - w / 2, right: anchor.x + w / 2, top: anchor.y - h / 2, bottom: anchor.y + h / 2 };
           if (box.left < view.left + 2 || box.right > view.right - 2 || box.top < view.top + 2 || box.bottom > view.bottom - 2 ||
               occupied.some(other => box.left < other.right + 6 && box.right > other.left - 6 && box.top < other.bottom + 6 && box.bottom > other.top - 6)) continue;
-          // Hit testing also respects clipping, hidden ancestors, holes and paint order.
           const probes = [-1, 0, 1].flatMap(x => [-1, 0, 1].map(y => [x * width / 2, y * height / 2]));
-          if (!probes.every(([x, y]) => {
-            const hit = document.elementFromPoint(anchor.x + x * cos - y * sin, anchor.y + x * sin + y * cos);
-            return hit === shape || shape.contains(hit);
-          })) continue;
+          if (!probes.every(([x, y]) => hitsCaptionCopper(shape, layer,
+            anchor.x + x * cos - y * sin, anchor.y + x * sin + y * cos))) continue;
           const caption = document.createElement('span'); caption.className = 'copper-label';
           if (rows.length === 1) {
             caption.classList.add(rows[0].kind); caption.textContent = rows[0].text;
@@ -180,6 +195,7 @@ export class NetLabels {
           caption.style.left = anchor.x - view.left + 'px'; caption.style.top = anchor.y - view.top + 'px';
           caption.style.transform = `translate(-50%, -50%) rotate(${angle}rad)`;
           fragment.append(caption); occupied.push(box); placed = true;
+          if (padKey) placedPads.add(padKey);
           break;
         }
         if (placed) break;
