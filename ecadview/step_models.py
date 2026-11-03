@@ -165,8 +165,8 @@ def kicad_models(root, directory, origin, thickness):
     for index, footprint in enumerate(forms(root, "footprint") + forms(root, "module")):
         local_files = embedded.index(footprint)
         properties = {str(p[1]): str(p[2]) for p in forms(footprint, "property") if len(p) > 2}
-        name = properties.get("Reference") or next((str(t[2]) for t in forms(footprint, "fp_text")
-                                                    if len(t) > 2 and str(t[1]) == "reference"), "Component")
+        component = properties.get("Reference") or next((str(t[2]) for t in forms(footprint, "fp_text")
+                                                         if len(t) > 2 and str(t[1]) == "reference"), None)
         x, y = point(footprint)
         bottom = value(footprint, "layer") == "B.Cu"
         fp_rotation = rotation(z=angle(footprint)) @ (np.diag([1, -1, -1]) if bottom else np.eye(3))
@@ -193,7 +193,7 @@ def kicad_models(root, directory, origin, thickness):
             else:
                 assets.setdefault(key, {"name": reference})
                 missing += 1
-            bodies.append({"id": f"kc-body-{index}-{model_index}", "name": name, "model": key,
-                           "matrix": matrix(transform, position), "color": 0x999999,
+            bodies.append({"id": f"kc-body-{index}-{model_index}", "name": component or "Component",
+                           "component": component, "model": key, "matrix": matrix(transform, position), "color": 0x999999,
                            "opacity": max(0, min(1, scalar(model, "opacity", 1)))})
     return assets, bodies, missing

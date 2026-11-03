@@ -258,6 +258,10 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     }
     updatePolygonControl(); mountNetSearch(); mountComponentSearch(); updateSchematicSelection();
     twoDBoard = activeBoard;
+    if (activeBoard?.fitProbeOnMount) {
+      activeBoard.fitProbeOnMount = false;
+      revealLayoutProbe();
+    }
   }
   function closeBoard(board) {
     const index = boards.indexOf(board);
@@ -328,7 +332,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     const measure = document.createElementNS(NS, 'g'); measure.id = 'measure'; rendered.append(measure);
     Object.assign(board, { svg: rendered, name: data.name, kind, stats: data.stats, warnings: data.warnings || [], groups: [],
                            layoutComponents: data.layout_components || [], probeConnections: null, probeSchematic: null,
-                           componentIndex: null, netIndex: null, schematicStyleKey: null, schematicTargetsBuilt: false,
+                           componentIndex: null, netIndex: null, componentHits: [], netHits: [], schematicStyleKey: null, schematicTargetsBuilt: false,
                            scene3d: data.scene3d, camera3d: null, bodyEdits: null,
                            home: origin, vb: { ...origin }, pts: [], measurements: [], hover: null, mg: measure, sceneGroup: rendered.querySelector('#scene'),
                            gpuScene: null, gpuLoading: kind === 'pcb' && Boolean(data.webgl) && !gpuUnavailable,
@@ -407,7 +411,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
         $('step-status').textContent = total ? `STEP models: ${loaded}/${total} loaded` +
           (failed.length ? ` · ${failed.length} unavailable; using body outlines where available.\n${failed.join('\n')}` : '') : '';
       });
-      threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board), board.svg);
+      threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board), board.svg, layoutProbe(board));
       threeBoard = board;
       updateLoading();
       updateBodyControls();
@@ -415,7 +419,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       if (request !== threeMount || board !== activeBoard) return;
       threeViewer?.clear();
       threeBoard = null;
-      board.mode = '2d'; mountViewMode();
+      setViewMode('2d');
       $('three-view').hidden = true;
       $('three-status').hidden = false;
       $('three-status').textContent = 'Could not open 3D. Check WebGL support in your browser. ' + error.message;
@@ -519,6 +523,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   }
   function updateBodyControls() {
     const ready = is3D() && threeBoard === activeBoard;
+    const probed = ready && (activeBoard.probeComponents?.length || activeBoard.probeNets?.length);
+    $('three-probe-key').hidden = !probed;
     const state = ready ? bodyEdits(activeBoard) : null;
     const list = $('three-body-list'), scroll = list.scrollTop;
     list.replaceChildren(); list.disabled = !ready;
@@ -535,7 +541,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       $('three-selection').textContent = state.selected.size ?
         `${state.selected.size} selected: ${[...state.selected].map(id => names.get(id)).join(', ')}` : 'No body selected.';
     } else $('three-selection').textContent = 'No body selected.';
-    $('three-clear').disabled = $('three-delete').disabled = !state?.selected.size;
+    $('three-clear').disabled = !state?.selected.size && !probed;
+    $('three-delete').disabled = !state?.selected.size;
     $('three-undo').disabled = !state?.undo.length;
   }
   function updateBodies() {
@@ -553,9 +560,19 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     }
     updateBodies();
   }
-  function clearBodies() {
-    if (!is3D() || threeBoard !== activeBoard) return;
-    bodyEdits(activeBoard).selected.clear(); updateBodies();
+  function clear3DSelection() {
+    if (!is3D()) return;
+    const board = activeBoard, bodies = bodyEdits(board);
+    bodies.selected.clear();
+    if (board.probeComponents?.length || board.probeNets?.length) {
+      board.componentQuery = board.netQuery = '';
+      board.probeComponents = board.probeNets = board.probeResult = null;
+      board.probeMessage = ''; board.fitProbeOnMount = false;
+      twoDBoard = null;
+      updateProbeResult();
+    }
+    if (threeBoard === board) threeViewer.setProbe(layoutProbe(board), bodies);
+    updateBodyControls();
   }
   function deleteBodies() {
     if (!is3D() || threeBoard !== activeBoard) return;
@@ -577,7 +594,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     bodyEdits(activeBoard).selected = new Set([...$('three-body-list').selectedOptions].map(option => option.value));
     updateBodies();
   };
-  $('three-clear').onclick = clearBodies;
+  $('three-clear').onclick = clear3DSelection;
   $('three-delete').onclick = deleteBodies;
   $('three-undo').onclick = undoBodies;
 
@@ -722,7 +739,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     }));
     select.value = source?.probeTargetId || '';
     select.disabled = !targets.length || !source?.svg;
-    const selected = fromSchematic ? source.selectedComponents.size + source.selectedNets.size : componentHits.length + netHits.length;
+    const selected = fromSchematic ? source.selectedComponents.size + source.selectedNets.size :
+      (source?.probeComponents?.length || 0) + (source?.probeNets?.length || 0);
     button.disabled = !source?.svg || !selected || !source.probeTargetId;
     status.textContent = !source?.svg ? '' : source.probeMessage || (!targets.length ?
       'Open a ' + (fromSchematic ? 'PCB layout (.PcbDoc or .kicad_pcb)' : 'schematic (.SchDoc, .kicad_sch, or .sch)') + ' to cross-probe.' :
@@ -750,7 +768,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   function layoutConnections(layout) {
     if (layout.probeConnections?.svg !== layout.svg) {
       layout.probeConnections = { svg: layout.svg, index: indexLayout(
-        layout.svg.querySelectorAll('#scene [data-component], #scene [data-net]'), layout.layoutComponents) };
+        layout.svg.querySelectorAll('#scene [data-component], #scene [data-net]'), layout.layoutComponents,
+        layout.scene3d?.board?.length ? layout.scene3d.bodies : []) };
     }
     return layout.probeConnections.index;
   }
@@ -769,6 +788,18 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     paintBatch++;
     try { update(); }
     finally { paintBatch--; if (!paintBatch) { paintGPU(); updateNetLabels(); } }
+  }
+  function layoutProbe(board) {
+    return { components: board.probeComponents || [], nets: board.probeNets || [] };
+  }
+  function revealLayoutProbe() {
+    const hits = [...componentHits, ...netHits], layers = new Set(hits.map(el => el.closest('#scene > g')));
+    let revealed = false;
+    for (const group of groups) if (group.style.display === 'none' && layers.has(group)) {
+      group._cb.checked = true; group.style.display = ''; raiseLayer(group); revealed = true;
+    }
+    if (revealed) { updateComponentStatus(); updateNetStatus(); }
+    fitMatches(hits);
   }
   $('probe-layout-btn').onclick = () => {
     const source = activeBoard;
@@ -795,15 +826,11 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     layout.probeComponents = [...components]; layout.probeNets = [...nets];
     layout.componentQuery = [...components].join(', '); layout.netQuery = [...nets].join(', ');
     layout.probeResult = probeResult(source, components, nets, unmatched);
+    // A PCB can receive a probe while displaying its cached 3D scene. Its
+    // 2D layers and viewport can only be revealed and fitted once mounted.
+    layout.fitProbeOnMount = true;
     probeTransition(() => {
-      activateBoard(layout); if (is3D()) setViewMode('2d'); setMeasuring(false);
-      const hits = [...componentHits, ...netHits], layers = new Set(hits.map(el => el.closest('#scene > g')));
-      let revealed = false;
-      for (const group of groups) if (group.style.display === 'none' && layers.has(group)) {
-        group._cb.checked = true; group.style.display = ''; raiseLayer(group); revealed = true;
-      }
-      if (revealed) { updateComponentStatus(); updateNetStatus(); }
-      fitMatches(hits);
+      activateBoard(layout); setMeasuring(false);
     });
   };
   $('probe-schematic-btn').onclick = () => {
@@ -812,14 +839,15 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (source?.kind !== 'pcb' || !target) return;
     const connections = layoutConnections(source), schematic = schematicConnections(target);
     const components = new Set(), nets = new Set(), missing = [];
-    for (const name of new Set(componentHits.map(el => el.dataset.component))) {
+    const selection = layoutProbe(source);
+    for (const name of selection.components) {
       const matches = findSchematicComponents(name, schematic, connections);
       if (matches.length) matches.forEach(id => components.add(id));
       else missing.push('component ' + name);
     }
     // Component-only probes never need to resolve the schematic's nets.
-    const netMatches = netHits.length ? reverseNets(schematic, connections) : null;
-    for (const name of new Set(netHits.map(el => el.dataset.net))) {
+    const netMatches = selection.nets.length ? reverseNets(schematic, connections) : null;
+    for (const name of selection.nets) {
       const matches = netMatches.reverse.get(name) || [];
       if (matches.length) matches.forEach(id => nets.add(id));
       else missing.push('net ' + name + (netMatches.ambiguous.has(name) ? ' (ambiguous)' : ''));
@@ -930,7 +958,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   // ------------------------------------------------------------ component search
   let componentIndex = new Map(), componentHits = [];
   function mountComponentSearch() {
-    componentIndex = activeBoard?.componentIndex || new Map(); componentHits = [];
+    componentIndex = activeBoard?.componentIndex || new Map(); componentHits = activeBoard?.componentHits || [];
     if (!activeBoard?.componentIndex && activeBoard?.kind === 'schematic') {
       for (const row of activeBoard.schematicComponents.values()) componentIndex.set(row.name, row.elements);
     }
@@ -957,20 +985,23 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     const names = [...componentIndex.keys()];
     const exact = names.find(name => name.toLowerCase() === query);
     const matches = activeBoard?.probeComponents || (query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : []);
-    componentHits = matches.flatMap(name => componentIndex.get(name));
+    componentHits = matches.flatMap(name => componentIndex.get(name) || []);
+    if (activeBoard) { activeBoard.componentHits = componentHits; activeBoard.probeComponents = matches; }
     for (const el of componentHits) el.classList.add('component-match');
     updateComponentStatus(matches.length);
     updateProbeTargets();
   }
-  function updateComponentStatus(count = new Set(componentHits.map(el => el.dataset.component)).size) {
+  function updateComponentStatus(count = activeBoard?.probeComponents?.length || 0) {
     if (activeBoard?.kind === 'schematic') { updateSchematicSelection(); return; }
     const { overlay, hidden, hiddenPolygons } = buildLayoutHighlight('component-highlight', componentHits, '#ffe066');
     updateHoleOverlay();
     $('component-fit').disabled = !overlay.childElementCount;
     $('component-reveal').hidden = !hidden;
+    const only3D = (activeBoard?.probeComponents || []).filter(name => !componentIndex.has(name));
     $('component-status').textContent = !$('component-query').value.trim() ? '' : !count ? 'No matching components.' :
-      `${count} component${count === 1 ? '' : 's'} ${hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
+      `${count} component${count === 1 ? '' : 's'} ${only3D.length || hiddenPolygons && !overlay.childElementCount ? 'matched' : 'highlighted'}` +
       (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
+    if (only3D.length) $('component-status').textContent += `\n${only3D.join(', ')} ${only3D.length === 1 ? 'is' : 'are'} visible only in 3D.`;
     updateNetLabels();
   }
   function clearComponent() { resetProbeSelection('probeComponents'); $('component-query').value = ''; searchComponents(); }
@@ -1067,7 +1098,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   // ------------------------------------------------------------ net search
   let netIndex = new Map(), netHits = [];
   function mountNetSearch() {
-    netIndex = activeBoard?.netIndex || new Map(); netHits = [];
+    netIndex = activeBoard?.netIndex || new Map(); netHits = activeBoard?.netHits || [];
     if (!activeBoard?.netIndex && activeBoard?.kind === 'schematic') {
       for (const row of activeBoard.schematicNets.values()) netIndex.set(row.name, row.elements);
     }
@@ -1095,6 +1126,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     const exact = names.find(name => name.toLowerCase() === query);
     const matches = activeBoard?.probeNets || (query ? names.filter(name => exact ? name === exact : name.toLowerCase().includes(query)) : []);
     netHits = matches.flatMap(name => netIndex.get(name));
+    if (activeBoard) { activeBoard.netHits = netHits; activeBoard.probeNets = matches; }
     for (const el of netHits) el.classList.add('net-match');
     updateNetStatus(matches.length);
     updateProbeTargets();
@@ -1433,7 +1465,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     }
     if (is3D()) {
       if (e.target.closest('input, textarea, [contenteditable]') || e.target.closest('select') && e.target !== $('three-body-list')) return;
-      if (e.key === 'Escape') { e.preventDefault(); clearBodies(); }
+      if (e.key === 'Escape') { e.preventDefault(); clear3DSelection(); }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         // A tab's Delete key belongs to the existing tab-close shortcut.
         if (!e.target.closest('[role="tab"]')) { e.preventDefault(); deleteBodies(); }

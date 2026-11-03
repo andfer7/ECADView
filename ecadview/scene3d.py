@@ -146,7 +146,8 @@ def build_scene(pcb, *, layer_stack=None):
         for shape in shapes or [{}]:
             bodies.append({**shape, **placement, "id": f"body-{body_number}", "z": z, "height": high - low, "color": rgb,
                            "opacity": max(0, min(1, body.body_opacity_3d)),
-                           "name": component.designator if component else body.name.strip() or "Body"})
+                           "name": component.designator if component else body.name.strip() or "Body",
+                           "component": component.designator if component else None})
         if component:
             covered_components.add(index)
         if body.model_type != 0 and not model:

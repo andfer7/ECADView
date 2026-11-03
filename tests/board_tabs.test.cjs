@@ -3177,6 +3177,26 @@ test('3D board finishes use actual outer copper, mask and silkscreen on both sid
   assert.deepEqual(result.hatchGap, [14,69,44,255], 'hatched copper paint servers retain their physical gaps');
 });
 
+test('3D probing keeps outer copper on its own face and projects selected inner copper onto both faces', async t => {
+  const { page } = await openPage(t);
+  const pixels = await page.evaluate(async () => {
+    const { boardProbeSurfaces } = await import('/static/board-surface.js');
+    const source = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg"><g id="scene">
+      <g data-layer-token="TOP"><path data-net="A" d="M1 2h8" fill="none" stroke="red"/></g>
+      <g data-layer-token="BOTTOM" style="display:none"><path data-net="A" d="M1 4h8" fill="none" stroke="blue"/></g>
+      <g data-layer-token="MID1"><g transform="translate(0 6)" data-net="A"><path d="M1 0h8" fill="none" stroke="green"/></g>
+        <rect data-net="AUX" x="1" y="8" width="8" height="1"/></g>
+    </g></svg>`, 'image/svg+xml');
+    const model = { surface_origin: [5,5], board: [{ outline: [[-5,-5],[5,-5],[5,5],[-5,5]] }] };
+    const surfaces = await boardProbeSurfaces(source, model, { nets: ['A'] }, 100);
+    return Object.fromEntries(surfaces.map(({ side, color }) => [side, [2,4,6,8.5].map(y =>
+      [...color.getContext('2d').getImageData(50, y * 10, 1, 1).data])]));
+  });
+  const outer = [104,224,255,255], inner = [177,150,255,255], empty = [0,0,0,0];
+  assert.deepEqual(pixels.top, [outer, empty, inner, empty]);
+  assert.deepEqual(pixels.bottom, [empty, outer, inner, empty]);
+});
+
 test('compact board finishes match RGBA pixels and release their construction canvases', async t => {
   const { page } = await openPage(t);
   const result = await page.evaluate(async () => {
@@ -3771,6 +3791,8 @@ test('3D selection clearly tints every STEP part and fallback body while preserv
       outline: [[x-4,-8],[x+4,-8],[x+4,-4],[x-4,-4]], holes: [],
       matrix: new THREE.Matrix4().makeTranslation(x, -6, 1.8).toArray() });
     const fallback = body('fallback', -13), step = body('step', -2), copy = body('copy', 10);
+    fallback.component = step.component = 'U1';
+    copy.component = null; copy.name = 'U1'; // An unowned body can share the component's display name.
     const model = { board: [{ outline: [[-20,-12],[20,-12],[20,12],[-20,12]], holes: [] }],
       thickness: 1.6, bodies: [fallback, step, copy] };
     const parts = [-2,2].map((x, index) => {
@@ -3795,6 +3817,11 @@ test('3D selection clearly tints every STEP part and fallback body while preserv
         geometries: viewer.renderer.info.memory.geometries, programs: viewer.renderer.info.programs.length };
     }
     const original = capture();
+    await viewer.setProbe({ components: ['U1'] });
+    const probed = capture();
+    viewer.updateBodies(state(['copy']));
+    const picked = capture();
+    await viewer.setProbe({}, state());
     viewer.updateBodies(state(['step', 'fallback']));
     const selected = capture(), image = viewer.renderer.domElement.toDataURL();
     viewer.updateBodies(state()); const cleared = capture();
@@ -3806,10 +3833,17 @@ test('3D selection clearly tints every STEP part and fallback body while preserv
     viewer.show(model, viewer.state(), state(['step']));
     viewer.addStepBodies([step, copy], parts);
     const remounted = capture();
+    viewer.show({ ...model }, viewer.state(), state(), null, { components: ['U1'] });
+    viewer.addStepBodies([step, copy], parts);
+    const converted = capture();
     viewer.clear(); viewer.controls.dispose(); viewer.observer.disconnect(); viewer.environment.dispose(); viewer.renderer.dispose(); host.remove();
-    return { original, selected, cleared, stepOnly, deleted, undone, remounted, image };
+    return { original, probed, picked, selected, cleared, stepOnly, deleted, undone, remounted, converted, image };
   });
   const cyan = ([r,g,b]) => g > 160 && b > 160 && g > r + 50 && b > r + 50;
+  const gold = ([r,g,b]) => r > 200 && g > 180 && g > b + 45;
+  assert.ok(result.probed.colors.slice(0,3).every(gold), 'a component probe tints the extrusion and both instanced STEP parts');
+  assert.deepEqual(result.probed.colors.slice(3), result.original.colors.slice(3), 'an unrelated body with the same display name stays unchanged');
+  assert.ok(result.picked.colors.slice(3).every(cyan), 'manual body selection remains independent of the probe');
   assert.ok(result.selected.colors.slice(0,3).every(cyan), `dark fallback, black plastic and metallic STEP parts all show cyan: ${JSON.stringify(result.selected.colors)}`);
   assert.deepEqual(result.selected.colors.slice(3), result.original.colors.slice(3), 'another instance sharing STEP geometry keeps its own finish');
   assert.equal(result.selected.geometries, result.original.geometries, 'selection adds no overlapping mesh geometry');
@@ -3820,6 +3854,7 @@ test('3D selection clearly tints every STEP part and fallback body while preserv
   assert.ok(result.deleted.colors.slice(1,3).every(color => !cyan(color)), 'deleted parts leave no visible highlight');
   assert.equal(result.undone.checksum, result.stepOnly.checksum, 'undo restores the highlighted component');
   assert.equal(result.remounted.checksum, result.stepOnly.checksum, 'highlight survives remounting and STEP replacement');
+  assert.equal(result.converted.checksum, result.probed.checksum, 'probe highlight transfers from the outline to converted STEP parts');
   if (process.env.PCB_3D_HIGHLIGHT_SCREENSHOT)
     require('node:fs').writeFileSync(process.env.PCB_3D_HIGHLIGHT_SCREENSHOT, Buffer.from(result.image.split(',')[1], 'base64'));
   assert.deepEqual(graphicsErrors, []);
@@ -3926,6 +3961,110 @@ async function loadedDocument(page, name) {
   await page.waitForFunction(name => document.getElementById('filename').textContent === name &&
     document.getElementById('busy').style.display === 'none', name);
 }
+
+test('cross-probed model-less components and routed nets stay visible across 2D and 3D transitions until cleared', async t => {
+  const { page } = await openPage(t); await page.unroute('**/render');
+  await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js'), show = Board3D.prototype.show;
+    const { Vector3 } = await import('/static/three.module.min.js');
+    Board3D.prototype.show = function (...args) { window.testViewer = this; return show.apply(this, args); };
+    window.probePixels = () => {
+      const viewer = window.testViewer, [cx, cy] = viewer.model.surface_origin;
+      viewer.render();
+      const gl = viewer.renderer.getContext();
+      // R1's GND pad annulus, the SIGNAL track away from R1, and the unrelated GND pour.
+      return [[10.7,12], [16,8], [8,23]].map(([x, y]) => {
+        const p = new Vector3(x - cx, cy - y, viewer.model.thickness / 2).project(viewer.camera);
+        const rgba = new Uint8Array(4);
+        gl.readPixels(Math.floor((p.x + 1) * gl.drawingBufferWidth / 2), Math.floor((p.y + 1) * gl.drawingBufferHeight / 2),
+          1, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+        return [...rgba.slice(0, 3)];
+      });
+    };
+  });
+  await page.locator('#file').setInputFiles(kicadFixture('kicad_pcb'));
+  await loadedDocument(page, 'demo.kicad_pcb');
+  await set3DMode(page, true); await wait3D(page);
+  await page.locator('#three-top').click();
+  await page.waitForFunction(() => window.testViewer?.ready);
+  const original = await page.evaluate(() => window.probePixels());
+  const verifyPixels = (pad, track) => page.waitForFunction(({ original, pad, track }) => window.testViewer?.ready &&
+    window.probePixels().every(([r,g,b], i) => {
+      if (i === 0 && pad) return r - b > 65 && g - b > 45; // Gold must stand out on reflective copper.
+      if (i === 1 && track) return b - r > 40 && g - r > 30;
+      return [r,g,b].every((v, c) => Math.abs(v - original[i][c]) <= 2);
+    }), { original, pad, track }, { polling: 100 });
+  await set3DMode(page, false);
+  await page.locator('#file').setInputFiles(kicadFixture('kicad_sch'));
+  await loadedDocument(page, 'demo.kicad_sch');
+  const component = page.locator('[id^="kc-body-"] path').first();
+  await clickSchematicGraphic(page, component);
+  await page.locator('#probe-layout-btn').click();
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  await set3DMode(page, true); await wait3D(page);
+  await verifyPixels(true, false);
+  assert.equal(await page.locator('#three-body-list option').count(), 0);
+
+  const sheet = page.getByRole('tab', { name: 'demo.kicad_sch', exact: true });
+  await sheet.click();
+  await clickSchematicGraphic(page, page.locator('[id^="kc-wire-"] .sch-hit').nth(1));
+  assert.equal(await schematicStatus(page), 'Nets: SIGNAL');
+  await page.locator('#probe-layout-btn').click();
+  assert.equal(await page.locator('#view-mode-switch').getAttribute('aria-checked'), 'true');
+  await wait3D(page); await verifyPixels(false, true);
+  await sheet.click();
+  await clickSchematicGraphic(page, component, true);
+  await page.locator('#probe-layout-btn').click(); await wait3D(page);
+  await verifyPixels(true, true);
+  assert.equal(await page.locator('#three-delete').isDisabled(), true);
+  assert.equal(await page.locator('#three-probe-key').isVisible(), true);
+  await page.locator('#three-clear').click();
+  await verifyPixels(false, false);
+  assert.equal(await page.locator('#three-probe-key').isHidden(), true);
+  await set3DMode(page, false);
+  assert.equal(await page.locator('#component-query').inputValue(), '');
+  assert.equal(await page.locator('#net-query').inputValue(), '');
+  await page.locator('#net-query').fill('sig'); // A partial search resolves to the exact SIGNAL net in 3D.
+  await set3DMode(page, true); await wait3D(page); await verifyPixels(false, true);
+});
+
+test('3D reuses a cached probe texture and discards a replacement that finishes decoding after Escape', async t => {
+  const { page } = await openPage(t); await page.unroute('**/render');
+  await page.evaluate(async () => {
+    const { Board3D } = await import('/static/viewer-3d.js'), show = Board3D.prototype.show;
+    Board3D.prototype.show = function (...args) { window.testViewer = this; return show.apply(this, args); };
+    window.probeMap = () => window.testViewer.boardMeshes[0].material[0].emissiveMap;
+  });
+  await page.locator('#file').setInputFiles(kicadFixture('kicad_pcb'));
+  await loadedDocument(page, 'demo.kicad_pcb');
+  await page.locator('#net-query').fill('SIGNAL');
+  await set3DMode(page, true); await wait3D(page);
+  const first = await page.evaluate(async () => {
+    await window.testViewer.loading;
+    window.probeDisposals = 0;
+    window.probeMap().addEventListener('dispose', () => window.probeDisposals++);
+    return window.probeMap().uuid;
+  });
+  await set3DMode(page, false); await set3DMode(page, true); await wait3D(page);
+  assert.equal(await page.evaluate(async () => { await window.testViewer.loading; return window.probeMap().uuid; }), first);
+  await set3DMode(page, false);
+  await page.locator('#net-query').fill('GND');
+  await page.evaluate(() => {
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = async function () {
+      HTMLImageElement.prototype.decode = decode;
+      await new Promise(resolve => { window.resumeDecode = resolve; });
+      return decode.call(this);
+    };
+  });
+  await set3DMode(page, true); await page.waitForFunction(() => Boolean(window.resumeDecode));
+  await page.locator('#three-view canvas').focus(); await page.keyboard.press('Escape');
+  const after = await page.evaluate(async () => {
+    window.resumeDecode(); await window.testViewer.loading;
+    return { map: window.probeMap()?.uuid ?? null, disposals: window.probeDisposals };
+  });
+  assert.deepEqual(after, { map: null, disposals: 1 });
+});
 
 test('opens real KiCad PCB and schematic files, cross-probes, searches pins and nets, measures, and shows the 3D board', async t => {
   const { page } = await openPage(t);
