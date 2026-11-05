@@ -260,7 +260,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     twoDBoard = activeBoard;
     if (activeBoard?.fitProbeOnMount) {
       activeBoard.fitProbeOnMount = false;
-      revealLayoutProbe();
+      fitMatches([...componentHits, ...netHits]);
     }
   }
   function closeBoard(board) {
@@ -792,15 +792,6 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   function layoutProbe(board) {
     return { components: board.probeComponents || [], nets: board.probeNets || [] };
   }
-  function revealLayoutProbe() {
-    const hits = [...componentHits, ...netHits], layers = new Set(hits.map(el => el.closest('#scene > g')));
-    let revealed = false;
-    for (const group of groups) if (group.style.display === 'none' && layers.has(group)) {
-      group._cb.checked = true; group.style.display = ''; raiseLayer(group); revealed = true;
-    }
-    if (revealed) { updateComponentStatus(); updateNetStatus(); }
-    fitMatches(hits);
-  }
   $('probe-layout-btn').onclick = () => {
     const source = activeBoard;
     const layout = boards.find(board => board.id === source?.probeTargetId && board.kind === 'pcb' && board.svg && !board.loading);
@@ -827,7 +818,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     layout.componentQuery = [...components].join(', '); layout.netQuery = [...nets].join(', ');
     layout.probeResult = probeResult(source, components, nets, unmatched);
     // A PCB can receive a probe while displaying its cached 3D scene. Its
-    // 2D layers and viewport can only be revealed and fitted once mounted.
+    // 2D viewport can only be fitted to visible matches once mounted.
     layout.fitProbeOnMount = true;
     probeTransition(() => {
       activateBoard(layout); setMeasuring(false);

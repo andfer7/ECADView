@@ -787,10 +787,19 @@ test('a symbol body that also carries net metadata selects the component while i
   assert.equal(await schematicStatus(page), 'Nets: GND');
 });
 
-test('cross-probes multiple schematic selections using source IDs and pin connectivity, reveals and fits layout matches', async t => {
+test('cross-probes multiple schematic selections using source IDs and pin connectivity while preserving layer settings', async t => {
   const { page, requests } = await openPage(t, { render: (route, name) => reply(route,
     name.endsWith('.SchDoc') ? probingSchematicData(name) : probingLayoutData(name)) });
   await page.locator('#file').setInputFiles(file('Layout.PcbDoc')); await loaded(page, 'Layout.PcbDoc');
+  await page.getByRole('button', { name: 'Top copper', exact: true }).click();
+  const layerState = () => page.evaluate(() => ({
+    order: [...document.querySelectorAll('#scene > [data-layer-name]')].map(el => [el.id, el.style.display]),
+    controls: [...document.querySelectorAll('#layers label')].map(el => [
+      el.querySelector('.layer-name').textContent, el.querySelector('input').checked,
+      el.querySelector('.layer-name').getAttribute('aria-pressed'),
+    ]),
+  }));
+  const originalLayers = await layerState();
   await page.locator('#measure-btn').click();
   await page.locator('#view').click({ position: { x: 200, y: 200 } });
   await page.locator('#view').click({ position: { x: 400, y: 300 } });
@@ -807,7 +816,12 @@ test('cross-probes multiple schematic selections using source IDs and pin connec
   assert.equal(await page.locator('#component-query').inputValue(), 'R99, U7');
   assert.equal(await page.locator('#net-query').inputValue(), 'PCB_SIGNAL', 'pad connectivity wins over a coincident net name');
   assert.equal(await page.locator('#pcb-other').evaluate(el => el.classList.contains('net-match') || el.classList.contains('component-match')), false);
-  assert.equal(await page.getByRole('checkbox', { name: 'Mechanical 1', exact: true }).isChecked(), true);
+  assert.deepEqual(await layerState(), originalLayers, 'cross-probing preserves every layer checkbox, paint order and active layer');
+  assert.equal(await page.getByRole('checkbox', { name: 'Mechanical 1', exact: true }).isChecked(), false);
+  assert.equal(await page.locator('#component-reveal').isVisible(), true);
+  assert.equal(await page.locator('#net-reveal').isVisible(), true);
+  assert.match(await page.locator('#component-status').textContent(), /1 hidden layer/);
+  assert.match(await page.locator('#net-status').textContent(), /1 hidden layer/);
   assert.notEqual(await page.locator('#view > svg').getAttribute('viewBox'), '0 0 100 80');
   assert.equal(await page.locator('#measure line').count(), 1, 'completed PCB measurements survive cross-probing');
   assert.equal(await page.locator('#view').evaluate(el => el.classList.contains('measuring')), false);
@@ -816,6 +830,7 @@ test('cross-probes multiple schematic selections using source IDs and pin connec
   assert.equal(await schematicStatus(page), selection);
   assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), schematicView);
   await page.getByRole('tab', { name: 'Layout.PcbDoc', exact: true }).click();
+  assert.deepEqual(await layerState(), originalLayers, 'returning to the layout retains its layer settings');
   assert.equal(await page.locator('.component-match').count(), 2, 'exact multi-selection survives remounting');
   await page.locator('#pcb-r').click();
   assert.equal(await page.locator('#component-query').inputValue(), 'U7', 'deselecting one probed component retains the other exact match');
@@ -3995,6 +4010,8 @@ test('cross-probed model-less components and routed nets stay visible across 2D 
       return [r,g,b].every((v, c) => Math.abs(v - original[i][c]) <= 2);
     }), { original, pad, track }, { polling: 100 });
   await set3DMode(page, false);
+  const frontCopper = page.getByRole('checkbox', { name: 'Front copper', exact: true });
+  await frontCopper.uncheck();
   await page.locator('#file').setInputFiles(kicadFixture('kicad_sch'));
   await loadedDocument(page, 'demo.kicad_sch');
   const component = page.locator('[id^="kc-body-"] path').first();
@@ -4016,6 +4033,12 @@ test('cross-probed model-less components and routed nets stay visible across 2D 
   await clickSchematicGraphic(page, component, true);
   await page.locator('#probe-layout-btn').click(); await wait3D(page);
   await verifyPixels(true, true);
+  await set3DMode(page, false);
+  assert.equal(await frontCopper.isChecked(), false, 'a probe received in 3D preserves hidden copper when mounting 2D');
+  assert.equal(await page.locator('#scene > [data-layer-token="TOP"]').evaluate(el => el.style.display), 'none');
+  assert.equal(await page.locator('#component-query').inputValue(), 'R1');
+  assert.equal(await page.locator('#net-query').inputValue(), 'SIGNAL');
+  await set3DMode(page, true); await wait3D(page); await verifyPixels(true, true);
   assert.equal(await page.locator('#three-delete').isDisabled(), true);
   assert.equal(await page.locator('#three-probe-key').isVisible(), true);
   await page.locator('#three-clear').click();
