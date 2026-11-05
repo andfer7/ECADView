@@ -429,6 +429,17 @@ test('cross-probing retains PCB buffers while viewing schematics, draws the fitt
   });
   assert.equal(frames, 1, 'activation, selection and fit produce one final GPU frame');
   assert.equal((await dataset(page)).geometryUploads, original.geometryUploads);
+  await page.getByRole('checkbox', { name:'Top copper', exact:true }).uncheck();
+  const viewport = await page.locator('#view > svg').getAttribute('viewBox');
+  const layers = await page.locator('#scene > [data-layer-name]').evaluateAll(nodes => nodes.map(el => [el.id, el.style.display]));
+  await page.locator('#probe-schematic-btn').click();
+  await page.locator('#probe-layout-btn').click(); await ready(page);
+  assert.equal(await page.getByRole('checkbox', { name:'Top copper', exact:true }).isChecked(), false);
+  assert.deepEqual(await page.locator('#scene > [data-layer-name]').evaluateAll(nodes => nodes.map(el => [el.id, el.style.display])), layers);
+  assert.equal(await page.locator('#view > svg').getAttribute('viewBox'), viewport, 'a probe with all matches hidden keeps the viewport');
+  assert.equal(await page.locator('#component-query').inputValue(), 'U1');
+  assert.equal(await page.locator('#component-reveal').isVisible(), true);
+  assert.equal((await dataset(page)).geometryUploads, original.geometryUploads);
   await page.getByRole('tab', {name:'Sheet.SchDoc',exact:true}).click();
   await page.getByRole('button', {name:'Close GPU.PcbDoc',exact:true}).click();
   assert.equal(await page.evaluate(() => window.bufferBalance), 0, 'closing the hidden PCB frees its resident buffers');
