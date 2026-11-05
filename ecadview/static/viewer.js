@@ -381,6 +381,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     const showing = is3D();
     updateLoading();
     document.querySelectorAll('[data-2d-only]').forEach(el => { el.hidden = showing || el.hasAttribute('data-pcb-only') && activeBoard?.kind === 'schematic'; });
+    $('layers-wrap').hidden = !svg || activeBoard?.kind !== 'pcb' || showing;
     $('three-controls').hidden = !showing;
     $('three-status').textContent = (activeBoard?.scene3d?.notes || []).join('\n');
     $('three-status').hidden = !showing && available;
