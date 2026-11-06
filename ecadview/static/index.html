@@ -77,7 +77,10 @@
     <div id="tabs" role="tablist" aria-label="Open documents"></div>
     <div id="drawing-area">
       <section id="layers-wrap" aria-labelledby="layers-title" data-pcb-only data-2d-only hidden>
-        <h2 id="layers-title">Layers</h2>
+        <h2 id="layers-title"><button id="layers-drag-handle" type="button" aria-label="Move layers panel" title="Drag to move. Arrow keys move; Home resets position.">
+          Layers
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="3" r="1"/><circle cx="11" cy="3" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="13" r="1"/><circle cx="11" cy="13" r="1"/></svg>
+        </button></h2>
         <div class="row"><button id="all">Show all</button><button id="none">Hide all</button></div>
         <button id="polygons-toggle" aria-pressed="false" disabled>Hide polygons</button>
         <div id="layers"></div>

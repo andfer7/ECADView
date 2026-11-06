@@ -19,6 +19,63 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   let activeBoard = null, nextBoardId = 1;
   let layoutGPU = null, gpuUnavailable = false, labelTimer = 0, paintBatch = 0;
   let geometryQueue = Promise.resolve();
+
+  // Keep the floating panel independent of document pan, selection and zoom.
+  const layersPanel = $('layers-wrap'), layersHandle = $('layers-drag-handle'), drawingArea = $('drawing-area');
+  let panelPosition = null, panelDrag = null;
+  function positionLayersPanel(x, y) {
+    const bounds = drawingArea.getBoundingClientRect(), panel = layersPanel.getBoundingClientRect();
+    panelPosition = {
+      x: Math.max(12, Math.min(x, bounds.width - panel.width - 12)),
+      y: Math.max(12, Math.min(y, bounds.height - panel.height - 12)),
+    };
+    layersPanel.style.left = panelPosition.x + 'px';
+    layersPanel.style.top = panelPosition.y + 'px';
+    layersPanel.style.right = 'auto';
+  }
+  function stopPanelDrag() {
+    const pointerId = panelDrag?.pointerId;
+    panelDrag = null; layersPanel.classList.remove('dragging');
+    if (pointerId !== undefined && layersHandle.hasPointerCapture(pointerId)) layersHandle.releasePointerCapture(pointerId);
+  }
+  layersHandle.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.isPrimary || panelDrag) return;
+    event.preventDefault();
+    layersHandle.focus({ preventScroll: true });
+    const panel = layersPanel.getBoundingClientRect();
+    panelDrag = { pointerId: event.pointerId, x: event.clientX - panel.left, y: event.clientY - panel.top };
+    layersHandle.setPointerCapture(event.pointerId);
+    layersPanel.classList.add('dragging');
+  });
+  layersHandle.addEventListener('pointermove', event => {
+    if (event.pointerId !== panelDrag?.pointerId) return;
+    const bounds = drawingArea.getBoundingClientRect();
+    positionLayersPanel(event.clientX - bounds.left - panelDrag.x, event.clientY - bounds.top - panelDrag.y);
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    layersHandle.addEventListener(type, event => { if (event.pointerId === panelDrag?.pointerId) stopPanelDrag(); });
+  }
+  window.addEventListener('blur', stopPanelDrag);
+  layersHandle.addEventListener('keydown', event => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    if (event.key !== 'Home' && !directions[event.key]) return;
+    event.preventDefault(); event.stopPropagation(); stopPanelDrag();
+    if (event.key === 'Home') {
+      panelPosition = null;
+      for (const property of ['left', 'top', 'right']) layersPanel.style.removeProperty(property);
+      return;
+    }
+    const panel = layersPanel.getBoundingClientRect(), bounds = drawingArea.getBoundingClientRect();
+    const [dx, dy] = directions[event.key], step = event.shiftKey ? 50 : 10;
+    positionLayersPanel(panel.left - bounds.left + dx * step, panel.top - bounds.top + dy * step);
+  });
+  const panelResize = new ResizeObserver(() => {
+    if (layersPanel.hidden) { stopPanelDrag(); return; }
+    if (panelPosition) positionLayersPanel(panelPosition.x, panelPosition.y);
+  });
+  panelResize.observe(drawingArea); panelResize.observe(layersPanel);
+
   function updateNetLabels() { if (!paintBatch) netLabels.update(activeBoard, gpuActive()); }
   function viewLoading() { return Boolean(activeBoard?.loading || activeBoard?.gpuLoading); }
   function updateLoading() {
@@ -382,6 +439,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     updateLoading();
     document.querySelectorAll('[data-2d-only]').forEach(el => { el.hidden = showing || el.hasAttribute('data-pcb-only') && activeBoard?.kind === 'schematic'; });
     $('layers-wrap').hidden = !svg || activeBoard?.kind !== 'pcb' || showing;
+    if (layersPanel.hidden) stopPanelDrag();
     $('three-controls').hidden = !showing;
     $('three-status').textContent = (activeBoard?.scene3d?.notes || []).join('\n');
     $('three-status').hidden = !showing && available;

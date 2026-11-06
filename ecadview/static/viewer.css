@@ -9,12 +9,17 @@
            display: flex; flex-direction: column; box-sizing: border-box; }
   #panel > * { padding: 10px 12px; border-bottom: 1px solid var(--line); }
   #panel > :last-child { border-bottom: 0; }
-  #layers-wrap { position: absolute; top: 64px; right: 12px; z-index: 5;
+  #layers-wrap { --layers-top: 12px; position: absolute; top: var(--layers-top); right: 12px; z-index: 6;
     display: flex; flex-direction: column; gap: 8px; box-sizing: border-box;
-    width: 250px; max-width: calc(100% - 24px); max-height: calc(100% - 76px); padding: 12px;
+    width: 250px; max-width: calc(100% - 24px); max-height: calc(100% - var(--layers-top) - 12px); padding: 12px;
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     box-shadow: 0 3px 12px #0005; }
   #layers-title { margin: 0; font-size: 13px; font-weight: 600; }
+  #layers-drag-handle { display: flex; align-items: center; justify-content: space-between; width: 100%;
+    padding: 0; border: 0; background: transparent; font: inherit; cursor: grab; touch-action: none; user-select: none; }
+  #layers-drag-handle svg { width: 16px; height: 16px; color: var(--muted); pointer-events: none; }
+  #layers-drag-handle:hover svg { color: var(--text); }
+  #layers-wrap.dragging #layers-drag-handle { cursor: grabbing; }
   #layers-wrap > :not(#layers) { flex-shrink: 0; }
   #layers-wrap .row { margin: 0; }
   #layers { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
@@ -95,7 +100,8 @@
   #three-rotate-down { grid-area: 3 / 2; }
   @container (max-width: 130px) { .rotation-pad { --step-size: 24px; } }
   @container (max-width: 370px) { #view-mode-switch:not([hidden]) ~ #navigation-toolbar { top: 64px; } }
-  @container (max-width: 370px) { #layers-wrap { top: 116px; max-height: calc(100% - 128px); } }
+  @container (max-width: 644px) { #layers-wrap { --layers-top: 64px; } }
+  @container (max-width: 370px) { #layers-wrap { --layers-top: 116px; } }
   @media (prefers-reduced-motion: reduce) { #view-mode-switch .mode-cover { transition: none; } }
   #tabs { display: flex; flex: none; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); }
   #tabs:empty { display: none; }
