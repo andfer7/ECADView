@@ -1627,14 +1627,17 @@ test('highlights net tracks and pads across transformed, clipped layers', async 
   assert.equal(await page.locator('[data-net="GND"]').first().getAttribute('stroke'), 'red');
 });
 
-test('sidebar scrolls to keep layers and measurements accessible in short windows', async t => {
+test('floating layers and sidebar measurements remain accessible in short windows', async t => {
   const { page } = await openPage(t);
   await page.setViewportSize({ width: 1200, height: 500 });
   await page.locator('#file').setInputFiles(file('A.PcbDoc')); await loaded(page, 'A.PcbDoc');
-  assert.ok(await page.locator('#layers-wrap').evaluate(el => el.clientHeight >= 160));
+  assert.equal(await page.locator('#panel #layers-wrap').count(), 0);
+  const layers = await page.locator('#layers-wrap').boundingBox();
+  const drawing = await page.locator('#drawing-area').boundingBox();
+  near(layers.x + layers.width, drawing.x + drawing.width - 12, 'layers float at the right edge');
+  assert.ok(layers.y + layers.height <= drawing.y + drawing.height);
   await page.locator('#layers input').first().uncheck();
   await page.locator('#measure-btn').click();
-  assert.ok(await page.locator('#panel').evaluate(el => el.scrollTop > 0));
   assert.equal(await page.locator('#measure-btn').getAttribute('class'), 'on');
 });
 

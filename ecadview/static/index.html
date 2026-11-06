@@ -44,11 +44,6 @@
       <button id="net-reveal" hidden>Show matching layers</button>
       <div id="net-status" class="hint" role="status"></div>
     </div>
-    <div id="layers-wrap" data-pcb-only data-2d-only>
-      <div class="row" style="margin:0 0 6px"><button id="all">Show all</button><button id="none">Hide all</button></div>
-      <button id="polygons-toggle" aria-pressed="false" disabled>Hide polygons</button>
-      <div id="layers"></div>
-    </div>
     <div data-pcb-only data-2d-only>
       <div class="row" style="margin:0"><button id="measure-btn">Measure (M)</button>
         <button data-unit="mm" class="on unit">mm</button><button data-unit="mil" class="unit">mil</button><button data-unit="in" class="unit">in</button></div>
@@ -81,6 +76,15 @@
   <div id="workspace">
     <div id="tabs" role="tablist" aria-label="Open documents"></div>
     <div id="drawing-area">
+      <section id="layers-wrap" aria-labelledby="layers-title" data-pcb-only data-2d-only hidden>
+        <h2 id="layers-title"><button id="layers-drag-handle" type="button" aria-label="Move layers panel" title="Drag to move. Arrow keys move; Home resets position.">
+          Layers
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="3" r="1"/><circle cx="11" cy="3" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="13" r="1"/><circle cx="11" cy="13" r="1"/></svg>
+        </button></h2>
+        <div class="row"><button id="all">Show all</button><button id="none">Hide all</button></div>
+        <button id="polygons-toggle" aria-pressed="false" disabled>Hide polygons</button>
+        <div id="layers"></div>
+      </section>
       <button id="view-mode-switch" type="button" role="switch" aria-label="3D view" aria-checked="false" aria-keyshortcuts="2 3" title="Open a PCB layout to switch views" data-pcb-only disabled>
         <span aria-hidden="true">2D</span><span aria-hidden="true">3D</span>
         <span class="mode-cover" aria-hidden="true"></span>
