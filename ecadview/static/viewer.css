@@ -25,6 +25,15 @@
   #layers { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   h1 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
   #filename { color: var(--muted); font-size: 12px; word-break: break-all; min-height: 1.4em; }
+  #open-project { width: 100%; margin-top: 6px; }
+  #variant-controls > label { display: block; }
+  #variant-project, #variant-select { width: 100%; box-sizing: border-box; margin: 4px 0 8px;
+    background: var(--bg); color: var(--text); padding: 4px; }
+  #variant-status { white-space: pre-line; overflow-wrap: anywhere; }
+  #variant-details { max-height: 220px; overflow-y: auto; overflow-wrap: anywhere; }
+  #variant-details ul { margin: 8px 0 0; padding-left: 18px; }
+  #variant-details li { margin: 4px 0; white-space: pre-line; }
+  #variant-details .variant-note { margin-top: 6px; }
   #warnings { color: #efc578; font-size: 12px; white-space: pre-line; margin-top: 6px; }
   #component-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
                      border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }

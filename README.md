@@ -5,6 +5,8 @@ A local browser-based Altium and KiCad PCB and schematic viewer. Open `.PcbDoc`,
 tabs, inspect layers and polygon pours, find components and nets, cross-probe
 between documents, and measure PCB geometry.
 
+Load an Altium `.PrjPcb` alongside its documents to inspect assembly variants.
+
 **The web viewer is the primary and only supported interface.** All launch
 commands open it in a browser. The former native Qt window has been retired;
 new features and performance work target the web viewer.
@@ -89,6 +91,33 @@ labels stay clear of the measurement segments. Escape cancels the tool and
 selection while retaining completed measurements; Shift+C clears measurements.
 Each document retains its view, layers, selections, measurements and units
 across tab and 2D/3D changes.
+
+## Altium assembly variants
+
+Use **Open files** to select a `.PrjPcb` together with its `.PcbDoc` and
+`.SchDoc` files, or use **Open project folder** to load the project and its
+referenced documents from a directory. A project can also be opened after its
+documents. From the command line, `ecadview design.PrjPcb` opens its referenced
+documents automatically and reports any missing files.
+
+Choose an **Assembly variant** in the sidebar. The saved project variant is
+selected initially; **Base design** clears the variant. The choice is shared
+by the documents linked to that project. Source component IDs take priority
+over designators, including PCB components renamed after schematic annotation.
+Ambiguous component matches are reported and left unchanged.
+
+Not-fitted components have red crosses in 2D and their bodies are omitted in
+3D. PCB copper, pads and layer visibility remain unchanged. Switching variants
+preserves the camera, measurements, selections and manual 3D deletions. The
+sidebar lists component parameter overrides, alternate-part names and
+variant-level parameters. Drawing text and alternate symbol, footprint and
+3D geometry still come from the base design; `.PrjPcbVariants` geometry is
+not loaded. This viewer does not modify any design or project file.
+
+Browser file access is limited to the files you select. If a document cannot
+be linked automatically, choose its **Altium project** in the sidebar. Folder
+loading preserves relative paths for projects with duplicate document names.
+Project and variant selections last for the current viewer session.
 
 ## 2D rendering and performance
 

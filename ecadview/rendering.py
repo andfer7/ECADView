@@ -139,6 +139,9 @@ def copper_layer_order(pcb: AltiumPcbDoc, *, layer_stack=None) -> list[str]:
 def render_file(path: Path, side: str = "all", clip: bool = False,
                 pour_color: str | None = None, polygon_outlines: bool = False,
                 *, native: bool = False) -> dict:
+    if path.suffix.lower() == ".prjpcb":
+        from .variants import project_metadata
+        return project_metadata(path)
     if path.suffix.lower() == ".kicad_pcb":
         from .kicad_pcb import render_pcb
         return render_pcb(path, side, clip, pour_color, polygon_outlines)
@@ -164,7 +167,7 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
             },
         }
     if path.suffix.lower() != ".pcbdoc":
-        raise ValueError("Open an Altium .PcbDoc or .SchDoc, or a KiCad .kicad_pcb, .kicad_sch, or legacy .sch file.")
+        raise ValueError("Open an Altium .PrjPcb, .PcbDoc or .SchDoc, or a KiCad .kicad_pcb, .kicad_sch, or legacy .sch file.")
     pcb = AltiumPcbDoc.from_file(path)
     warnings = prepare_embedded_fonts(pcb)
     resolve_polygon_nets(pcb)
@@ -201,7 +204,9 @@ def render_file(path: Path, side: str = "all", clip: bool = False,
         "polygon_elements": polygon_element_ids(pcb, svg),
         "layout_components": [
             {"name": component.designator, "source_name": component.source_designator,
-             "source_id": component.source_unique_id_segments[-1] if component.source_unique_id_segments else ""}
+             "source_id": component.source_unique_id_segments[-1] if component.source_unique_id_segments else "",
+             "source_path": component.source_unique_id,
+             "source_sheet": component.source_hierarchical_path}
             for component in pcb.components
         ],
         "warnings": warnings,
