@@ -130,12 +130,12 @@ function boundsInRoot(elements, svg, inverse) {
   return { left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys) };
 }
 
-/** Draw assembly markers above SVG/GPU geometry, leaving layers and copper intact. */
+/** Draw assembly markers on schematics; PCB layouts retain their original artwork. */
 export function renderVariantOverlay(board, state) {
   const svg = board.svg;
   if (!svg) return;
   svg.querySelector('#variant-overlay')?.remove();
-  if (!state?.notFitted?.size || !svg.isConnected) return;
+  if (board.kind !== 'schematic' || !state?.notFitted?.size || !svg.isConnected) return;
   const matrix = svg.getScreenCTM();
   if (!matrix || matrix.a * matrix.d === matrix.b * matrix.c) return;
   const inverse = matrix.inverse(), namespace = 'http://www.w3.org/2000/svg';

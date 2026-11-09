@@ -106,9 +106,10 @@ by the documents linked to that project. Source component IDs take priority
 over designators, including PCB components renamed after schematic annotation.
 Ambiguous component matches are reported and left unchanged.
 
-Not-fitted components have red crosses in 2D and their bodies are omitted in
-3D. PCB copper, pads and layer visibility remain unchanged. Switching variants
-preserves the camera, measurements, selections and manual 3D deletions. The
+Not-fitted components have red crosses in schematics and their bodies are
+omitted in 3D. The 2D PCB layout has no variant crosses; its copper, pads and
+layer visibility remain unchanged. Switching variants preserves the camera,
+measurements, selections and manual 3D deletions. The
 sidebar lists component parameter overrides, alternate-part names and
 variant-level parameters. Drawing text and alternate symbol, footprint and
 3D geometry still come from the base design; `.PrjPcbVariants` geometry is

@@ -285,7 +285,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       `${loaded.size} linked document${loaded.size === 1 ? '' : 's'}.`];
     if (!project.variants.length) messages.push('This project has no assembly variants.');
     else if (!variant) messages.push('Base design — all components fitted.');
-    else messages.push('Not-fitted components are crossed out in 2D and omitted in 3D.');
+    else messages.push('Not-fitted components are crossed out in schematics and omitted in 3D.');
     if (state?.ambiguous.length) messages.push(`${state.ambiguous.length} ambiguous component variation(s) could not be applied.`);
     if (project.warnings?.length) messages.push(...project.warnings);
     $('variant-status').textContent = messages.join('\n');
