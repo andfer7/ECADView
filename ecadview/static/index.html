@@ -5,11 +5,21 @@
   <div id="panel">
     <div>
       <h1>ECADView</h1>
-      <input id="file" type="file" accept=".PcbDoc,.pcbdoc,.SchDoc,.schdoc,.kicad_pcb,.kicad_sch,.sch" multiple hidden>
+      <input id="file" type="file" accept=".PrjPcb,.prjpcb,.PcbDoc,.pcbdoc,.SchDoc,.schdoc,.kicad_pcb,.kicad_sch,.sch" multiple hidden>
       <button class="primary" id="open">Open files…</button>
+      <input id="project-files" type="file" webkitdirectory multiple hidden>
+      <button id="open-project">Open project folder…</button>
       <div id="filename">No document loaded</div>
       <div id="warnings" role="status" hidden></div>
       <div id="renderer-status" class="hint" role="status" hidden></div>
+    </div>
+    <div id="variant-controls" hidden>
+      <label for="variant-project">Altium project</label>
+      <select id="variant-project"></select>
+      <label for="variant-select">Assembly variant</label>
+      <select id="variant-select" disabled></select>
+      <div id="variant-status" class="hint" role="status"></div>
+      <div id="variant-details"></div>
     </div>
     <div id="view-mode" data-pcb-only hidden>
       <div id="three-controls" hidden>

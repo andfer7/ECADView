@@ -4,6 +4,7 @@ import { styleSchematic } from './schematic-style.js';
 import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurement-tools.js';
 import { rectangleMatches } from './rectangle-selection.js';
 import { trackViewerSession } from './viewer-session.js';
+import { variantState, renderVariantOverlay } from './variants.js';
 import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   schematicComponents as findSchematicComponents, reverseNets } from './cross-probe.js';
 
@@ -16,6 +17,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   let svg = null, groups = [], vb = null, home = null;
   let twoDBoard = null;
   const boards = [];
+  const projects = [];
+  let nextProjectId = 1, selectedProjectId = null;
   let activeBoard = null, nextBoardId = 1;
   let layoutGPU = null, gpuUnavailable = false, labelTimer = 0, paintBatch = 0;
   let geometryQueue = Promise.resolve();
@@ -194,6 +197,136 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     }
   }
 
+  // ------------------------------------------------------------ Altium project variants
+  const projectPath = value => {
+    const parts = [];
+    for (const part of String(value || '').replaceAll('\\', '/').split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop();
+      else parts.push(part);
+    }
+    return parts.join('/').toLowerCase();
+  };
+  const baseName = value => projectPath(value).split('/').at(-1);
+  const boardProject = board => projects.find(project => project.id === board?.projectId);
+  const selectedVariant = project => project?.variants.find(variant => variant.name === project.selectedVariant) || null;
+  function projectMatches(project, board) {
+    if (!/\.(pcbdoc|schdoc)$/i.test(board.file.name)) return false;
+    const documents = project.documents || [];
+    if (board.projectKey) return project.project_key === board.projectKey;
+    if (board.projectName && board.projectPath) {
+      return projectPath(board.projectName) === projectPath(project.name) &&
+        documents.some(path => projectPath(path) === projectPath(board.projectPath));
+    }
+    if (board.file.webkitRelativePath && project.file.webkitRelativePath) {
+      const directory = project.file.webkitRelativePath.replace(/[^/]+$/, '');
+      return documents.some(path => projectPath(directory + path) === projectPath(board.file.webkitRelativePath));
+    }
+    return documents.filter(path => baseName(path) === baseName(board.file.name)).length === 1;
+  }
+  function associateProjects() {
+    for (const board of boards) {
+      if (!board.projectManual) {
+        const matches = projects.filter(project => projectMatches(project, board));
+        board.projectId = matches.length === 1 ? matches[0].id : null;
+      }
+      const project = boardProject(board);
+      const paths = project?.documents.filter(path => baseName(path) === baseName(board.file.name)) || [];
+      board.variantDocumentKey = project ? projectPath(board.projectPath || board.file.webkitRelativePath ||
+        (paths.length === 1 ? paths[0] : '')) : '';
+    }
+    for (const board of boards) refreshBoardVariant(board);
+    updateVariantControls();
+  }
+  function registerProject(data, file) {
+    // A normal file picker omits directories. Distinct same-name projects must
+    // not silently replace one another's variants or linked documents.
+    const key = data.project_key || (file.webkitRelativePath ? projectPath(file.webkitRelativePath) :
+      projectPath(file.name) + '\0' + JSON.stringify([data.documents, data.variants]));
+    let project = projects.find(project => project.key === key);
+    const previous = project?.selectedVariant;
+    if (!project) { project = { id: nextProjectId++, key }; projects.push(project); }
+    Object.assign(project, data, { file });
+    project.selectedVariant = previous !== undefined && (previous === '' || project.variants.some(variant => variant.name === previous)) ? previous :
+      project.variants.some(variant => variant.name === data.current_variant) ? data.current_variant : '';
+    selectedProjectId = project.id;
+    associateProjects();
+    return project;
+  }
+  function refreshBoardVariant(board) {
+    if (!board.svg) return;
+    const project = boardProject(board);
+    board.variantInfo = variantState(board, selectedVariant(project), boards.filter(other => other.projectId === board.projectId));
+    if (board === activeBoard) {
+      if (!is3D()) renderVariantOverlay(board, board.variantInfo);
+      updateBodies();
+    }
+  }
+  function updateVariantControls() {
+    $('variant-controls').hidden = !projects.length;
+    const project = activeBoard ? boardProject(activeBoard) : projects.find(item => item.id === selectedProjectId);
+    const option = (value, text) => { const el = document.createElement('option'); el.value = value; el.textContent = text; return el; };
+    $('variant-project').replaceChildren(option('', 'No project'), ...projects.map(item => option(item.id,
+      item.project_label || item.file.webkitRelativePath || item.name +
+      (projects.filter(other => other.name === item.name).length > 1 ? ` (${item.id})` : ''))));
+    $('variant-project').value = project?.id || '';
+    $('variant-project').disabled = Boolean(activeBoard && !/\.(pcbdoc|schdoc)$/i.test(activeBoard.file.name));
+    $('variant-select').replaceChildren(option('', 'Base design'), ...(project?.variants || []).map(item => option(item.name, item.name)));
+    $('variant-select').value = project?.selectedVariant || '';
+    $('variant-select').disabled = !project?.variants.length;
+    const details = $('variant-details'); details.replaceChildren();
+    if (!project) {
+      $('variant-status').textContent = activeBoard ? 'Choose this document’s project to view its variants.' : 'Open an Altium project and its documents.';
+      return;
+    }
+    const variant = selectedVariant(project), state = activeBoard?.variantInfo;
+    const loaded = new Set(boards.filter(board => board.projectId === project.id).map(board => projectPath(board.projectPath || board.file.webkitRelativePath || board.file.name)));
+    const messages = [!loaded.size ? 'Open the project’s PCB and schematic files, or use Open project folder.' :
+      `${loaded.size} linked document${loaded.size === 1 ? '' : 's'}.`];
+    if (!project.variants.length) messages.push('This project has no assembly variants.');
+    else if (!variant) messages.push('Base design — all components fitted.');
+    else messages.push('Not-fitted components are crossed out in schematics and omitted in 3D.');
+    if (state?.ambiguous.length) messages.push(`${state.ambiguous.length} ambiguous component variation(s) could not be applied.`);
+    if (project.warnings?.length) messages.push(...project.warnings);
+    $('variant-status').textContent = messages.join('\n');
+    if (!variant) return;
+    const rows = (activeBoard ? state?.components || [] : variant.components.map(row => ({ ...row, name: row.designator })))
+      .filter(row => row.kind !== 'not_fitted');
+    const list = document.createElement('ul');
+    for (const row of rows) {
+      const changes = [row.kind === 'alternate' ? `Alternate part: ${row.alternate_part || 'specified in project'}` : 'Fitted'];
+      for (const [name, value] of Object.entries(row.parameters || {})) changes.push(`${name}: ${value}`);
+      const item = document.createElement('li'); item.textContent = `${row.name} — ${changes.join('\n')}`; list.append(item);
+    }
+    if (list.childElementCount) details.append(list);
+    if (Object.keys(variant.parameters || {}).length) {
+      const parameters = document.createElement('div'); parameters.className = 'hint variant-note';
+      parameters.textContent = 'Variant parameters: ' + Object.entries(variant.parameters).map(([name, value]) => `${name} = ${value}`).join(', ');
+      details.append(parameters);
+    }
+    if (rows.some(row => row.kind === 'alternate' || Object.keys(row.parameters || {}).length)) {
+      const note = document.createElement('div'); note.className = 'hint variant-note';
+      note.textContent = 'Variant values are listed here. Drawing text and alternate symbol, footprint and 3D geometry remain from the base design.';
+      details.append(note);
+    }
+  }
+  $('variant-project').onchange = () => {
+    const id = Number($('variant-project').value) || null;
+    selectedProjectId = id;
+    if (activeBoard) {
+      activeBoard.projectId = id; activeBoard.projectManual = true;
+      associateProjects();
+    }
+    updateVariantControls();
+  };
+  $('variant-select').onchange = () => {
+    const project = activeBoard ? boardProject(activeBoard) : projects.find(item => item.id === selectedProjectId);
+    if (!project) return;
+    project.selectedVariant = $('variant-select').value;
+    for (const board of boards) if (board.projectId === project.id) refreshBoardVariant(board);
+    updateVariantControls();
+  };
+
   // ------------------------------------------------------------ board tabs / loading
   function saveBoard() {
     if (!activeBoard) return;
@@ -300,6 +433,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (!is3D()) { mount2DControls(); apply(); }
     updateTabs();
     mountViewMode();
+    refreshBoardVariant(board || {}); updateVariantControls();
     if (board) $('view').setAttribute('aria-labelledby', 'board-tab-' + board.id);
     else $('view').removeAttribute('aria-labelledby');
   }
@@ -330,10 +464,23 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     boards.splice(index, 1);
     if (board === activeBoard) mountBoard(boards[Math.min(index, boards.length - 1)] || null);
     else updateTabs();
+    associateProjects();
     if (activeBoard) $('board-tab-' + activeBoard.id).focus();
   }
-  function openFiles(files) {
-    for (const file of files) {
+  async function openFiles(fileList) {
+    const files = [...fileList], batchProjects = [];
+    for (const file of files.filter(file => /\.prjpcb$/i.test(file.name))) {
+      try {
+        const response = await fetch('/render', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(file.name) }, body: file });
+        const data = await response.json();
+        if (!response.ok || data.kind !== 'project') throw new Error(data.error || 'Could not read project variants.');
+        batchProjects.push(registerProject(data, file));
+      } catch (error) { toast(`Could not open ${file.name}: ${error.message}`); }
+    }
+    for (const file of files.filter(file => !/\.prjpcb$/i.test(file.name))) {
+      if (file.webkitRelativePath && !/\.(pcbdoc|schdoc|kicad_pcb|kicad_sch|sch)$/i.test(file.name)) continue;
+      if (file.webkitRelativePath && batchProjects.length &&
+          !batchProjects.some(project => projectMatches(project, { file }))) continue;
       const board = createBoard(file);
       activateBoard(board);
       renderBoard(board);
@@ -397,12 +544,16 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
                            selectedMeasurement: null, activeLayer: null,
                            holeElements: [...rendered.querySelectorAll('#scene [data-hole-owner], #scene [data-primitive$="-hole"]')] });
     if (kind === 'schematic') prepareSchematicSelection(board, data.selection);
+    board.projectName = data.project_name; board.projectPath = data.project_path; board.projectKey = data.project_key;
+    associateProjects();
     if (board === activeBoard) mountBoard(board);
     prepareGPU(board, data);
   }
 
   $('open').onclick = () => $('file').click();
   $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
+  $('open-project').onclick = () => $('project-files').click();
+  $('project-files').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
   document.addEventListener('dragover', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
     e.preventDefault(); view.classList.add('drop');
@@ -451,6 +602,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     syncGPU();
     updateUnits();
     updateBodyControls();
+    if (!showing && activeBoard?.variantInfo) renderVariantOverlay(activeBoard, activeBoard.variantInfo);
     if (showing) show3D();
   }
   async function show3D() {
@@ -470,7 +622,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
         $('step-status').textContent = total ? `STEP models: ${loaded}/${total} loaded` +
           (failed.length ? ` · ${failed.length} unavailable; using body outlines where available.\n${failed.join('\n')}` : '') : '';
       });
-      threeViewer.show(board.scene3d, board.camera3d, bodyEdits(board), board.svg, layoutProbe(board));
+      threeViewer.show(board.scene3d, board.camera3d, visibleBodyState(board), board.svg, layoutProbe(board));
       threeBoard = board;
       updateLoading();
       updateBodyControls();
@@ -577,6 +729,13 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   function bodyEdits(board) {
     return board.bodyEdits ||= { selected: new Set(), deleted: new Set(), undo: [] };
   }
+  function visibleBodyState(board) {
+    const state = bodyEdits(board), deleted = new Set(state.deleted);
+    for (const [index, body] of (board.scene3d?.bodies || []).entries()) {
+      if (board.variantInfo?.notFitted.has(body.component || body.name)) deleted.add(body.id ?? `body-${index}`);
+    }
+    return { ...state, deleted, selected: new Set([...state.selected].filter(id => !deleted.has(id))) };
+  }
   function bodyNames(board) {
     return new Map(board.scene3d.bodies.map((body, index) => [body.id ?? `body-${index}`, body.name || `Body ${index + 1}`]));
   }
@@ -584,7 +743,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     const ready = is3D() && threeBoard === activeBoard;
     const probed = ready && (activeBoard.probeComponents?.length || activeBoard.probeNets?.length);
     $('three-probe-key').hidden = !probed;
-    const state = ready ? bodyEdits(activeBoard) : null;
+    const state = ready ? visibleBodyState(activeBoard) : null;
     const list = $('three-body-list'), scroll = list.scrollTop;
     list.replaceChildren(); list.disabled = !ready;
     if (ready) {
@@ -606,7 +765,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   }
   function updateBodies() {
     if (!is3D() || threeBoard !== activeBoard) return;
-    threeViewer.updateBodies(bodyEdits(activeBoard));
+    threeViewer.updateBodies(visibleBodyState(activeBoard));
     updateBodyControls();
   }
   function pickBody(id, additive) {
@@ -630,14 +789,14 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       twoDBoard = null;
       updateProbeResult();
     }
-    if (threeBoard === board) threeViewer.setProbe(layoutProbe(board), bodies);
+    if (threeBoard === board) threeViewer.setProbe(layoutProbe(board), visibleBodyState(board));
     updateBodyControls();
   }
   function deleteBodies() {
     if (!is3D() || threeBoard !== activeBoard) return;
     const state = bodyEdits(activeBoard);
-    if (!state.selected.size) return;
-    const ids = [...state.selected];
+    const ids = [...visibleBodyState(activeBoard).selected];
+    if (!ids.length) return;
     ids.forEach(id => state.deleted.add(id)); state.undo.push(ids); state.selected.clear();
     updateBodies();
   }
@@ -1053,6 +1212,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       (hidden ? `; ${hidden} hidden layer${hidden === 1 ? '' : 's'}` : '') + (hiddenPolygons ? '; polygons hidden.' : '.');
     if (only3D.length) $('component-status').textContent += `\n${only3D.join(', ')} ${only3D.length === 1 ? 'is' : 'are'} visible only in 3D.`;
     updateNetLabels();
+    if (activeBoard?.variantInfo && !is3D()) renderVariantOverlay(activeBoard, activeBoard.variantInfo);
   }
   function clearComponent() { resetProbeSelection('probeComponents'); $('component-query').value = ''; searchComponents(); }
   $('component-query').oninput = () => { resetProbeSelection('probeComponents'); searchComponents(); };
@@ -1575,7 +1735,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
 
   // ------------------------------------------------------------ board passed on the command line
   fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {
-    const documents = d?.documents || (d?.svg ? [d] : []), activate = !activeBoard, opened = [];
+    const documents = d?.kind === 'project' ? [d] : d?.documents || (d?.svg ? [d] : []), activate = !activeBoard, opened = [];
+    for (const data of documents.filter(data => data.kind === 'project')) registerProject(data, new File([], data.name));
     for (const data of documents) {
       if (!data.svg) continue;
       const file = new File([Uint8Array.from(atob(data.source || ''), c => c.charCodeAt(0))], data.name);

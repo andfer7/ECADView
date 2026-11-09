@@ -39,13 +39,68 @@ def open_in_browser(url: str, browser: str = "chrome") -> None:
     webbrowser.open(url)
 
 
+def load_initial_documents(paths: list[Path]) -> list[dict]:
+    """Expand locally opened projects while rendering each document once."""
+    from .variants import resolve_document
+
+    projects, documents = [], {}
+    def identity(path):
+        info = path.stat()
+        return info.st_dev, info.st_ino
+
+    explicit = {identity(path) for path in paths if path.suffix.lower() != ".prjpcb"}
+    seen_projects = set()
+    for path in paths:
+        if path.suffix.lower() != ".prjpcb":
+            documents.setdefault(identity(path), {"path": path})
+            continue
+        if identity(path) in seen_projects:
+            continue
+        seen_projects.add(identity(path))
+        print(f"Loading {path.name} ...")
+        project = render_file(path, native=True)
+        project["project_key"] = f"cli-project-{len(projects) + 1}"
+        project["project_label"] = str(path)
+        project["source"] = base64.b64encode(path.read_bytes()).decode("ascii")
+        projects.append(project)
+        for name in project["documents"]:
+            try:
+                member = resolve_document(path, name)
+            except (OSError, ValueError) as error:
+                warning = f"Could not open project document {name}: {error}"
+                project["warnings"].append(warning)
+                print(f"Warning: {warning}")
+                continue
+            task = documents.setdefault(identity(member), {"path": member})
+            task.setdefault("project", project)
+            task.setdefault("project_path", name)
+    initial = list(projects)
+    for document_id, task in documents.items():
+        path = task["path"]
+        print(f"Loading {path.name} ...")
+        try:
+            data = {**render_file(path, native=True), "source": base64.b64encode(path.read_bytes()).decode("ascii"), "webgl": True}
+        except Exception as error:
+            if document_id in explicit or "project" not in task:
+                raise
+            warning = f"Could not render project document {task['project_path']}: {type(error).__name__}: {error}"
+            task["project"]["warnings"].append(warning)
+            print(f"Warning: {warning}")
+            continue
+        if "project" in task:
+            data.update(project_name=task["project"]["name"], project_key=task["project"]["project_key"],
+                        project_path=task["project_path"])
+        initial.append(data)
+    return initial
+
+
 def main() -> None:
     if len(sys.argv) == 4 and sys.argv[1] == "--web-geometry-worker":
         from .web_geometry import worker
         worker(sys.argv[2], sys.argv[3])
         return
     ap = argparse.ArgumentParser(description="ECADView: local browser-based Altium and KiCad PCB and schematic viewer")
-    ap.add_argument("documents", nargs="*", type=Path, help="Altium or KiCad documents to open in tabs")
+    ap.add_argument("documents", nargs="*", type=Path, help="Altium projects/documents or KiCad documents to open in tabs")
     ap.add_argument("--web", action="store_true", help="compatibility option; the browser viewer is now the default")
     ap.add_argument("--port", type=int, default=None, help="local server port (default: random free port)")
     ap.add_argument("--browser", default=None, help="browser to use: chrome (default), firefox, safari, default, ...")
@@ -56,10 +111,7 @@ def main() -> None:
         if not path.is_file():
             ap.error(f"File not found: {path}")
     Handler.initial = None
-    initial = []
-    for path in args.documents:
-        print(f"Loading {path.name} ...")
-        initial.append({**render_file(path, native=True), "source": base64.b64encode(path.read_bytes()).decode("ascii"), "webgl": True})
+    initial = load_initial_documents(args.documents)
     if initial:
         Handler.initial = initial[0] if len(initial) == 1 else {"documents": initial}
 
