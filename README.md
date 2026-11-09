@@ -110,7 +110,7 @@ Not-fitted components have red crosses in schematics and their bodies are
 omitted in 3D. The 2D PCB layout has no variant crosses; its copper, pads and
 layer visibility remain unchanged. Switching variants preserves the camera,
 measurements, selections and manual 3D deletions. The
-sidebar lists component parameter overrides, alternate-part names and
+sidebar lists fitted-component parameter overrides, alternate-part names and
 variant-level parameters. Drawing text and alternate symbol, footprint and
 3D geometry still come from the base design; `.PrjPcbVariants` geometry is
 not loaded. This viewer does not modify any design or project file.

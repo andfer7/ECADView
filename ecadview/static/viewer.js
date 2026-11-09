@@ -290,10 +290,11 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (project.warnings?.length) messages.push(...project.warnings);
     $('variant-status').textContent = messages.join('\n');
     if (!variant) return;
-    const rows = activeBoard ? state?.components || [] : variant.components.map(row => ({ ...row, name: row.designator }));
+    const rows = (activeBoard ? state?.components || [] : variant.components.map(row => ({ ...row, name: row.designator })))
+      .filter(row => row.kind !== 'not_fitted');
     const list = document.createElement('ul');
     for (const row of rows) {
-      const changes = [row.kind === 'not_fitted' ? 'Not fitted' : row.kind === 'alternate' ? `Alternate part: ${row.alternate_part || 'specified in project'}` : 'Fitted'];
+      const changes = [row.kind === 'alternate' ? `Alternate part: ${row.alternate_part || 'specified in project'}` : 'Fitted'];
       for (const [name, value] of Object.entries(row.parameters || {})) changes.push(`${name}: ${value}`);
       const item = document.createElement('li'); item.textContent = `${row.name} — ${changes.join('\n')}`; list.append(item);
     }

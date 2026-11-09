@@ -131,8 +131,8 @@ async function selectVariant(page, name) {
 }
 const variantReady = page => page.waitForFunction(() => [...document.querySelectorAll('#variant-select option')].some(option => option.value === 'Economy'));
 const hasCross = page => page.locator('#variant-overlay').evaluateAll(groups => groups.some(group => group.childElementCount > 0));
-const notFittedNames = page => page.locator('#variant-details li').evaluateAll(items => items
-  .map(item => item.textContent.match(/^(.+?) — Not fitted(?:\n|$)/)?.[1]).filter(Boolean));
+const noNotFittedList = async page => assert.equal(await page.locator('#variant-details li')
+  .filter({ hasText: /— Not fitted(?:\n|$)/ }).count(), 0, 'the sidebar omits not-fitted component rows');
 const noLayoutCrosses = async page => assert.equal(await page.locator('#variant-overlay').count(), 0, '2D PCB layout never receives variant X markers');
 const viewState = page => page.evaluate(() => ({
   viewBox: document.querySelector('#view > svg').getAttribute('viewBox'),
@@ -148,11 +148,32 @@ async function set3D(page, enabled) {
   if (enabled) await page.waitForFunction(() => !document.getElementById('three-view').hidden
     && /\d+ bod(y|ies)/.test(document.getElementById('three-summary').textContent));
 }
+async function expectPcbBodies(page, names, message) {
+  const was3D = await page.locator('#view-mode-switch').getAttribute('aria-checked') === 'true';
+  await set3D(page, true);
+  assert.equal(await page.locator('#three-view canvas').isVisible(), true);
+  assert.deepEqual(await page.locator('#three-body-list option').allTextContents(), names, message);
+  await noNotFittedList(page);
+  if (!was3D) await set3D(page, false);
+}
+async function image3D(page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  return page.locator('#three-view canvas').screenshot({
+    style: '#navigation-toolbar, #view-mode-switch, #three-navigation { visibility: hidden !important; } #three-view canvas { outline: none !important; }',
+  });
+}
 
 test('project variants resolve paired documents by source identity while preserving unmarked layout geometry', async t => {
   const { page, requests } = await openPage(t, { render: (route, name) => /\.pcbdoc$/i.test(name)
     ? reply(route, { ...pcbData(name), webgl: true }) : defaultRender(route, name) });
-  await openFiles(page, ['demo.PrjPcb', 'board.PcbDoc', 'sheet.SchDoc']); await variantReady(page);
+  await openFiles(page, ['demo.PrjPcb']); await variantReady(page);
+  await selectVariant(page, 'Economy');
+  await noNotFittedList(page);
+  assert.doesNotMatch(await page.locator('#variant-details').textContent(), /R1 —/,
+    'project-only metadata omits the entire not-fitted row');
+  assert.match(await page.locator('#variant-details').textContent(), /LOW_POWER_IC/);
+  await selectVariant(page, '');
+  await openFiles(page, ['board.PcbDoc', 'sheet.SchDoc']);
   assert.equal(await page.getByRole('tab').count(), 2, 'project metadata does not become a drawing tab');
   await activate(page, 'board.PcbDoc');
   assert.match(await page.locator('#view').getAttribute('class'), /\bgpu-layout\b/, 'layout preservation is tested with the actual WebGL drawing');
@@ -165,15 +186,19 @@ test('project variants resolve paired documents by source identity while preserv
   assert.equal(await page.locator('#measure .measurement-segment').count(), 1);
   const before = await viewState(page);
   await selectVariant(page, 'Economy');
-  assert.deepEqual(await notFittedNames(page), ['R99'], 'renamed PCB R99 is resolved through its source UID');
+  await expectPcbBodies(page, ['U7', 'J1'], 'renamed PCB R99 is omitted through its source UID');
   await noLayoutCrosses(page);
   assert.deepEqual(await viewState(page), before, 'changing assembly does not alter layers, camera or measurements');
   const details = await page.locator('#variant-details').textContent();
+  assert.doesNotMatch(details, /R99 —/, 'the PCB sidebar omits the entire not-fitted row');
   for (const value of ['3.3V', '<ALT-123>', 'LOW_POWER_IC']) assert.ok(details.includes(value), value);
   assert.equal(await page.locator('#variant-details script, #variant-details img').count(), 0, 'metadata stays literal text');
   await activate(page, 'sheet.SchDoc');
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy', 'project selection is shared across tabs');
   assert.equal(await hasCross(page), true, 'schematic R1 receives the matching cross');
+  await noNotFittedList(page);
+  assert.doesNotMatch(await page.locator('#variant-details').textContent(), /R1 —/,
+    'schematic crosses do not add a not-fitted list to the sidebar');
   const cross = await page.locator('#variant-overlay').boundingBox(), symbol = await page.locator('#symbol-r').boundingBox();
   assert.ok(cross.x <= symbol.x + symbol.width / 2 && cross.x + cross.width >= symbol.x + symbol.width / 2);
   assert.ok(cross.y <= symbol.y + symbol.height / 2 && cross.y + cross.height >= symbol.y + symbol.height / 2);
@@ -181,7 +206,7 @@ test('project variants resolve paired documents by source identity while preserv
   await selectVariant(page, ''); assert.equal(await hasCross(page), false);
   await activate(page, 'board.PcbDoc');
   assert.equal(await page.locator('#variant-select').inputValue(), '');
-  assert.deepEqual(await notFittedNames(page), []);
+  await expectPcbBodies(page, ['R99', 'U7', 'J1']);
   await noLayoutCrosses(page);
   assert.deepEqual(await viewState(page), before);
   assert.equal(requests.length, 3, 'variant changes do not re-upload or render documents');
@@ -199,11 +224,15 @@ test('variant exclusions restore 3D bodies independently of manual deletion and 
   await page.locator('#three-body-list').selectOption(['body-j']); await page.locator('#three-delete').click();
   await page.locator('#three-rotate-right').click();
   const camera = await page.evaluate(() => window.variantTestViewer.state());
+  const fittedImage = await image3D(page);
   await selectVariant(page, 'Economy');
   assert.deepEqual(await bodyIds(page), ['body-u'], 'DNP R99 and manually deleted J1 are both omitted');
+  assert.notDeepEqual(await image3D(page), fittedImage, 'variant exclusion removes the body from the rendered image');
+  await noNotFittedList(page);
   assert.deepEqual(await page.evaluate(() => window.variantTestViewer.state()), camera);
   await selectVariant(page, '');
   assert.deepEqual(await bodyIds(page), ['body-r', 'body-u'], 'base restores only the variant exclusion');
+  assert.deepEqual(await image3D(page), fittedImage, 'base restores the rendered body at the same camera');
   await page.locator('#three-undo').click();
   assert.deepEqual(await bodyIds(page), ['body-r', 'body-u', 'body-j'], 'manual undo history survives variant switches');
   await page.locator('#three-body-list').selectOption(['body-r']);
@@ -212,7 +241,7 @@ test('variant exclusions restore 3D bodies independently of manual deletion and 
   await selectVariant(page, '');
   assert.deepEqual(await bodyIds(page), ['body-r', 'body-u', 'body-j'], 'Delete cannot remove a selected body hidden by the current variant');
   await selectVariant(page, 'Economy'); await set3D(page, false);
-  assert.deepEqual(await notFittedNames(page), ['R99']);
+  await noNotFittedList(page);
   await noLayoutCrosses(page);
   await set3D(page, true); assert.deepEqual(await bodyIds(page), ['body-u', 'body-j']);
 });
@@ -226,9 +255,9 @@ test('metadata loaded after documents associates unambiguous paths and keeps unr
   await openFiles(page, ['board.PcbDoc', 'sheet.SchDoc', 'other.PcbDoc']);
   await openFiles(page, ['demo.PrjPcb']);
   await activate(page, 'board.PcbDoc'); await variantReady(page); await selectVariant(page, 'Economy');
-  assert.deepEqual(await notFittedNames(page), ['R99']);
+  await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
-  await activate(page, 'other.PcbDoc'); assert.deepEqual(await notFittedNames(page), []);
+  await activate(page, 'other.PcbDoc'); await expectPcbBodies(page, ['R99', 'U7', 'J1']);
   await noLayoutCrosses(page);
   await openFiles(page, ['other.PrjPcb']); await variantReady(page);
   assert.equal(await page.locator('#variant-select').inputValue(), '', 'the second project starts in its own base state');
@@ -240,7 +269,7 @@ test('metadata loaded after documents associates unambiguous paths and keeps unr
   assert.equal(await hasCross(page), false, 'explicitly detaching the document removes the project projection');
   await activate(page, 'board.PcbDoc');
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy', 'detaching one sheet does not clear the project selection');
-  assert.deepEqual(await notFittedNames(page), ['R99']);
+  await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
 });
 
@@ -251,7 +280,7 @@ test('initial documents restore the saved project variant regardless of metadata
   assert.equal(await page.getByRole('tab').count(), 2);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
   assert.equal(await hasCross(page), true);
-  await activate(page, 'board.PcbDoc'); assert.deepEqual(await notFittedNames(page), ['R99']);
+  await activate(page, 'board.PcbDoc'); await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
   await selectVariant(page, '');
   await activate(page, 'sheet.SchDoc'); assert.equal(await hasCross(page), false);
@@ -272,7 +301,7 @@ test('a delayed document response uses the latest project selection without reve
   assert.equal(await page.locator('#view > svg').getAttribute('data-board'), 'sheet.SchDoc');
   await activate(page, 'board.PcbDoc');
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-  assert.deepEqual(await notFittedNames(page), ['R99'], 'late render gets the current variant');
+  await expectPcbBodies(page, ['U7', 'J1'], 'late render gets the current variant');
   await noLayoutCrosses(page);
 });
 
@@ -288,7 +317,7 @@ test('the project upload endpoint reads real PrjPcb bytes and connects them to a
   await page.locator('#file').setInputFiles(file('actual.PrjPcb', projectText));
   await variantReady(page);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-  assert.deepEqual(await notFittedNames(page), ['R99']);
+  await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
   assert.equal(await page.getByRole('tab').count(), 1);
   assert.ok((await page.locator('#file').getAttribute('accept')).toLowerCase().includes('.prjpcb'));
@@ -299,7 +328,7 @@ test('the project upload endpoint reads real PrjPcb bytes and connects them to a
   await (await reloaded).finished();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.locator('#variant-select').inputValue(), '', 'reloading project metadata preserves an explicit Base design choice');
-  assert.deepEqual(await notFittedNames(page), []);
+  await expectPcbBodies(page, ['R99', 'U7', 'J1']);
   await noLayoutCrosses(page);
 });
 
@@ -325,12 +354,12 @@ test('folder uploads distinguish duplicate document basenames by project-relativ
   await activate(page, 'Alpha.PcbDoc');
   assert.match(await page.locator('#variant-project').evaluate(select => select.selectedOptions[0].textContent), /(?:^|\/)Alpha\.PrjPcb$/);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-  assert.deepEqual(await notFittedNames(page), ['R99']);
+  await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
   await activate(page, 'Beta.PcbDoc');
   assert.match(await page.locator('#variant-project').evaluate(select => select.selectedOptions[0].textContent), /(?:^|\/)Beta\.PrjPcb$/);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Full');
-  assert.deepEqual(await notFittedNames(page), [], 'a sibling project with the same PCB filename keeps its own variant');
+  await expectPcbBodies(page, ['R99', 'U7', 'J1'], 'a sibling project with the same PCB filename keeps its own variant');
   assert.match(await page.locator('#variant-details').textContent(), /R99 — Fitted\nValue: 10k/);
   await noLayoutCrosses(page);
 });
@@ -345,19 +374,19 @@ test('ordinary uploads keep same-name projects separate and require a choice for
     : defaultRender(route, name) });
   await openFiles(page, ['demo.PrjPcb', 'board.PcbDoc']); await variantReady(page);
   const firstProject = await page.locator('#variant-project').inputValue();
-  assert.deepEqual(await notFittedNames(page), ['R99']);
+  await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
   await page.locator('#file').setInputFiles(file('demo.PrjPcb', 'second'));
   await page.waitForFunction(() => document.querySelectorAll('#variant-project option').length === 3);
   assert.equal(await page.locator('#variant-project').inputValue(), '', 'duplicate basenames do not silently pick or replace a project');
-  assert.deepEqual(await notFittedNames(page), []);
+  await expectPcbBodies(page, ['R99', 'U7', 'J1']);
   await noLayoutCrosses(page);
   await page.locator('#variant-project').selectOption(firstProject);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-  assert.deepEqual(await notFittedNames(page), ['R99'], 'the first project remains intact');
+  await expectPcbBodies(page, ['U7', 'J1'], 'the first project remains intact');
   await noLayoutCrosses(page);
   const secondProject = await page.locator('#variant-project option').evaluateAll((options, first) => options.find(option => option.value && option.value !== first).value, firstProject);
   await page.locator('#variant-project').selectOption(secondProject);
-  assert.deepEqual(await notFittedNames(page), ['U7'], 'the other same-name project has its own component choice');
+  await expectPcbBodies(page, ['R99', 'J1'], 'the other same-name project has its own component choice');
   await noLayoutCrosses(page);
 });
