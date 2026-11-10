@@ -4,7 +4,6 @@ const { before, after, test } = require('node:test');
 const { resolve } = require('node:path');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
-const { createHash } = require('node:crypto');
 const { chromium } = require('playwright');
 
 let browser, server, origin;
@@ -35,7 +34,7 @@ after(async () => {
   }
 });
 
-const file = (name, bytes = name) => ({ name, mimeType: 'application/octet-stream', buffer: Buffer.from(bytes) });
+const file = name => ({ name, mimeType: 'application/octet-stream', buffer: Buffer.from(name) });
 const reply = (route, data, status = 200) => route.fulfill({ status, json: data });
 const boardData = (name = 'board.PcbDoc') => ({
   kind: 'pcb', name, source: Buffer.from(name).toString('base64'),
@@ -61,8 +60,8 @@ const schematicData = (name = 'sheet.SchDoc') => ({
       <g id="resistor"><rect id="body-r" x="15" y="15" width="12" height="8" fill="yellow" stroke="brown"/></g>
     </g></g></svg>`,
 });
-const projectResponse = (key = 'project-demo', { warnings = [], boardName = 'board.PcbDoc', sheetName = 'sheet.SchDoc', projectName = 'demo.PrjPcb' } = {}) => {
-  const project = { kind: 'project', name: projectName, project_key: key, project_label: `/projects/${key}/${projectName}`,
+const projectResponse = (key = 'project-demo', { warnings = [], boardName = 'board.PcbDoc', sheetName = 'sheet.SchDoc' } = {}) => {
+  const project = { kind: 'project', name: 'demo.PrjPcb', project_key: key, project_label: `/projects/${key}/demo.PrjPcb`,
     source: Buffer.from('project-source').toString('base64'), documents: [boardName, `Schematics/${sheetName}`],
     current_variant: 'Economy', warnings,
     variants: [{ name: 'Economy', parameters: {}, components: [
@@ -97,15 +96,6 @@ const loaded = (page, name) => page.waitForFunction(name =>
 async function activate(page, name) {
   await page.getByRole('tab', { name, exact: true }).click(); await loaded(page, name);
 }
-async function dropFiles(page, files, target = '#view') {
-  const transfer = await page.evaluateHandle(files => {
-    const transfer = new DataTransfer();
-    for (const file of files) transfer.items.add(new File([Uint8Array.from(atob(file.source), character => character.charCodeAt(0))], file.name));
-    return transfer;
-  }, files.map(file => ({ name: file.name, source: file.buffer.toString('base64') })));
-  try { await page.locator(target).dispatchEvent('drop', { dataTransfer: transfer }); }
-  finally { await transfer.dispose(); }
-}
 async function pickerFinished(page) {
   await page.waitForFunction(() => !document.getElementById('open-project').disabled);
   assert.equal(await page.locator('#open-project-spinner').isHidden(), true);
@@ -138,8 +128,6 @@ test('Open project loads referenced drawings and saved variants alongside existi
   assert.equal(picks.length, 1);
   assert.equal(picks[0].method, 'POST');
   assert.equal(picks[0].headers['x-viewer-request'], 'open-project');
-  assert.equal(picks[0].headers['x-project-name'], undefined, 'the button opens the native chooser without a dropped-file hint');
-  assert.equal(picks[0].headers['x-project-sha256'], undefined);
   assert.ok(!picks[0].body, 'the browser never submits a local filesystem path');
   await activate(page, 'sheet.SchDoc');
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
@@ -173,15 +161,6 @@ test('reopening a selected project reuses its tabs and preserves document and va
   assert.equal(await page.locator('#variant-select').inputValue(), '', 'explicit Base design choice is retained');
   assert.deepEqual(await snapshot(page), before);
   assert.deepEqual(uploads, []); assert.equal(picks.length, 2);
-  const reopened = page.waitForResponse(response => response.url().endsWith('/open-project'));
-  await dropFiles(page, [file('demo.PrjPcb', 'project-source')]); await reopened;
-  await pickerFinished(page); await activate(page, 'board.PcbDoc');
-  assert.equal(picks.length, 3);
-  assert.equal(await page.getByRole('tab').count(), 2, 'dropping the project reuses the same tabs opened by the button');
-  assert.equal(await page.locator('#variant-project option').count(), 2);
-  assert.equal(await page.locator('#variant-select').inputValue(), '');
-  assert.deepEqual(await snapshot(page), before);
-  assert.deepEqual(uploads, []);
 });
 
 test('cancelling or failing a native project picker preserves the workspace and restores the button', async t => {
@@ -277,104 +256,4 @@ test('project controls omit the folder picker and variant details while keeping 
   assert.equal(await chooser.element().getAttribute('webkitdirectory'), null);
   assert.equal(chooser.isMultiple(), true);
   assert.equal(picks.length, 1);
-});
-
-test('dropping a project uses the native opener with its filename and byte digest and loads linked documents', async t => {
-  let picked;
-  const pending = new Promise(resolve => { picked = resolve; });
-  const { page, picks, uploads } = await openPage(t, { picker: route => picked(route) });
-  const project = file('controller rev A.PrjPcb', Buffer.from([0xff, 0xfe, 0x50, 0x00, 0x52, 0x00]));
-  await dropFiles(page, [project]);
-  const route = await pending; await pickerLoading(page);
-  assert.equal(picks.length, 1);
-  assert.equal(picks[0].method, 'POST');
-  assert.equal(picks[0].headers['x-viewer-request'], 'open-project');
-  assert.equal(picks[0].headers['x-project-name'], encodeURIComponent(project.name));
-  assert.equal(picks[0].headers['x-project-sha256'], createHash('sha256').update(project.buffer).digest('hex'));
-  assert.ok(!picks[0].body, 'dropped file bytes are hashed locally, not sent as a path or request body');
-  assert.deepEqual(uploads, [], 'a dropped project does not use the metadata-only upload route');
-  await reply(route, projectResponse('controller', { projectName: project.name }));
-  await loaded(page, 'sheet.SchDoc'); await pickerFinished(page);
-  assert.equal(await page.getByRole('tab').count(), 2);
-  assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-  assert.equal(await page.locator('#variant-overlay [data-variant-component="R1"]').count(), 1);
-  assert.deepEqual(uploads, []);
-});
-
-test('cancelling or failing a dropped project stops its mixed batch and leaves the workspace intact', async t => {
-  let picked;
-  const { page, picks, uploads } = await openPage(t, { picker: route => picked(route) });
-  await page.locator('#file').setInputFiles(file('existing.PcbDoc')); await loaded(page, 'existing.PcbDoc');
-  await page.locator('#layers label').filter({ hasText: 'Bottom copper' }).locator('input').uncheck();
-  const before = await snapshot(page);
-  for (const outcome of [{ data: { cancelled: true }, status: 200 },
-    { data: { error: 'Selected project does not match the dropped file' }, status: 400 }]) {
-    const pending = new Promise(resolve => { picked = resolve; });
-    await dropFiles(page, [file('demo.PrjPcb'), file('unrelated.PcbDoc')]);
-    const route = await pending; await pickerLoading(page);
-    await reply(route, outcome.data, outcome.status); await pickerFinished(page);
-    assert.deepEqual(await snapshot(page), before);
-    assert.equal(await page.getByRole('tab').count(), 1);
-    assert.deepEqual(uploads, ['existing.PcbDoc'], 'cancelled/failed project batches do not open trailing files');
-    assert.equal((await page.locator('#open-project-status').textContent()).trim(), outcome.data.error
-      ? `Could not open project: ${outcome.data.error}` : '');
-  }
-  assert.equal(picks.length, 2);
-});
-
-test('a pending dropped project rejects concurrent drops and preserves navigation when it finishes', async t => {
-  let picked;
-  const pending = new Promise(resolve => { picked = resolve; });
-  const { page, picks, uploads } = await openPage(t, { picker: route => picked(route) });
-  await page.locator('#file').setInputFiles([file('first.PcbDoc'), file('second.PcbDoc')]); await loaded(page, 'second.PcbDoc');
-  await dropFiles(page, [file('demo.PrjPcb')], '#panel');
-  const route = await pending; await pickerLoading(page);
-  await dropFiles(page, [file('another.PrjPcb'), file('unrelated.PcbDoc')]);
-  await page.locator('#open-project').evaluate(button => button.click());
-  assert.equal(await page.locator('#toast').isVisible(), true);
-  assert.ok((await page.locator('#toast').textContent()).trim(), 'a busy drop receives feedback');
-  assert.equal(picks.length, 1);
-  await activate(page, 'first.PcbDoc'); const before = await snapshot(page);
-  await reply(route, projectResponse());
-  await page.waitForFunction(() => document.querySelectorAll('[role="tab"]').length === 4); await pickerFinished(page);
-  assert.equal(picks.length, 1);
-  assert.deepEqual(uploads, ['first.PcbDoc', 'second.PcbDoc']);
-  assert.deepEqual(await snapshot(page), before);
-  await activate(page, 'sheet.SchDoc');
-  assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-});
-
-test('mixed project drops skip returned companions only when both filename and bytes match', async t => {
-  const { page, picks, uploads } = await openPage(t);
-  await dropFiles(page, [file('demo.PrjPcb'), file('board.PcbDoc'), file('sheet.SchDoc'),
-    file('unrelated.PcbDoc', 'board.PcbDoc'), file('board.PcbDoc', 'different board bytes')]);
-  await page.waitForFunction(() => document.querySelectorAll('[role="tab"]').length === 4);
-  await loaded(page, 'board.PcbDoc'); await pickerFinished(page);
-  assert.equal(picks.length, 1);
-  assert.deepEqual(uploads, ['unrelated.PcbDoc', 'board.PcbDoc'], 'explicit unmatched files open without duplicate linked documents');
-  assert.equal(await page.getByRole('tab', { name: 'sheet.SchDoc', exact: true }).count(), 1);
-  assert.equal(await page.getByRole('tab', { name: 'board.PcbDoc', exact: true }).count(), 2,
-    'a same-name file with different content is kept');
-  assert.equal(await page.getByRole('tab', { name: 'unrelated.PcbDoc', exact: true }).count(), 1,
-    'matching bytes alone do not hide an explicitly dropped file');
-  await activate(page, 'sheet.SchDoc');
-  assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-});
-
-test('multiple dropped projects open sequentially with their own native picker hints', async t => {
-  let picked;
-  const { page, picks, uploads } = await openPage(t, { picker: route => picked(route) });
-  let pending = new Promise(resolve => { picked = resolve; });
-  await dropFiles(page, [file('first.PrjPcb'), file('second.PrjPcb')]);
-  let route = await pending; await pickerLoading(page);
-  assert.equal(picks.length, 1, 'the second picker waits for the first project to finish');
-  pending = new Promise(resolve => { picked = resolve; });
-  await reply(route, projectResponse('first-project', { projectName: 'first.PrjPcb' }));
-  route = await pending; await pickerLoading(page);
-  assert.equal(await page.getByRole('tab').count(), 2);
-  assert.deepEqual(picks.map(pick => pick.headers['x-project-name']), ['first.PrjPcb', 'second.PrjPcb']);
-  await reply(route, projectResponse('second-project', { projectName: 'second.PrjPcb' }));
-  await page.waitForFunction(() => document.querySelectorAll('[role="tab"]').length === 4); await pickerFinished(page);
-  assert.deepEqual(uploads, []);
-  assert.equal(await page.locator('#variant-project option').count(), 3);
 });

@@ -1,7 +1,6 @@
 """Project chooser isolation, HTTP access control, and referenced-file loading."""
 
 import base64
-import hashlib
 from http.client import HTTPConnection
 import json
 import os
@@ -13,7 +12,6 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
-from urllib.parse import quote
 
 from altium_monkey import AltiumPcbDoc, AltiumSchDoc, SchPointMils, make_sch_wire
 
@@ -22,7 +20,7 @@ from ecadview.server import Handler, ViewerServer
 
 
 class ChooserWorkerTests(unittest.TestCase):
-    def run_worker(self, *, accepted=True, error=None, name=""):
+    def run_worker(self, *, accepted=True, error=None):
         dialog = Mock()
         dialog.exec.return_value = int(accepted)
         dialog.exec.side_effect = error
@@ -38,7 +36,7 @@ class ChooserWorkerTests(unittest.TestCase):
                 patch.dict(sys.modules, {"PySide6.QtWidgets": widgets}), \
                 patch.dict(os.environ, {"QT_QPA_PLATFORM": ""}), patch.object(sys, "platform", "darwin"):
             output = Path(temporary) / "selection.json"
-            worker(str(output), name)
+            worker(str(output))
             return json.loads(output.read_text()), dialog
 
     def test_native_selection_and_cancellation_write_results(self):
@@ -46,15 +44,9 @@ class ChooserWorkerTests(unittest.TestCase):
         self.assertEqual(result, {"path": "/project with spaces/électron.PrjPcb"})
         self.assertIn("*.PrjPcb", dialog.setNameFilter.call_args.args[0])
         self.assertIn("*.prjpcb", dialog.setNameFilter.call_args.args[0])
-        dialog.selectFile.assert_not_called()
         cancelled, dialog = self.run_worker(accepted=False)
         self.assertEqual(cancelled, {"path": None})
         dialog.selectedFiles.assert_not_called()
-
-    def test_dropped_project_name_is_preselected_in_the_native_dialog(self):
-        _, dialog = self.run_worker(name="électron board.PrjPcb")
-        dialog.setWindowTitle.assert_called_once_with("Locate électron board.PrjPcb")
-        dialog.selectFile.assert_called_once_with("électron board.PrjPcb")
 
     def test_dialog_errors_and_missing_display_are_reported(self):
         result, _ = self.run_worker(error=RuntimeError("Native dialog failed"))
@@ -66,20 +58,6 @@ class ChooserWorkerTests(unittest.TestCase):
 
 
 class ChooserProcessTests(unittest.TestCase):
-    def test_filename_hint_is_passed_as_an_argument_to_the_worker(self):
-        real_popen, launches = subprocess.Popen, []
-        name = "électron board.PrjPcb"
-        def launch(command, **options):
-            launches.append(command)
-            return real_popen([sys.executable, "-c",
-                               "import json,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(json.dumps({'path':sys.argv[2]}))",
-                               *command[-2:]], **options)
-        with patch("ecadview.project_picker.subprocess.Popen", side_effect=launch):
-            self.assertEqual(ProjectPicker().choose(name=name), Path(name))
-        self.assertEqual(launches[0][-1], name)
-        self.assertEqual(launches[0][1:4], ["-m", "ecadview.cli", "--project-picker-worker"])
-        self.assertFalse(Path(launches[0][-2]).parent.exists())
-
     def test_selection_cancel_and_error_cross_the_process_boundary(self):
         real_popen = subprocess.Popen
         for payload, expected in (({"path": "/circuit files/électron.PrjPcb"}, Path("/circuit files/électron.PrjPcb")),
@@ -185,50 +163,6 @@ class OpenProjectServerTests(unittest.TestCase):
                 self.assertEqual(self.request(**request)[0], 400)
         self.choose.assert_not_called()
 
-    def test_dropped_project_headers_require_a_safe_name_and_checksum_pair(self):
-        valid = {"X-Project-Name": "board.PrjPcb", "X-Project-SHA256": "a" * 64}
-        invalid = [
-            {"X-Project-Name": "board.PrjPcb"}, {"X-Project-SHA256": "a" * 64},
-            {**valid, "X-Project-Name": "%FF.PrjPcb"}, {**valid, "X-Project-Name": "%invalid.PrjPcb"},
-            *({**valid, "X-Project-SHA256": value} for value in ("", "a" * 63, "g" * 64)),
-            *({**valid, "X-Project-Name": quote(name, safe="")} for name in
-              ("", ".prjpcb", "board.PcbDoc", "/private/board.PrjPcb", "../board.PrjPcb", "C:board.PrjPcb",
-               "folder\\board.PrjPcb", "board\0.PrjPcb", "board\n.PrjPcb")),
-        ]
-        for headers in invalid:
-            with self.subTest(headers=headers):
-                self.assertEqual(self.request(headers={**self.headers, **headers})[0], 400)
-        self.choose.assert_not_called()
-
-    def test_dropped_project_cancel_preserves_the_ordinary_cancel_response(self):
-        name = "électron board.PrjPcb"
-        with patch("ecadview.cli.load_initial_documents") as load:
-            response = self.request(headers={**self.headers, "X-Project-Name": quote(name), "X-Project-SHA256": "a" * 64})
-        self.assertEqual(response, (200, {"cancelled": True}))
-        self.choose.assert_called_once_with(name=name)
-        load.assert_not_called()
-
-    def test_a_different_project_selection_is_rejected_and_can_be_retried(self):
-        with tempfile.TemporaryDirectory() as temporary, patch("ecadview.cli.load_initial_documents", return_value=[]) as load:
-            folder = Path(temporary)
-            expected = b"[Design]\n"
-            project = folder / "Board.PRJPCB"
-            headers = {**self.headers, "X-Project-Name": "board.PrjPcb", "X-Project-SHA256": hashlib.sha256(expected).hexdigest().upper()}
-            self.choose.return_value = project
-            project.write_bytes(b"[Design]\nCurrentVariant=Other\n")
-            status, result = self.request(headers=headers)
-            self.assertEqual(status, 422)
-            self.assertIn("does not match", result["error"])
-            different_name = folder / "Other.PrjPcb"
-            different_name.write_bytes(expected)
-            self.choose.return_value = different_name
-            self.assertEqual(self.request(headers=headers)[0], 422)
-            load.assert_not_called()
-            project.write_bytes(expected)
-            self.choose.return_value = project
-            self.assertEqual(self.request(headers=headers), (200, {"documents": []}))
-            load.assert_called_once_with([project])
-
     def test_cancellation_does_not_load_documents_and_localhost_is_supported(self):
         with patch("ecadview.cli.load_initial_documents") as load:
             self.assertEqual(self.request(), (200, {"cancelled": True}))
@@ -288,19 +222,15 @@ class OpenProjectServerTests(unittest.TestCase):
                                "[Document3]\nDocumentPath=Missing.SchDoc\n")
             original = {path: path.read_bytes() for path in (project, sheet, layout)}
             self.choose.return_value = project
-            hinted = {**self.headers, "X-Project-Name": quote(project.name),
-                      "X-Project-SHA256": hashlib.sha256(original[project]).hexdigest()}
-            for headers in (self.headers, hinted):
-                with self.subTest(dropped_project="X-Project-Name" in headers):
-                    status, response = self.request(headers=headers)
-                    self.assertEqual(status, 200, response)
-                    documents = response["documents"]
-                    self.assertEqual([row["kind"] for row in documents], ["project", "schematic", "pcb"])
-                    self.assertEqual([row["name"] for row in documents], [path.name for path in (project, sheet, layout)])
-                    self.assertEqual([base64.b64decode(row["source"]) for row in documents], list(original.values()))
-                    self.assertTrue(all(row["webgl"] for row in documents[1:]))
-                    self.assertTrue(all(row["project_key"] == documents[0]["project_key"] for row in documents[1:]))
-                    self.assertIn("Missing.SchDoc", documents[0]["warnings"][0])
+            status, response = self.request()
+            self.assertEqual(status, 200, response)
+            documents = response["documents"]
+            self.assertEqual([row["kind"] for row in documents], ["project", "schematic", "pcb"])
+            self.assertEqual([row["name"] for row in documents], [path.name for path in (project, sheet, layout)])
+            self.assertEqual([base64.b64decode(row["source"]) for row in documents], list(original.values()))
+            self.assertTrue(all(row["webgl"] for row in documents[1:]))
+            self.assertTrue(all(row["project_key"] == documents[0]["project_key"] for row in documents[1:]))
+            self.assertIn("Missing.SchDoc", documents[0]["warnings"][0])
             self.assertEqual({path: path.read_bytes() for path in original}, original)
 
     def test_shutdown_marks_picker_unavailable(self):

@@ -435,7 +435,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     associateProjects();
     if (activeBoard) $('board-tab-' + activeBoard.id).focus();
   }
-  async function openFiles(fileList, { activate = true } = {}) {
+  async function openFiles(fileList) {
     const files = [...fileList], batchProjects = [];
     for (const file of files.filter(file => /\.prjpcb$/i.test(file.name))) {
       try {
@@ -450,7 +450,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       if (file.webkitRelativePath && batchProjects.length &&
           !batchProjects.some(project => projectMatches(project, { file }))) continue;
       const board = createBoard(file);
-      if (activate) activateBoard(board);
+      activateBoard(board);
       renderBoard(board);
     }
   }
@@ -537,80 +537,35 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
 
   $('open').onclick = () => $('file').click();
   $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
-  async function openProject(projectFile = null, { activate = true } = {}) {
+  $('open-project').onclick = async () => {
     const button = $('open-project'), status = $('open-project-status');
-    if (button.disabled) return null;
+    if (button.disabled) return;
     const startedAt = navigationVersion;
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
     $('open-project-spinner').hidden = false;
     $('open-project-label').textContent = 'Loading project…';
-    status.textContent = projectFile ? `Select ${projectFile.name} in the dialog to load its linked documents.` :
-      'Loading project and linked documents…';
+    status.textContent = 'Loading project and linked documents…';
     try {
-      const headers = { 'X-Viewer-Request': 'open-project' };
-      if (projectFile) {
-        headers['X-Project-Name'] = encodeURIComponent(projectFile.name);
-        const digest = await crypto.subtle.digest('SHA-256', await projectFile.arrayBuffer());
-        headers['X-Project-SHA256'] = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
-      }
-      const response = await fetch('/open-project', { method: 'POST', headers });
+      const response = await fetch('/open-project', { method: 'POST', headers: { 'X-Viewer-Request': 'open-project' } });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
-      if (data.cancelled) { status.textContent = ''; return null; }
+      if (data.cancelled) { status.textContent = ''; return; }
       if (!Array.isArray(data.documents)) throw new Error('The project could not be loaded.');
-      const shouldActivate = activate && navigationVersion === startedAt;
-      const opened = openRenderedDocuments(data.documents, shouldActivate);
+      const opened = openRenderedDocuments(data.documents, navigationVersion === startedAt);
       const summary = opened.length ? `Project opened: ${opened.length} document${opened.length === 1 ? '' : 's'}.` :
         'Project opened. No linked documents loaded.';
       const warnings = data.documents.filter(document => document.kind === 'project').flatMap(project => project.warnings || []);
       status.textContent = [summary, ...warnings].join('\n');
-      return { documents: data.documents, activate: shouldActivate };
     } catch (error) {
       status.textContent = 'Could not open project: ' + error.message;
-      return null;
     } finally {
       button.disabled = false;
       button.setAttribute('aria-busy', 'false');
       $('open-project-spinner').hidden = true;
       $('open-project-label').textContent = 'Open project…';
     }
-  }
-  $('open-project').onclick = () => openProject();
-
-  async function openDroppedFiles(fileList) {
-    const files = [...fileList], projectFiles = files.filter(file => /\.prjpcb$/i.test(file.name));
-    if (!projectFiles.length) { openFiles(files); return; }
-    if ($('open-project').disabled) {
-      toast('A project is already being opened. Drop the files again when it finishes.');
-      return;
-    }
-    const documents = [];
-    let activate = true;
-    for (const file of projectFiles) {
-      const result = await openProject(file, { activate });
-      if (!result) return;
-      documents.push(...result.documents);
-      activate = result.activate;
-    }
-    // The native loader already opened project members. Only skip a companion
-    // when both its name and bytes match; equal filenames can be distinct files.
-    const remaining = [], startedAt = navigationVersion;
-    for (const file of files.filter(file => !/\.prjpcb$/i.test(file.name))) {
-      const candidates = documents.filter(data => data.svg && data.name === file.name && typeof data.source === 'string');
-      if (candidates.length) {
-        const source = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(',') + 1));
-          reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}.`));
-          reader.readAsDataURL(file);
-        });
-        if (candidates.some(data => data.source === source)) continue;
-      }
-      remaining.push(file);
-    }
-    openFiles(remaining, { activate: activate && navigationVersion === startedAt });
-  }
+  };
   document.addEventListener('dragover', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
     e.preventDefault(); view.classList.add('drop');
@@ -618,8 +573,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   view.addEventListener('dragleave', () => view.classList.remove('drop'));
   document.addEventListener('drop', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
-    e.preventDefault(); view.classList.remove('drop');
-    openDroppedFiles(e.dataTransfer.files).catch(error => toast('Could not open dropped files: ' + error.message));
+    e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files);
   });
   document.addEventListener('dragleave', e => { if (!e.relatedTarget) view.classList.remove('drop'); });
 

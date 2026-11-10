@@ -1,16 +1,13 @@
 """Local HTTP endpoints for the viewer and document uploads."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import hashlib
 from importlib.resources import files
 import json
 from pathlib import Path
-import re
 import select
 import tempfile
 import threading
 import time
-import unicodedata
 import urllib.parse
 
 from .rendering import render_file
@@ -216,21 +213,6 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._json(400, {"error": "Open project does not accept a file path or request body."})
             return
-        encoded_name, fingerprint = self.headers.get("X-Project-Name"), self.headers.get("X-Project-SHA256")
-        project_name = ""
-        if encoded_name is not None or fingerprint is not None:
-            try:
-                if (encoded_name is None or fingerprint is None or not re.fullmatch(r"[0-9a-fA-F]{64}", fingerprint)
-                        or re.search(r"%(?![0-9a-fA-F]{2})", encoded_name)):
-                    raise ValueError("Invalid dropped project details")
-                project_name = urllib.parse.unquote(encoded_name, errors="strict")
-                if (Path(project_name).suffix.lower() != ".prjpcb"
-                        or any(character in project_name for character in "/\\:")
-                        or any(ord(character) < 32 or ord(character) == 127 for character in project_name)):
-                    raise ValueError("Invalid project filename")
-            except ValueError:
-                self._json(400, {"error": "Dropped project details must include a valid .PrjPcb filename and SHA-256 checksum."})
-                return
         picker = getattr(self.server, "project_picker", None)
         if picker is None or picker.stopping.is_set():
             self._json(503, {"error": "The project picker is unavailable."})
@@ -239,24 +221,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(409, {"error": "A project is already being opened."})
             return
         try:
-            path = picker.choose(name=project_name) if project_name else picker.choose()
+            path = picker.choose()
             if path is None:
                 self._json(200, {"cancelled": True})
                 return
             path = Path(path)
             if path.suffix.lower() != ".prjpcb" or not path.is_file():
                 raise ValueError("Select an existing Altium .PrjPcb project file.")
-            if project_name:
-                selected_name = unicodedata.normalize("NFC", path.name).casefold()
-                expected_name = unicodedata.normalize("NFC", project_name).casefold()
-                matches = selected_name == expected_name
-                if matches:
-                    with path.open("rb") as selected:
-                        matches = hashlib.file_digest(selected, "sha256").hexdigest() == fingerprint.lower()
-                if not matches:
-                    self._json(422, {"error": "The selected file does not match the dropped project. "
-                                              "Drop the project again and select the matching file."})
-                    return
             from .cli import load_initial_documents
             documents = load_initial_documents([path])
             self._json(200, {"documents": documents})
