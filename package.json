@@ -5,7 +5,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests/cross_probe.test.cjs tests/variants.test.cjs tests/board_tabs.test.cjs tests/project_variants.test.cjs tests/browser_lifetime.test.cjs",
+    "test": "node --test tests/cross_probe.test.cjs tests/variants.test.cjs tests/board_tabs.test.cjs tests/project_variants.test.cjs tests/open_project.test.cjs tests/browser_lifetime.test.cjs",
     "test:gpu": "node --test tests/browser_gpu.test.cjs"
   },
   "devDependencies": {

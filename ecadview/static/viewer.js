@@ -20,6 +20,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   const projects = [];
   let nextProjectId = 1, selectedProjectId = null;
   let activeBoard = null, nextBoardId = 1;
+  let navigationVersion = 0;
   let layoutGPU = null, gpuUnavailable = false, labelTimer = 0, paintBatch = 0;
   let geometryQueue = Promise.resolve();
 
@@ -388,6 +389,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     $('board-tab-' + board.id).focus();
   }
   function activateBoard(board) {
+    navigationVersion++;
     saveBoard();
     mountBoard(board);
   }
@@ -462,7 +464,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (board.gpuScene && layoutGPU?.scene === board.gpuScene) layoutGPU.release();
     board.gpuController?.abort(); board.gpuScene = null;
     boards.splice(index, 1);
-    if (board === activeBoard) mountBoard(boards[Math.min(index, boards.length - 1)] || null);
+    if (board === activeBoard) { navigationVersion++; mountBoard(boards[Math.min(index, boards.length - 1)] || null); }
     else updateTabs();
     associateProjects();
     if (activeBoard) $('board-tab-' + activeBoard.id).focus();
@@ -550,9 +552,45 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     prepareGPU(board, data);
   }
 
+  function openRenderedDocuments(documents, activate) {
+    for (const data of documents.filter(data => data.kind === 'project')) registerProject(data, new File([], data.name));
+    const opened = [];
+    for (const data of documents) {
+      if (!data.svg) continue;
+      const existing = data.project_key && boards.find(board => board.svg && board.projectKey === data.project_key &&
+        projectPath(board.projectPath) === projectPath(data.project_path));
+      if (existing) { opened.push(existing); continue; }
+      const file = new File([Uint8Array.from(atob(data.source || ''), c => c.charCodeAt(0))], data.name);
+      const board = createBoard(file);
+      try { show(board, data); opened.push(board); }
+      catch (error) { closeBoard(board); throw error; }
+    }
+    if (activate && opened.length) activateBoard(opened.at(-1)); else updateTabs();
+    return opened;
+  }
+
   $('open').onclick = () => $('file').click();
   $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
-  $('open-project').onclick = () => $('project-files').click();
+  $('open-project').onclick = async () => {
+    const button = $('open-project'), status = $('open-project-status');
+    if (button.disabled) return;
+    const startedAt = navigationVersion;
+    button.disabled = true;
+    status.textContent = 'Select a .PrjPcb file in the dialog. Its documents will load automatically.';
+    try {
+      const response = await fetch('/open-project', { method: 'POST', headers: { 'X-Viewer-Request': 'open-project' } });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      if (data.cancelled) { status.textContent = ''; return; }
+      if (!Array.isArray(data.documents)) throw new Error('The project could not be loaded.');
+      const opened = openRenderedDocuments(data.documents, navigationVersion === startedAt);
+      status.textContent = opened.length ? `Project opened: ${opened.length} document${opened.length === 1 ? '' : 's'}.` :
+        'Project opened. No linked documents loaded.';
+    } catch (error) {
+      status.textContent = 'Could not open project: ' + error.message;
+    } finally { button.disabled = false; }
+  };
+  $('open-project-folder').onclick = () => $('project-files').click();
   $('project-files').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
   document.addEventListener('dragover', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
@@ -1735,13 +1773,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
 
   // ------------------------------------------------------------ board passed on the command line
   fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {
-    const documents = d?.kind === 'project' ? [d] : d?.documents || (d?.svg ? [d] : []), activate = !activeBoard, opened = [];
-    for (const data of documents.filter(data => data.kind === 'project')) registerProject(data, new File([], data.name));
-    for (const data of documents) {
-      if (!data.svg) continue;
-      const file = new File([Uint8Array.from(atob(data.source || ''), c => c.charCodeAt(0))], data.name);
-      const board = createBoard(file); opened.push(board); show(board, data);
-    }
-    if (activate && opened.length) activateBoard(opened.at(-1)); else updateTabs();
+    const documents = d?.kind === 'project' ? [d] : d?.documents || (d?.svg ? [d] : []);
+    openRenderedDocuments(documents, !activeBoard);
   }).catch(e => toast('Could not load the initial document: ' + e.message));
 })();

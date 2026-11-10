@@ -11,6 +11,7 @@ import time
 import urllib.parse
 
 from .rendering import render_file
+from .project_picker import ProjectPicker
 from .session_lifetime import ViewerLifetime
 from .web_geometry import MAX_INPUT, prepare_geometry
 
@@ -49,13 +50,17 @@ STATIC_ROUTES = {
 class ViewerServer(ThreadingHTTPServer):
     def __init__(self, address, handler, *, grace=3.0):
         super().__init__(address, handler)
+        self.project_picker = ProjectPicker()
         self.viewer_lifetime = ViewerLifetime(self.shutdown, grace)
 
     def shutdown(self):
+        self.project_picker.close()
         self.viewer_lifetime.close()
         super().shutdown()
 
     def server_close(self):
+        if picker := getattr(self, "project_picker", None):
+            picker.close()
         if lifetime := getattr(self, "viewer_lifetime", None):
             lifetime.close()
         super().server_close()
@@ -133,6 +138,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         url = urllib.parse.urlparse(self.path)
+        if url.path == "/open-project":
+            self._open_project(url)
+            return
         if url.path == "/shutdown":
             host = f"127.0.0.1:{self.server.server_address[1]}"
             if (self.headers.get("Host") != host or self.headers.get("Origin") != f"http://{host}"
@@ -190,3 +198,45 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, data)
         except Exception as exc:  # report parser/renderer errors to the page
             self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def _open_project(self, url) -> None:
+        host, port = self.headers.get("Host"), self.server.server_address[1]
+        if (host not in {f"127.0.0.1:{port}", f"localhost:{port}"}
+                or self.headers.get("Origin") != f"http://{host}"
+                or self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin"
+                or self.headers.get("X-Viewer-Request") != "open-project"):
+            self.close_connection = True
+            self._json(403, {"error": "Open project must be requested from this viewer."})
+            return
+        # Only the native chooser can supply a path to the local filesystem.
+        if url.query or self.headers.get("Transfer-Encoding") or self.headers.get("Content-Length", "0") != "0":
+            self.close_connection = True
+            self._json(400, {"error": "Open project does not accept a file path or request body."})
+            return
+        picker = getattr(self.server, "project_picker", None)
+        if picker is None or picker.stopping.is_set():
+            self._json(503, {"error": "The project picker is unavailable."})
+            return
+        if not picker.lock.acquire(blocking=False):
+            self._json(409, {"error": "A project is already being opened."})
+            return
+        try:
+            path = picker.choose()
+            if path is None:
+                self._json(200, {"cancelled": True})
+                return
+            path = Path(path)
+            if path.suffix.lower() != ".prjpcb" or not path.is_file():
+                raise ValueError("Select an existing Altium .PrjPcb project file.")
+            from .cli import load_initial_documents
+            documents = load_initial_documents([path])
+            self._json(200, {"documents": documents})
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # The browser was closed while the native chooser was open.
+        except Exception as error:
+            try:
+                self._json(500, {"error": str(error)})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        finally:
+            picker.lock.release()

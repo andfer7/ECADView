@@ -25,7 +25,9 @@
   #layers { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   h1 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
   #filename { color: var(--muted); font-size: 12px; word-break: break-all; min-height: 1.4em; }
-  #open-project { width: 100%; margin-top: 6px; }
+  #open-project, #open-project-folder { width: 100%; margin-top: 6px; }
+  #open-project:disabled { opacity: 0.6; cursor: wait; }
+  #open-project-status { margin-top: 4px; overflow-wrap: anywhere; }
   #variant-controls > label { display: block; }
   #variant-project, #variant-select { width: 100%; box-sizing: border-box; margin: 4px 0 8px;
     background: var(--bg); color: var(--text); padding: 4px; }

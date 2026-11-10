@@ -94,11 +94,17 @@ across tab and 2D/3D changes.
 
 ## Altium assembly variants
 
-Use **Open files** to select a `.PrjPcb` together with its `.PcbDoc` and
-`.SchDoc` files, or use **Open project folder** to load the project and its
-referenced documents from a directory. A project can also be opened after its
-documents. From the command line, `ecadview design.PrjPcb` opens its referenced
-documents automatically and reports any missing files.
+Use **Open project…** to select a `.PrjPcb` in the native file dialog. ECADView
+automatically opens its referenced `.SchDoc` and `.PcbDoc` files in tabs and
+reports missing files. Existing tabs remain open; reopening the same project
+preserves its open documents' layers, views and variant choice. Cancelling the
+dialog leaves the workspace unchanged.
+
+The dialog opens on the computer running ECADView's local server. For a server
+without a desktop display, use **Open project folder…** to load the project and
+its referenced documents from a directory, or **Open files** to select them
+together. A project can also be opened after its documents. From the command
+line, `ecadview design.PrjPcb` opens its referenced documents automatically.
 
 Choose an **Assembly variant** in the sidebar. The saved project variant is
 selected initially; **Base design** clears the variant. The choice is shared
@@ -115,9 +121,11 @@ variant-level parameters. Drawing text and alternate symbol, footprint and
 3D geometry still come from the base design; `.PrjPcbVariants` geometry is
 not loaded. This viewer does not modify any design or project file.
 
-Browser file access is limited to the files you select. If a document cannot
-be linked automatically, choose its **Altium project** in the sidebar. Folder
-loading preserves relative paths for projects with duplicate document names.
+With **Open files** and **Open project folder…**, browser file access is limited
+to the files you select. **Open project…** lets the local server read the selected
+project and its referenced documents. If a document cannot be linked automatically,
+choose its **Altium project** in the sidebar. Folder loading preserves relative
+paths for projects with duplicate document names.
 Project and variant selections last for the current viewer session.
 
 ## 2D rendering and performance
@@ -131,8 +139,9 @@ One WebGL context serves all PCB tabs. Context loss, missing WebGL 2, unsupporte
 SVG composition or geometry preparation failure falls back to SVG. The parser
 and compiler still use the CPU; initial loading remains separate from navigation
 performance. Qt Essentials provides offscreen SVG bounds and font outlines for
-the compiler, and does not create a native viewer window. Qt Widgets, Qt OpenGL
-views and Qt WebEngine are excluded from the packaged launcher.
+the compiler. Qt Widgets supplies the native project file dialog; the viewer
+itself stays in the browser. Qt OpenGL views and Qt WebEngine are excluded from
+the packaged launcher.
 KiCad pads, via rings and circular footprint markings use compact analytic
 shapes, including mask/paste margins and concentric round drills. Custom pads
 and offset/slotted drills retain their polygon geometry.

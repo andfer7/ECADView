@@ -7,7 +7,7 @@ analysis = Analysis(
     [str(root / "ecadview.py")], pathex=[str(root)],
     datas=collect_data_files("ecadview") + collect_data_files("altium_monkey"),
     hiddenimports=collect_submodules("altium_monkey"),
-    excludes=["PySide6.QtWidgets", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets",
+    excludes=["PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets",
               "PySide6.QtTest", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick"],
 )
 archive = PYZ(analysis.pure)
