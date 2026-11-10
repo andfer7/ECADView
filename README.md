@@ -101,6 +101,13 @@ preserves its open documents' layers, views and variant choice. A spinner and
 **Loading project…** label appear while the project is opening. Cancelling the
 dialog leaves the workspace unchanged.
 
+Dropping a `.PrjPcb` onto the viewer uses the same project-opening flow, with its
+filename prefilled in the native dialog. Select the matching project there to
+load its linked documents: browsers do not expose a dropped file's original
+folder path. If documents are dropped alongside the project, identical files
+already loaded through the project are skipped; other dropped documents open
+normally. Dropping schematic or PCB files on their own still opens them directly.
+
 The dialog opens on the computer running ECADView's local server. For a server
 without a desktop display, use **Open files** to select the project and its
 documents together. A project can also be opened after its documents. From the

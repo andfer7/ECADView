@@ -9,7 +9,7 @@ import tempfile
 import threading
 
 
-def worker(result_path: str) -> None:
+def worker(result_path: str, project_name: str = "") -> None:
     """Choose a project in the helper process; cancellation is an empty path."""
     result = {}
     try:
@@ -25,10 +25,12 @@ def worker(result_path: str) -> None:
         app = QApplication.instance() or QApplication(["ECADView"])
         app.setApplicationName("ECADView")
         dialog = QFileDialog()
-        dialog.setWindowTitle("Open Altium project")
+        dialog.setWindowTitle(f"Locate {project_name}" if project_name else "Open Altium project")
         dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
         dialog.setNameFilter("Altium projects (*.PrjPcb *.PrjPCB *.prjpcb *.PRJPCB)")
+        if project_name:
+            dialog.selectFile(project_name)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -66,17 +68,19 @@ class ProjectPicker:
         self._process_lock = threading.Lock()
         self._process = None
 
-    def choose(self) -> Path | None:
+    def choose(self, *, name: str = "") -> Path | None:
         if self.stopping.is_set():
             return None
         command = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "ecadview.cli"]
         with tempfile.TemporaryDirectory(prefix="ecadview-project-") as temporary:
             result_path = Path(temporary) / "selection.json"
+            arguments = [*command, "--project-picker-worker", str(result_path)]
+            if name:
+                arguments.append(name)
             with self._process_lock:
                 if self.stopping.is_set():
                     return None
-                child = subprocess.Popen([*command, "--project-picker-worker", str(result_path)],
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                child = subprocess.Popen(arguments, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 self._process = child
             with child:
                 try:

@@ -97,9 +97,9 @@ def load_initial_documents(paths: list[Path]) -> list[dict]:
 
 
 def main() -> None:
-    if len(sys.argv) == 3 and sys.argv[1] == "--project-picker-worker":
+    if len(sys.argv) in {3, 4} and sys.argv[1] == "--project-picker-worker":
         from .project_picker import worker
-        worker(sys.argv[2])
+        worker(*sys.argv[2:])
         return
     if len(sys.argv) == 4 and sys.argv[1] == "--web-geometry-worker":
         from .web_geometry import worker
