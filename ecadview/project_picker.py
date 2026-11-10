@@ -18,7 +18,8 @@ def worker(result_path: str) -> None:
             sys.platform.startswith("linux")
             and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
         ):
-            raise RuntimeError("A desktop display is required for the project picker. Use Open project folder instead.")
+            raise RuntimeError("A desktop display is required for the project picker. "
+                               "Use Open files to select the project and its documents together.")
         from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
 
         app = QApplication.instance() or QApplication(["ECADView"])
@@ -91,7 +92,8 @@ class ProjectPicker:
                         return None
                     if child.returncode or not result_path.is_file():
                         detail = errors.decode("utf-8", errors="replace").strip()[-500:]
-                        raise RuntimeError("Could not open the project picker. Use Open project folder instead." +
+                        raise RuntimeError("Could not open the project picker. "
+                                           "Use Open files to select the project and its documents together." +
                                            (f" {detail}" if detail else ""))
                     result = json.loads(result_path.read_text(encoding="utf-8"))
                     if result.get("error"):

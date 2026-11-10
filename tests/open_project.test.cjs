@@ -98,6 +98,15 @@ async function activate(page, name) {
 }
 async function pickerFinished(page) {
   await page.waitForFunction(() => !document.getElementById('open-project').disabled);
+  assert.equal(await page.locator('#open-project-spinner').isHidden(), true);
+  assert.equal(await page.locator('#open-project-label').textContent(), 'Open project…');
+  assert.equal(await page.locator('#open-project').getAttribute('aria-busy'), 'false');
+}
+async function pickerLoading(page) {
+  assert.equal(await page.locator('#open-project').isDisabled(), true);
+  assert.equal(await page.locator('#open-project-spinner').isVisible(), true);
+  assert.equal(await page.locator('#open-project-label').textContent(), 'Loading project…');
+  assert.equal(await page.locator('#open-project').getAttribute('aria-busy'), 'true');
 }
 const activeName = page => page.locator('#view > svg').getAttribute('data-board');
 const snapshot = page => page.evaluate(() => ({
@@ -123,7 +132,7 @@ test('Open project loads referenced drawings and saved variants alongside existi
   await activate(page, 'sheet.SchDoc');
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
   assert.equal(await page.locator('#variant-overlay [data-variant-component="R1"]').count(), 1);
-  assert.match(await page.locator('#variant-status').textContent(), /missing\.SchDoc/);
+  assert.match(await page.locator('#open-project-status').textContent(), /missing\.SchDoc/);
   await activate(page, 'board.PcbDoc');
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
   assert.equal(await page.locator('#variant-overlay').count(), 0, 'opening a project preserves the unmarked PCB layout');
@@ -155,20 +164,26 @@ test('reopening a selected project reuses its tabs and preserves document and va
 });
 
 test('cancelling or failing a native project picker preserves the workspace and restores the button', async t => {
-  const { page, picks } = await openPage(t, { picker: (route, count) => count === 1
-    ? reply(route, { cancelled: true }) : reply(route, { error: 'Native project dialog unavailable' }, 503) });
+  let picked;
+  const { page, picks } = await openPage(t, { picker: route => picked(route) });
   await page.locator('#file').setInputFiles(file('existing.PcbDoc')); await loaded(page, 'existing.PcbDoc');
   await page.locator('#zoom-in').click();
   await page.waitForFunction(() => document.querySelector('#view > svg').getAttribute('viewBox') !== '0 0 100 80');
   const before = await snapshot(page);
-  await page.locator('#open-project').click(); await pickerFinished(page);
+  let request = new Promise(resolve => { picked = resolve; });
+  await page.locator('#open-project').click();
+  let route = await request; await pickerLoading(page);
+  await reply(route, { cancelled: true }); await pickerFinished(page);
   assert.equal((await page.locator('#open-project-status').textContent()).trim(), '');
   assert.deepEqual(await snapshot(page), before);
-  await page.locator('#open-project').click(); await pickerFinished(page);
+  request = new Promise(resolve => { picked = resolve; });
+  await page.locator('#open-project').click();
+  route = await request; await pickerLoading(page);
+  await reply(route, { error: 'Native project dialog unavailable' }, 503); await pickerFinished(page);
   assert.match(await page.locator('#open-project-status').textContent(), /Native project dialog unavailable/);
   assert.deepEqual(await snapshot(page), before);
   assert.equal(await page.getByRole('tab').count(), 1); assert.equal(picks.length, 2);
-  assert.equal(await page.locator('#open-project-folder').isEnabled(), true, 'folder selection remains available if the native picker fails');
+  assert.equal(await page.locator('#open').isEnabled(), true, 'manual file selection remains available if the native picker fails');
 });
 
 test('a pending picker accepts one request and a late response does not replace the tab selected while waiting', async t => {
@@ -182,7 +197,7 @@ test('a pending picker accepts one request and a late response does not replace 
   await page.locator('#file').setInputFiles([file('first.PcbDoc'), file('second.PcbDoc')]); await loaded(page, 'second.PcbDoc');
   await page.locator('#open-project').evaluate(button => { button.click(); button.click(); });
   await entered;
-  assert.equal(await page.locator('#open-project').isDisabled(), true);
+  await pickerLoading(page);
   assert.ok((await page.locator('#open-project-status').textContent()).trim());
   await activate(page, 'first.PcbDoc'); const before = await snapshot(page);
   release();
@@ -220,19 +235,25 @@ test('a project whose linked documents are missing still exposes its saved varia
   assert.equal(await page.getByRole('tab').count(), 0);
   assert.equal(await page.locator('#variant-controls').isVisible(), true);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-  assert.match(await page.locator('#variant-status').textContent(), /Schematics\/sheet\.SchDoc: File not found/);
+  assert.match(await page.locator('#open-project-status').textContent(), /Schematics\/sheet\.SchDoc: File not found/);
   assert.match(await page.locator('#open-project-status').textContent(), /No linked documents loaded/);
   await page.locator('#open-project').click(); await pickerFinished(page);
   assert.equal(await page.locator('#variant-project option').count(), 2, 'metadata is reused even when no linked document is loaded');
   assert.deepEqual(uploads, []);
 });
 
-test('Open project folder remains a directory picker separate from native project opening', async t => {
+test('project controls omit the folder picker and variant details while keeping manual file selection', async t => {
   const { page, picks } = await openPage(t);
+  await pickerFinished(page);
+  assert.equal(await page.locator('#open-project-folder, #project-files, #variant-status, #variant-details').count(), 0);
+  await page.locator('#open-project').click(); await pickerFinished(page);
+  assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
+  assert.equal(await page.locator('#variant-status, #variant-details').count(), 0);
   const chooserReady = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open project folder…', exact: true }).click();
+  await page.locator('#open').click();
   const chooser = await chooserReady;
-  assert.equal(await chooser.element().getAttribute('id'), 'project-files');
-  assert.notEqual(await chooser.element().getAttribute('webkitdirectory'), null);
-  assert.equal(picks.length, 0);
+  assert.equal(await chooser.element().getAttribute('id'), 'file');
+  assert.equal(await chooser.element().getAttribute('webkitdirectory'), null);
+  assert.equal(chooser.isMultiple(), true);
+  assert.equal(picks.length, 1);
 });

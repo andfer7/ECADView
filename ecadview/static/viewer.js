@@ -252,6 +252,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       project.variants.some(variant => variant.name === data.current_variant) ? data.current_variant : '';
     selectedProjectId = project.id;
     associateProjects();
+    $('open-project-status').textContent = (project.warnings || []).join('\n');
     return project;
   }
   function refreshBoardVariant(board) {
@@ -275,41 +276,6 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     $('variant-select').replaceChildren(option('', 'Base design'), ...(project?.variants || []).map(item => option(item.name, item.name)));
     $('variant-select').value = project?.selectedVariant || '';
     $('variant-select').disabled = !project?.variants.length;
-    const details = $('variant-details'); details.replaceChildren();
-    if (!project) {
-      $('variant-status').textContent = activeBoard ? 'Choose this document’s project to view its variants.' : 'Open an Altium project and its documents.';
-      return;
-    }
-    const variant = selectedVariant(project), state = activeBoard?.variantInfo;
-    const loaded = new Set(boards.filter(board => board.projectId === project.id).map(board => projectPath(board.projectPath || board.file.webkitRelativePath || board.file.name)));
-    const messages = [!loaded.size ? 'Open the project’s PCB and schematic files, or use Open project folder.' :
-      `${loaded.size} linked document${loaded.size === 1 ? '' : 's'}.`];
-    if (!project.variants.length) messages.push('This project has no assembly variants.');
-    else if (!variant) messages.push('Base design — all components fitted.');
-    else messages.push('Not-fitted components are crossed out in schematics and omitted in 3D.');
-    if (state?.ambiguous.length) messages.push(`${state.ambiguous.length} ambiguous component variation(s) could not be applied.`);
-    if (project.warnings?.length) messages.push(...project.warnings);
-    $('variant-status').textContent = messages.join('\n');
-    if (!variant) return;
-    const rows = (activeBoard ? state?.components || [] : variant.components.map(row => ({ ...row, name: row.designator })))
-      .filter(row => row.kind !== 'not_fitted');
-    const list = document.createElement('ul');
-    for (const row of rows) {
-      const changes = [row.kind === 'alternate' ? `Alternate part: ${row.alternate_part || 'specified in project'}` : 'Fitted'];
-      for (const [name, value] of Object.entries(row.parameters || {})) changes.push(`${name}: ${value}`);
-      const item = document.createElement('li'); item.textContent = `${row.name} — ${changes.join('\n')}`; list.append(item);
-    }
-    if (list.childElementCount) details.append(list);
-    if (Object.keys(variant.parameters || {}).length) {
-      const parameters = document.createElement('div'); parameters.className = 'hint variant-note';
-      parameters.textContent = 'Variant parameters: ' + Object.entries(variant.parameters).map(([name, value]) => `${name} = ${value}`).join(', ');
-      details.append(parameters);
-    }
-    if (rows.some(row => row.kind === 'alternate' || Object.keys(row.parameters || {}).length)) {
-      const note = document.createElement('div'); note.className = 'hint variant-note';
-      note.textContent = 'Variant values are listed here. Drawing text and alternate symbol, footprint and 3D geometry remain from the base design.';
-      details.append(note);
-    }
   }
   $('variant-project').onchange = () => {
     const id = Number($('variant-project').value) || null;
@@ -576,7 +542,10 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (button.disabled) return;
     const startedAt = navigationVersion;
     button.disabled = true;
-    status.textContent = 'Select a .PrjPcb file in the dialog. Its documents will load automatically.';
+    button.setAttribute('aria-busy', 'true');
+    $('open-project-spinner').hidden = false;
+    $('open-project-label').textContent = 'Loading project…';
+    status.textContent = 'Loading project and linked documents…';
     try {
       const response = await fetch('/open-project', { method: 'POST', headers: { 'X-Viewer-Request': 'open-project' } });
       const data = await response.json();
@@ -584,14 +553,19 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       if (data.cancelled) { status.textContent = ''; return; }
       if (!Array.isArray(data.documents)) throw new Error('The project could not be loaded.');
       const opened = openRenderedDocuments(data.documents, navigationVersion === startedAt);
-      status.textContent = opened.length ? `Project opened: ${opened.length} document${opened.length === 1 ? '' : 's'}.` :
+      const summary = opened.length ? `Project opened: ${opened.length} document${opened.length === 1 ? '' : 's'}.` :
         'Project opened. No linked documents loaded.';
+      const warnings = data.documents.filter(document => document.kind === 'project').flatMap(project => project.warnings || []);
+      status.textContent = [summary, ...warnings].join('\n');
     } catch (error) {
       status.textContent = 'Could not open project: ' + error.message;
-    } finally { button.disabled = false; }
+    } finally {
+      button.disabled = false;
+      button.setAttribute('aria-busy', 'false');
+      $('open-project-spinner').hidden = true;
+      $('open-project-label').textContent = 'Open project…';
+    }
   };
-  $('open-project-folder').onclick = () => $('project-files').click();
-  $('project-files').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
   document.addEventListener('dragover', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
     e.preventDefault(); view.classList.add('drop');

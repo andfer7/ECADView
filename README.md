@@ -97,35 +97,35 @@ across tab and 2D/3D changes.
 Use **Open project…** to select a `.PrjPcb` in the native file dialog. ECADView
 automatically opens its referenced `.SchDoc` and `.PcbDoc` files in tabs and
 reports missing files. Existing tabs remain open; reopening the same project
-preserves its open documents' layers, views and variant choice. Cancelling the
+preserves its open documents' layers, views and variant choice. A spinner and
+**Loading project…** label appear while the project is opening. Cancelling the
 dialog leaves the workspace unchanged.
 
 The dialog opens on the computer running ECADView's local server. For a server
-without a desktop display, use **Open project folder…** to load the project and
-its referenced documents from a directory, or **Open files** to select them
-together. A project can also be opened after its documents. From the command
-line, `ecadview design.PrjPcb` opens its referenced documents automatically.
+without a desktop display, use **Open files** to select the project and its
+documents together. A project can also be opened after its documents. From the
+command line, `ecadview design.PrjPcb` opens its referenced documents automatically.
 
 Choose an **Assembly variant** in the sidebar. The saved project variant is
 selected initially; **Base design** clears the variant. The choice is shared
 by the documents linked to that project. Source component IDs take priority
 over designators, including PCB components renamed after schematic annotation.
-Ambiguous component matches are reported and left unchanged.
+Ambiguous component matches are left unchanged.
 
 Not-fitted components have red crosses in schematics and their bodies are
 omitted in 3D. The 2D PCB layout has no variant crosses; its copper, pads and
 layer visibility remain unchanged. Switching variants preserves the camera,
-measurements, selections and manual 3D deletions. The
-sidebar lists fitted-component parameter overrides, alternate-part names and
-variant-level parameters. Drawing text and alternate symbol, footprint and
-3D geometry still come from the base design; `.PrjPcbVariants` geometry is
+measurements, selections and manual 3D deletions. The sidebar contains project
+and variant selectors without a variant summary or component details. Drawing
+text and alternate symbol, footprint and 3D geometry still come from the base
+design; `.PrjPcbVariants` geometry is
 not loaded. This viewer does not modify any design or project file.
 
-With **Open files** and **Open project folder…**, browser file access is limited
-to the files you select. **Open project…** lets the local server read the selected
+With **Open files**, browser file access is limited to the files you select.
+**Open project…** lets the local server read the selected
 project and its referenced documents. If a document cannot be linked automatically,
-choose its **Altium project** in the sidebar. Folder loading preserves relative
-paths for projects with duplicate document names.
+choose its **Altium project** in the sidebar. **Open project…** resolves the
+referenced paths for projects with duplicate document names.
 Project and variant selections last for the current viewer session.
 
 ## 2D rendering and performance
