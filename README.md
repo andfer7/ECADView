@@ -101,10 +101,23 @@ preserves its open documents' layers, views and variant choice. A spinner and
 **Loading project…** label appear while the project is opening. Cancelling the
 dialog leaves the workspace unchanged.
 
+For opening without a dialog, drag the **project folder** onto the viewer. It
+finds `.PrjPcb` files in that folder and its subfolders, then opens their referenced
+schematics and layouts with the same loading indicator. Only referenced documents
+are loaded when a project is present; unrelated files are skipped. Missing,
+ambiguous, or outside-folder references are reported. Drop a common parent folder
+if the project refers to documents in sibling directories.
+
+Dropping a `.PrjPcb` by itself reads its variant metadata and suggests dropping
+the containing folder; it never opens a dialog. Browser access is limited to the
+files and folders you drop. Browsers with directory-handle identity support also
+reuse an already-open dropped project, preserving its view and variant choice.
+
 The dialog opens on the computer running ECADView's local server. For a server
-without a desktop display, use **Open files** to select the project and its
-documents together. A project can also be opened after its documents. From the
-command line, `ecadview design.PrjPcb` opens its referenced documents automatically.
+without a desktop display, drop the project folder or use **Open files** to select
+the project and its documents together. A project can also be opened after its
+documents. From the command line, `ecadview design.PrjPcb` opens its referenced
+documents automatically.
 
 Choose an **Assembly variant** in the sidebar. The saved project variant is
 selected initially; **Base design** clears the variant. The choice is shared

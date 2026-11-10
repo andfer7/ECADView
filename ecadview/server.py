@@ -22,6 +22,7 @@ STATIC_ROUTES = {
     "/static/viewer.css": ("viewer.css", "text/css; charset=utf-8"),
     "/static/viewer.js": ("viewer.js", "text/javascript; charset=utf-8"),
     "/static/variants.js": ("variants.js", "text/javascript; charset=utf-8"),
+    "/static/dropped-files.js": ("dropped-files.js", "text/javascript; charset=utf-8"),
     "/static/cross-probe.js": ("cross-probe.js", "text/javascript; charset=utf-8"),
     "/static/net-labels.js": ("net-labels.js", "text/javascript; charset=utf-8"),
     "/static/viewer-3d.js": ("viewer-3d.js", "text/javascript; charset=utf-8"),

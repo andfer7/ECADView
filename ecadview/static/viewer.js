@@ -5,6 +5,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
 import { rectangleMatches } from './rectangle-selection.js';
 import { trackViewerSession } from './viewer-session.js';
 import { variantState, renderVariantOverlay } from './variants.js';
+import { captureDrop, resolveProjectDocument } from './dropped-files.js';
 import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   schematicComponents as findSchematicComponents, reverseNets } from './cross-probe.js';
 
@@ -21,6 +22,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   let nextProjectId = 1, selectedProjectId = null;
   let activeBoard = null, nextBoardId = 1;
   let navigationVersion = 0;
+  const droppedRoots = [];
+  let nextDroppedRootId = 1;
   let layoutGPU = null, gpuUnavailable = false, labelTimer = 0, paintBatch = 0;
   let geometryQueue = Promise.resolve();
 
@@ -435,7 +438,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     associateProjects();
     if (activeBoard) $('board-tab-' + activeBoard.id).focus();
   }
-  async function openFiles(fileList) {
+  async function openFiles(fileList, { activate = true } = {}) {
+    const startedAt = navigationVersion;
     const files = [...fileList], batchProjects = [];
     for (const file of files.filter(file => /\.prjpcb$/i.test(file.name))) {
       try {
@@ -445,12 +449,13 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
         batchProjects.push(registerProject(data, file));
       } catch (error) { toast(`Could not open ${file.name}: ${error.message}`); }
     }
+    const shouldActivate = activate && navigationVersion === startedAt;
     for (const file of files.filter(file => !/\.prjpcb$/i.test(file.name))) {
       if (file.webkitRelativePath && !/\.(pcbdoc|schdoc|kicad_pcb|kicad_sch|sch)$/i.test(file.name)) continue;
       if (file.webkitRelativePath && batchProjects.length &&
           !batchProjects.some(project => projectMatches(project, { file }))) continue;
       const board = createBoard(file);
-      activateBoard(board);
+      if (shouldActivate) activateBoard(board);
       renderBoard(board);
     }
   }
@@ -518,15 +523,15 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     prepareGPU(board, data);
   }
 
-  function openRenderedDocuments(documents, activate) {
-    for (const data of documents.filter(data => data.kind === 'project')) registerProject(data, new File([], data.name));
+  function openRenderedDocuments(documents, activate, sourceFiles = new Map()) {
+    for (const data of documents.filter(data => data.kind === 'project')) registerProject(data, sourceFiles.get(data) || new File([], data.name));
     const opened = [];
     for (const data of documents) {
       if (!data.svg) continue;
       const existing = data.project_key && boards.find(board => board.svg && board.projectKey === data.project_key &&
         projectPath(board.projectPath) === projectPath(data.project_path));
       if (existing) { opened.push(existing); continue; }
-      const file = new File([Uint8Array.from(atob(data.source || ''), c => c.charCodeAt(0))], data.name);
+      const file = sourceFiles.get(data) || new File([Uint8Array.from(atob(data.source || ''), c => c.charCodeAt(0))], data.name);
       const board = createBoard(file);
       try { show(board, data); opened.push(board); }
       catch (error) { closeBoard(board); throw error; }
@@ -537,7 +542,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
 
   $('open').onclick = () => $('file').click();
   $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
-  $('open-project').onclick = async () => {
+  async function loadProject(load) {
     const button = $('open-project'), status = $('open-project-status');
     if (button.disabled) return;
     const startedAt = navigationVersion;
@@ -547,15 +552,22 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     $('open-project-label').textContent = 'Loading project…';
     status.textContent = 'Loading project and linked documents…';
     try {
-      const response = await fetch('/open-project', { method: 'POST', headers: { 'X-Viewer-Request': 'open-project' } });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || response.statusText);
+      const data = await load();
       if (data.cancelled) { status.textContent = ''; return; }
+      if (data.files) {
+        await openFiles(data.files, { activate: navigationVersion === startedAt });
+        if (data.files.some(file => /\.prjpcb$/i.test(file.name)) && !data.files.some(file => /\.(pcbdoc|schdoc)$/i.test(file.name))) {
+          status.textContent = 'Drop the containing project folder to load its linked documents automatically.';
+        } else if (status.textContent === 'Loading project and linked documents…') status.textContent = '';
+        return;
+      }
       if (!Array.isArray(data.documents)) throw new Error('The project could not be loaded.');
-      const opened = openRenderedDocuments(data.documents, navigationVersion === startedAt);
+      const shouldActivate = navigationVersion === startedAt;
+      const opened = openRenderedDocuments(data.documents, shouldActivate, data.sourceFiles);
+      if (data.additionalFiles?.length) await openFiles(data.additionalFiles, { activate: shouldActivate });
       const summary = opened.length ? `Project opened: ${opened.length} document${opened.length === 1 ? '' : 's'}.` :
-        'Project opened. No linked documents loaded.';
-      const warnings = data.documents.filter(document => document.kind === 'project').flatMap(project => project.warnings || []);
+        data.emptyMessage || 'Project opened. No linked documents loaded.';
+      const warnings = [...(data.warnings || []), ...data.documents.filter(document => document.kind === 'project').flatMap(project => project.warnings || [])];
       status.textContent = [summary, ...warnings].join('\n');
     } catch (error) {
       status.textContent = 'Could not open project: ' + error.message;
@@ -565,7 +577,83 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       $('open-project-spinner').hidden = true;
       $('open-project-label').textContent = 'Open project…';
     }
-  };
+  }
+  $('open-project').onclick = () => loadProject(async () => {
+    const response = await fetch('/open-project', { method: 'POST', headers: { 'X-Viewer-Request': 'open-project' } });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || response.statusText);
+    return data;
+  });
+
+  async function droppedRootId(root) {
+    if (root.handle) {
+      for (const previous of droppedRoots) {
+        try { if (await root.handle.isSameEntry(previous.handle)) return previous.id; }
+        catch (_) { /* Unavailable identity must not merge different folders. */ }
+      }
+    }
+    const id = nextDroppedRootId++;
+    if (root.handle) droppedRoots.push({ id, handle: root.handle });
+    return id;
+  }
+  async function renderDroppedFile(file, project = false) {
+    const response = await fetch('/render', { method: 'POST', body: file,
+      headers: { 'X-Filename': encodeURIComponent(file.name), ...(!project && { 'X-WebGL': '1' }) } });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || response.statusText);
+    if (project ? data.kind !== 'project' : !data.svg) throw new Error('The file could not be rendered.');
+    return data;
+  }
+  async function loadDroppedFolder(drop) {
+    const records = drop.files.filter(record => record.root);
+    const projectRecords = records.filter(record => /\.prjpcb$/i.test(record.path));
+    const rootsWithProjects = new Set(projectRecords.map(record => record.root));
+    const rootIds = new Map();
+    for (const root of drop.roots) rootIds.set(root, await droppedRootId(root));
+    const documents = [], sourceFiles = new Map(), warnings = [], tasks = [];
+    for (const record of projectRecords) {
+      try {
+        if (record.error) throw record.error;
+        const project = await renderDroppedFile(record.file, true);
+        Object.assign(project, { project_key: `dropped-project-${rootIds.get(record.root)}:${record.path}`,
+          project_label: record.path, warnings: project.warnings || [] });
+        documents.push(project); sourceFiles.set(project, record.file);
+        const seen = new Set();
+        for (const reference of project.documents) {
+          try {
+            const member = resolveProjectDocument(record, reference, records);
+            if (!seen.has(member)) { tasks.push({ record: member, project, reference }); seen.add(member); }
+          } catch (error) { project.warnings.push(`Could not open ${reference}: ${error.message}`); }
+        }
+      } catch (error) { warnings.push(`Could not open ${record.path}: ${error.message}`); }
+    }
+    for (const record of records) {
+      if (!rootsWithProjects.has(record.root) && !/\.prjpcb$/i.test(record.path)) tasks.push({ record });
+    }
+    for (const { record, project, reference } of tasks) {
+      try {
+        if (record.error) throw record.error;
+        const data = await renderDroppedFile(record.file);
+        if (project) Object.assign(data, { project_name: project.name, project_key: project.project_key, project_path: reference });
+        documents.push(data); sourceFiles.set(data, record.file);
+      } catch (error) { (project?.warnings || warnings).push(`Could not open ${record.path}: ${error.message}`); }
+    }
+    return { documents, sourceFiles, warnings, additionalFiles: drop.files.filter(record => !record.root).map(record => record.file),
+      emptyMessage: projectRecords.length ? undefined : 'No supported documents found in the dropped folder.' };
+  }
+  async function openDroppedFiles(captured) {
+    if ($('open-project').disabled) {
+      const drop = await captured;
+      if (drop.hasDirectories || drop.files.some(record => /\.prjpcb$/i.test(record.file.name))) {
+        toast('A project is already being opened. Drop the folder again when it finishes.');
+      } else openFiles(drop.files.map(record => record.file));
+      return;
+    }
+    await loadProject(async () => {
+      const drop = await captured;
+      return drop.hasDirectories ? loadDroppedFolder(drop) : { files: drop.files.map(record => record.file) };
+    });
+  }
   document.addEventListener('dragover', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
     e.preventDefault(); view.classList.add('drop');
@@ -573,7 +661,9 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   view.addEventListener('dragleave', () => view.classList.remove('drop'));
   document.addEventListener('drop', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
-    e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files);
+    e.preventDefault(); view.classList.remove('drop');
+    // Browser handles/entries must be captured before this event returns.
+    openDroppedFiles(captureDrop(e.dataTransfer)).catch(error => toast('Could not open dropped files: ' + error.message));
   });
   document.addEventListener('dragleave', e => { if (!e.relatedTarget) view.classList.remove('drop'); });
 
