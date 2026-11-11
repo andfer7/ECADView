@@ -32,6 +32,13 @@
   @keyframes project-loading { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { #open-project-spinner { animation: none; } }
   #open-project-status { margin-top: 4px; white-space: pre-line; overflow-wrap: anywhere; }
+  #project-folder-hint { box-sizing: border-box; width: min(25rem, calc(100% - 2rem)); padding: 20px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+  #project-folder-hint::backdrop { background: #0008; }
+  #project-folder-hint h2 { margin: 0; font-size: 16px; }
+  #project-folder-hint p { margin: 8px 0 16px; }
+  #project-folder-hint form { text-align: right; }
+  #project-folder-hint button { min-width: 4rem; }
   #variant-controls > label { display: block; }
   #variant-project, #variant-select { width: 100%; box-sizing: border-box; margin: 4px 0 8px;
     background: var(--bg); color: var(--text); padding: 4px; }

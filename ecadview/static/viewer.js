@@ -13,6 +13,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   trackViewerSession();
   const $ = id => document.getElementById(id);
   const view = $('view'), layersEl = $('layers'), readout = $('readout'), label = $('measure-label');
+  const projectFolderHint = $('project-folder-hint');
   const NS = 'http://www.w3.org/2000/svg';
   const netLabels = new NetLabels($('net-labels'));
   let svg = null, groups = [], vb = null, home = null;
@@ -438,9 +439,12 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     associateProjects();
     if (activeBoard) $('board-tab-' + activeBoard.id).focus();
   }
-  async function openFiles(fileList, { activate = true } = {}) {
+  async function openFiles(fileList, { activate = true, showFolderHint = true } = {}) {
     const startedAt = navigationVersion;
     const files = [...fileList], batchProjects = [];
+    if (showFolderHint && files.length === 1 && /\.prjpcb$/i.test(files[0].name) && !projectFolderHint.open) {
+      projectFolderHint.showModal();
+    }
     for (const file of files.filter(file => /\.prjpcb$/i.test(file.name))) {
       try {
         const response = await fetch('/render', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(file.name) }, body: file });
@@ -564,7 +568,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       if (!Array.isArray(data.documents)) throw new Error('The project could not be loaded.');
       const shouldActivate = navigationVersion === startedAt;
       const opened = openRenderedDocuments(data.documents, shouldActivate, data.sourceFiles);
-      if (data.additionalFiles?.length) await openFiles(data.additionalFiles, { activate: shouldActivate });
+      if (data.additionalFiles?.length) await openFiles(data.additionalFiles, { activate: shouldActivate, showFolderHint: false });
       const summary = opened.length ? `Project opened: ${opened.length} document${opened.length === 1 ? '' : 's'}.` :
         data.emptyMessage || 'Project opened. No linked documents loaded.';
       const warnings = [...(data.warnings || []), ...data.documents.filter(document => document.kind === 'project').flatMap(project => project.warnings || [])];
@@ -651,7 +655,9 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     }
     await loadProject(async () => {
       const drop = await captured;
-      return drop.hasDirectories ? loadDroppedFolder(drop) : { files: drop.files.map(record => record.file) };
+      if (!drop.hasDirectories) return { files: drop.files.map(record => record.file) };
+      if (projectFolderHint.open) projectFolderHint.close();
+      return loadDroppedFolder(drop);
     });
   }
   document.addEventListener('dragover', e => {
@@ -1757,6 +1763,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   $('measure-btn').onclick = () => setMeasuring(!measuring);
   $('units-toggle').onclick = toggleUnits;
   window.addEventListener('keydown', e => {
+    if (projectFolderHint.open) return;
     if (measuring && (e.key === 'Meta' || e.key === 'Control')) { snapping = Boolean(snapModifier(e)); refreshHover(); draw(); }
     const editing = e.target.closest('textarea, select, [contenteditable], input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="file"])');
     if (!editing && !is3D() && e.code === 'Space' && !e.ctrlKey && !e.metaKey && !e.altKey &&

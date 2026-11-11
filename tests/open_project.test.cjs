@@ -124,6 +124,7 @@ test('Open project loads referenced drawings and saved variants alongside existi
   assert.equal(await page.locator('#open-project-status').getAttribute('role'), 'status');
   await page.locator('#open-project').click();
   await page.waitForFunction(() => document.querySelectorAll('[role="tab"]').length === 3); await pickerFinished(page);
+  assert.equal(await page.locator('#project-folder-hint').isVisible(), false);
   assert.deepEqual(uploads, ['existing.PcbDoc'], 'returned documents are mounted directly from the local backend');
   assert.equal(picks.length, 1);
   assert.equal(picks[0].method, 'POST');

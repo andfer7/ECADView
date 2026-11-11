@@ -119,6 +119,10 @@ async function openFiles(page, names) {
   await page.locator('#file').setInputFiles(names.map(name => file(name)));
   const document = names.findLast(name => !/\.prjpcb$/i.test(name));
   if (document) await loaded(page, document);
+  else if (names.length === 1) await dismissFolderHint(page);
+}
+async function dismissFolderHint(page) {
+  await page.getByRole('dialog', { name: 'Drop the whole project folder' }).getByRole('button', { name: 'OK', exact: true }).click();
 }
 async function activate(page, name) {
   await page.getByRole('tab', { name, exact: true }).click(); await loaded(page, name);
@@ -312,6 +316,11 @@ test('the project upload endpoint reads real PrjPcb bytes and connects them to a
   await page.locator('#file').setInputFiles(file('actual.PrjPcb', projectText));
   await variantReady(page);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
+  const hint = page.getByRole('dialog', { name: 'Drop the whole project folder' });
+  await hint.waitFor({ state: 'visible' });
+  assert.equal(await hint.evaluate(dialog => dialog.matches(':modal')), true);
+  await page.keyboard.press('Escape');
+  await hint.waitFor({ state: 'hidden' });
   await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
   assert.equal(await page.getByRole('tab').count(), 1);
@@ -321,6 +330,7 @@ test('the project upload endpoint reads real PrjPcb bytes and connects them to a
   const reloaded = page.waitForResponse(response => response.url().endsWith('/render'));
   await page.locator('#file').setInputFiles(file('actual.PrjPcb', projectText));
   await (await reloaded).finished();
+  await dismissFolderHint(page);
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.locator('#variant-select').inputValue(), '', 'reloading project metadata preserves an explicit Base design choice');
   await expectPcbBodies(page, ['R99', 'U7', 'J1']);
@@ -378,6 +388,7 @@ test('ordinary uploads keep same-name projects separate and require a choice for
   await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
   await page.locator('#file').setInputFiles(file('demo.PrjPcb', 'second'));
+  await dismissFolderHint(page);
   await page.waitForFunction(() => document.querySelectorAll('#variant-project option').length === 3);
   assert.equal(await page.locator('#variant-project').inputValue(), '', 'duplicate basenames do not silently pick or replace a project');
   await expectPcbBodies(page, ['R99', 'U7', 'J1']);

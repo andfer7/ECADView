@@ -108,8 +108,8 @@ are loaded when a project is present; unrelated files are skipped. Missing,
 ambiguous, or outside-folder references are reported. Drop a common parent folder
 if the project refers to documents in sibling directories.
 
-Dropping a `.PrjPcb` by itself reads its variant metadata and suggests dropping
-the containing folder; it never opens a dialog. Browser access is limited to the
+Selecting or dropping a `.PrjPcb` by itself reads its variant metadata and shows
+a popup asking you to drop the whole project folder. Browser access is limited to the
 files and folders you drop. Browsers with directory-handle identity support also
 reuse an already-open dropped project, preserving its view and variant choice.
 

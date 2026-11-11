@@ -180,6 +180,7 @@ test('dropping a folder loads only project references by full nested paths and r
     'Sheets/sheet.SchDoc': drawing('sheet', 'schematic'), 'main.PcbDoc': drawing('unreferenced'), 'notes.txt': 'notes',
   } };
   await dropFolder(page, folder, { target: '#panel' }); await finished(page);
+  assert.equal(await page.locator('#project-folder-hint').isVisible(), false);
   assert.equal(await page.getByRole('tab').count(), 3, JSON.stringify({ uploads, status: await page.locator('#open-project-status').textContent() }));
   assert.deepEqual(uploads.filter(upload => upload.data.kind !== 'project').map(upload => upload.data.id).sort(), ['layout-a', 'layout-b', 'sheet']);
   assert.ok(uploads.filter(upload => upload.data.kind !== 'project').every(upload => upload.webgl === '1'));
@@ -279,16 +280,34 @@ test('different directories with identical names and project bytes remain separa
 
 test('a lone project drop explains folder access and loose project-plus-document drops still open normally', async t => {
   const { page, uploads } = await openPage(t);
-  const project = { name: 'demo.PrjPcb', data: projectData() };
+  const project = { name: 'demo.PRJPCB', data: projectData() };
   await dropLoose(page, [project]);
+  const hint = page.getByRole('dialog', { name: 'Drop the whole project folder' });
+  await hint.waitFor({ state: 'visible' });
+  assert.match(await hint.innerText(), /schematic|\.schdoc/i);
+  assert.match(await hint.innerText(), /layout|\.pcbdoc/i);
   await page.waitForFunction(() => document.querySelector('#variant-select')?.value === 'Economy');
+  await hint.getByRole('button', { name: 'OK', exact: true }).click();
+  await hint.waitFor({ state: 'hidden' });
   assert.equal(await page.getByRole('tab').count(), 0);
-  assert.match(await page.locator('#open-project-status').textContent(), /folder/i);
   await dropLoose(page, [project, { name: 'board.PcbDoc', data: drawing('loose-pcb') },
     { name: 'sheet.SchDoc', data: drawing('loose-sch', 'schematic') }]);
   await loaded(page, 'loose-sch');
+  assert.equal(await hint.isVisible(), false);
   assert.equal(await page.getByRole('tab').count(), 2);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
   assert.equal(await page.locator('#variant-overlay [data-variant-component="R1"]').count(), 1);
   assert.deepEqual(uploads.filter(upload => upload.data.kind !== 'project').map(upload => upload.name), ['board.PcbDoc', 'sheet.SchDoc']);
+});
+
+test('dropping the containing folder on the open hint dismisses it and loads the drawings', async t => {
+  const { page } = await openPage(t);
+  await dropLoose(page, [{ name: 'demo.PrjPcb', data: projectData() }]);
+  const hint = page.getByRole('dialog', { name: 'Drop the whole project folder' });
+  await hint.waitFor({ state: 'visible' });
+  await page.waitForFunction(() => !document.getElementById('open-project').disabled);
+  await dropFolder(page, basicFolder(), { target: '#project-folder-hint' }); await finished(page);
+  assert.equal(await hint.isVisible(), false);
+  assert.equal(await page.getByRole('tab').count(), 2);
+  await loaded(page, 'folder-one-sch');
 });
