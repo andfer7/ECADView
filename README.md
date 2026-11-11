@@ -5,7 +5,7 @@ A local browser-based Altium and KiCad PCB and schematic viewer. Open `.PcbDoc`,
 tabs, inspect layers and polygon pours, find components and nets, cross-probe
 between documents, and measure PCB geometry.
 
-Load an Altium `.PrjPcb` alongside its documents to inspect assembly variants.
+Drop an Altium project folder or use **Open project…** to inspect assembly variants.
 
 **The web viewer is the primary and only supported interface.** All launch
 commands open it in a browser. The former native Qt window has been retired;
@@ -108,14 +108,14 @@ are loaded when a project is present; unrelated files are skipped. Missing,
 ambiguous, or outside-folder references are reported. Drop a common parent folder
 if the project refers to documents in sibling directories.
 
-Selecting or dropping a `.PrjPcb` by itself reads its variant metadata and shows
-a popup asking you to drop the whole project folder. Browser access is limited to the
-files and folders you drop. Browsers with directory-handle identity support also
+Selecting or dropping a loose `.PrjPcb` shows **Drop the whole project folder**.
+The browser uploads a `.PrjPcb` and reads its variants only when that file comes
+from a dropped folder. Browsers with directory-handle identity support also
 reuse an already-open dropped project, preserving its view and variant choice.
 
 The dialog opens on the computer running ECADView's local server. For a server
-without a desktop display, drop the project folder or use **Open files** to select
-the project and its documents together. A project can also be opened after its
+without a desktop display, drop the project folder. Use **Open files** for
+individual schematics and layouts. A project can also be opened after its
 documents. From the command line, `ecadview design.PrjPcb` opens its referenced
 documents automatically.
 

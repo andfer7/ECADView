@@ -244,8 +244,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     updateVariantControls();
   }
   function registerProject(data, file) {
-    // A normal file picker omits directories. Distinct same-name projects must
-    // not silently replace one another's variants or linked documents.
+    // Keep same-name projects distinct when the payload has no project key.
     const key = data.project_key || (file.webkitRelativePath ? projectPath(file.webkitRelativePath) :
       projectPath(file.name) + '\0' + JSON.stringify([data.documents, data.variants]));
     let project = projects.find(project => project.key === key);
@@ -439,27 +438,15 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     associateProjects();
     if (activeBoard) $('board-tab-' + activeBoard.id).focus();
   }
-  async function openFiles(fileList, { activate = true, showFolderHint = true } = {}) {
-    const startedAt = navigationVersion;
-    const files = [...fileList], batchProjects = [];
-    if (showFolderHint && files.length === 1 && /\.prjpcb$/i.test(files[0].name) && !projectFolderHint.open) {
-      projectFolderHint.showModal();
-    }
-    for (const file of files.filter(file => /\.prjpcb$/i.test(file.name))) {
-      try {
-        const response = await fetch('/render', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(file.name) }, body: file });
-        const data = await response.json();
-        if (!response.ok || data.kind !== 'project') throw new Error(data.error || 'Could not read project variants.');
-        batchProjects.push(registerProject(data, file));
-      } catch (error) { toast(`Could not open ${file.name}: ${error.message}`); }
-    }
-    const shouldActivate = activate && navigationVersion === startedAt;
-    for (const file of files.filter(file => !/\.prjpcb$/i.test(file.name))) {
+  function openLooseFiles(files, { activate = true } = {}) {
+    for (const file of files) {
+      if (/\.prjpcb$/i.test(file.name)) {
+        if (!projectFolderHint.open) projectFolderHint.showModal();
+        continue;
+      }
       if (file.webkitRelativePath && !/\.(pcbdoc|schdoc|kicad_pcb|kicad_sch|sch)$/i.test(file.name)) continue;
-      if (file.webkitRelativePath && batchProjects.length &&
-          !batchProjects.some(project => projectMatches(project, { file }))) continue;
       const board = createBoard(file);
-      if (shouldActivate) activateBoard(board);
+      if (activate) activateBoard(board);
       renderBoard(board);
     }
   }
@@ -545,8 +532,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   }
 
   $('open').onclick = () => $('file').click();
-  $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
-  let pendingLooseFileUpload = null;
+  $('file').onchange = e => { openLooseFiles(e.target.files); e.target.value = ''; };
   async function loadProject(load) {
     const button = $('open-project'), status = $('open-project-status');
     if (button.disabled) return;
@@ -560,8 +546,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       const data = await load();
       if (data.cancelled) { status.textContent = ''; return; }
       if (data.files) {
-        pendingLooseFileUpload = openFiles(data.files, { activate: navigationVersion === startedAt });
-        await pendingLooseFileUpload;
+        openLooseFiles(data.files, { activate: navigationVersion === startedAt });
         if (data.files.some(file => /\.prjpcb$/i.test(file.name)) && !data.files.some(file => /\.(pcbdoc|schdoc)$/i.test(file.name))) {
           status.textContent = 'Drop the containing project folder to load its linked documents automatically.';
         } else if (status.textContent === 'Loading project and linked documents…') status.textContent = '';
@@ -570,7 +555,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       if (!Array.isArray(data.documents)) throw new Error('The project could not be loaded.');
       const shouldActivate = navigationVersion === startedAt;
       const opened = openRenderedDocuments(data.documents, shouldActivate, data.sourceFiles);
-      if (data.additionalFiles?.length) await openFiles(data.additionalFiles, { activate: shouldActivate, showFolderHint: false });
+      if (data.additionalFiles?.length) openLooseFiles(data.additionalFiles, { activate: shouldActivate });
       const summary = opened.length ? `Project opened: ${opened.length} document${opened.length === 1 ? '' : 's'}.` :
         data.emptyMessage || 'Project opened. No linked documents loaded.';
       const warnings = [...(data.warnings || []), ...data.documents.filter(document => document.kind === 'project').flatMap(project => project.warnings || [])];
@@ -578,7 +563,6 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     } catch (error) {
       status.textContent = 'Could not open project: ' + error.message;
     } finally {
-      pendingLooseFileUpload = null;
       button.disabled = false;
       button.setAttribute('aria-busy', 'false');
       $('open-project-spinner').hidden = true;
@@ -651,12 +635,10 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   async function openDroppedFiles(captured) {
     if ($('open-project').disabled) {
       const drop = await captured;
-      // A user can follow the folder hint before the metadata upload finishes.
-      if (drop.hasDirectories && pendingLooseFileUpload) await pendingLooseFileUpload;
       if ($('open-project').disabled) {
         if (drop.hasDirectories || drop.files.some(record => /\.prjpcb$/i.test(record.file.name))) {
           toast('A project is already being opened. Drop the folder again when it finishes.');
-        } else openFiles(drop.files.map(record => record.file));
+        } else openLooseFiles(drop.files.map(record => record.file));
         return;
       }
     }

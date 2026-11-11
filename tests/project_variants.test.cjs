@@ -4,6 +4,8 @@ const { before, after, test } = require('node:test');
 const { resolve } = require('node:path');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
+const { mkdtemp, mkdir, writeFile, rm } = require('node:fs/promises');
+const { tmpdir } = require('node:os');
 const { chromium } = require('playwright');
 
 let browser, server, origin;
@@ -117,12 +119,12 @@ async function loaded(page, name) {
 }
 async function openFiles(page, names) {
   await page.locator('#file').setInputFiles(names.map(name => file(name)));
-  const document = names.findLast(name => !/\.prjpcb$/i.test(name));
-  if (document) await loaded(page, document);
-  else if (names.length === 1) await dismissFolderHint(page);
+  await loaded(page, names.at(-1));
 }
-async function dismissFolderHint(page) {
-  await page.getByRole('dialog', { name: 'Drop the whole project folder' }).getByRole('button', { name: 'OK', exact: true }).click();
+async function openProjectMetadata(page, project) {
+  await page.route('**/open-project', route => reply(route, { documents: [project] }), { times: 1 });
+  await page.locator('#open-project').click();
+  await page.waitForFunction(() => !document.getElementById('open-project').disabled);
 }
 async function activate(page, name) {
   await page.getByRole('tab', { name, exact: true }).click(); await loaded(page, name);
@@ -166,9 +168,9 @@ async function image3D(page) {
 }
 
 test('project variants resolve paired documents by source identity while preserving unmarked layout geometry', async t => {
-  const { page, requests } = await openPage(t, { render: (route, name) => /\.pcbdoc$/i.test(name)
+  const { page, requests } = await openPage(t, { initial: { documents: [projectData()] }, render: (route, name) => /\.pcbdoc$/i.test(name)
     ? reply(route, { ...pcbData(name), webgl: true }) : defaultRender(route, name) });
-  await openFiles(page, ['demo.PrjPcb']); await variantReady(page);
+  await variantReady(page);
   await selectVariant(page, 'Economy');
   await noVariantDetails(page);
   await selectVariant(page, '');
@@ -203,16 +205,16 @@ test('project variants resolve paired documents by source identity while preserv
   await expectPcbBodies(page, ['R99', 'U7', 'J1']);
   await noLayoutCrosses(page);
   assert.deepEqual(await viewState(page), before);
-  assert.equal(requests.length, 3, 'variant changes do not re-upload or render documents');
+  assert.deepEqual(requests, ['board.PcbDoc', 'sheet.SchDoc'], 'variant changes do not re-upload or render documents');
 });
 
 test('variant exclusions restore 3D bodies independently of manual deletion and camera state', async t => {
-  const { page } = await openPage(t);
+  const { page } = await openPage(t, { initial: { documents: [projectData()] } });
   await page.evaluate(async () => {
     const { Board3D } = await import('/static/viewer-3d.js'), show = Board3D.prototype.show;
     Board3D.prototype.show = function (...args) { window.variantTestViewer = this; return show.apply(this, args); };
   });
-  await openFiles(page, ['demo.PrjPcb', 'board.PcbDoc']); await variantReady(page);
+  await openFiles(page, ['board.PcbDoc']); await variantReady(page);
   await set3D(page, true);
   assert.deepEqual(await bodyIds(page), ['body-r', 'body-u', 'body-j']);
   await page.locator('#three-body-list').selectOption(['body-j']); await page.locator('#three-delete').click();
@@ -241,19 +243,15 @@ test('variant exclusions restore 3D bodies independently of manual deletion and 
 });
 
 test('metadata loaded after documents associates unambiguous paths and keeps unrelated projects isolated', async t => {
-  const { page } = await openPage(t, { render: (route, name) => {
-    if (name === 'demo.PrjPcb') return reply(route, projectData(name, ['layout/board.PcbDoc', 'schematics/sheet.SchDoc']));
-    if (name === 'other.PrjPcb') return reply(route, projectData(name, ['other.PcbDoc']));
-    return defaultRender(route, name);
-  } });
+  const { page } = await openPage(t);
   await openFiles(page, ['board.PcbDoc', 'sheet.SchDoc', 'other.PcbDoc']);
-  await openFiles(page, ['demo.PrjPcb']);
+  await openProjectMetadata(page, projectData('demo.PrjPcb', ['layout/board.PcbDoc', 'schematics/sheet.SchDoc']));
   await activate(page, 'board.PcbDoc'); await variantReady(page); await selectVariant(page, 'Economy');
   await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
   await activate(page, 'other.PcbDoc'); await expectPcbBodies(page, ['R99', 'U7', 'J1']);
   await noLayoutCrosses(page);
-  await openFiles(page, ['other.PrjPcb']); await variantReady(page);
+  await openProjectMetadata(page, projectData('other.PrjPcb', ['other.PcbDoc'])); await variantReady(page);
   assert.equal(await page.locator('#variant-select').inputValue(), '', 'the second project starts in its own base state');
   await selectVariant(page, 'Full');
   await activate(page, 'sheet.SchDoc');
@@ -288,11 +286,11 @@ test('initial documents restore the saved project variant regardless of metadata
 test('a delayed document response uses the latest project selection without reverting the active tab', async t => {
   let delayedRoute, notifyRequest;
   const delayedRequest = new Promise(resolve => { notifyRequest = resolve; });
-  const { page } = await openPage(t, { render: (route, name) => {
+  const { page } = await openPage(t, { initial: { documents: [projectData()] }, render: (route, name) => {
     if (name === 'board.PcbDoc') { delayedRoute = route; notifyRequest(); return; }
     return defaultRender(route, name);
   } });
-  await page.locator('#file').setInputFiles(['demo.PrjPcb', 'board.PcbDoc', 'sheet.SchDoc'].map(name => file(name)));
+  await page.locator('#file').setInputFiles(['board.PcbDoc', 'sheet.SchDoc'].map(name => file(name)));
   await delayedRequest; await loaded(page, 'sheet.SchDoc'); await variantReady(page);
   await selectVariant(page, 'Economy');
   await reply(delayedRoute, pcbData());
@@ -304,60 +302,62 @@ test('a delayed document response uses the latest project selection without reve
   await noLayoutCrosses(page);
 });
 
-test('the project upload endpoint reads real PrjPcb bytes and connects them to an open layout', async t => {
-  const projectText = [
-    '[Design]', 'CurrentVariant=Economy', '', '[Document1]', 'DocumentPath=board.PcbDoc',
-    'DocumentUniqueId=board-id', '', '[ProjectVariant1]', 'UniqueId=VARIANT-ID', 'Description=Economy',
-    'VariationCount=1', 'Variation1=Designator=R1|UniqueId=sheet-id\\component-r|Kind=1',
-    'ParameterCount=0', 'ParamVariationCount=0', '',
-  ].join('\r\n');
-  const { page } = await openPage(t, { render: (route, name) => /\.prjpcb$/i.test(name) ? route.continue() : defaultRender(route, name) });
+test('Open files skips loose projects before and after dismissing the hint and still opens selected drawings', async t => {
+  const { page, requests } = await openPage(t);
+  let nativePicks = 0;
+  await page.route('**/open-project', route => { nativePicks++; return reply(route, { cancelled: true }); });
   await openFiles(page, ['board.PcbDoc']);
-  await page.locator('#file').setInputFiles(file('actual.PrjPcb', projectText));
-  await variantReady(page);
-  assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
+  await page.locator('#layers label').filter({ hasText: 'Bottom copper' }).locator('input').uncheck();
+  const before = await viewState(page);
+  const chooser = page.waitForEvent('filechooser');
+  await page.locator('#open').click();
+  await (await chooser).setFiles(file('demo.PRJPCB'));
   const hint = page.getByRole('dialog', { name: 'Drop the whole project folder' });
   await hint.waitFor({ state: 'visible' });
   assert.equal(await hint.evaluate(dialog => dialog.matches(':modal')), true);
+  assert.deepEqual(requests, ['board.PcbDoc']);
+  assert.equal(await page.locator('#variant-controls').isHidden(), true);
   await page.keyboard.press('Escape');
   await hint.waitFor({ state: 'hidden' });
-  await expectPcbBodies(page, ['U7', 'J1']);
-  await noLayoutCrosses(page);
+  assert.deepEqual(await viewState(page), before);
   assert.equal(await page.getByRole('tab').count(), 1);
-  assert.ok((await page.locator('#file').getAttribute('accept')).toLowerCase().includes('.prjpcb'));
-  assert.equal(await page.locator('#open-project-folder, #project-files').count(), 0);
-  await selectVariant(page, '');
-  const reloaded = page.waitForResponse(response => response.url().endsWith('/render'));
-  await page.locator('#file').setInputFiles(file('actual.PrjPcb', projectText));
-  await (await reloaded).finished();
-  await dismissFolderHint(page);
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  assert.equal(await page.locator('#variant-select').inputValue(), '', 'reloading project metadata preserves an explicit Base design choice');
-  await expectPcbBodies(page, ['R99', 'U7', 'J1']);
-  await noLayoutCrosses(page);
+  await page.locator('#file').setInputFiles([file('demo.PrjPcb'), file('sheet.SchDoc')]);
+  await hint.waitFor({ state: 'visible' }); await loaded(page, 'sheet.SchDoc');
+  await hint.getByRole('button', { name: 'OK', exact: true }).click(); await hint.waitFor({ state: 'hidden' });
+  assert.equal(await page.getByRole('tab').count(), 2);
+  assert.equal(await page.locator('#variant-controls').isHidden(), true);
+  assert.equal(await hasCross(page), false);
+  await activate(page, 'board.PcbDoc');
+  assert.deepEqual(await viewState(page), before);
+  assert.deepEqual(requests, ['board.PcbDoc', 'sheet.SchDoc']);
+  assert.equal(nativePicks, 0);
 });
 
-test('multi-file uploads distinguish duplicate document basenames when relative paths are supplied', async t => {
+test('dropping a real folder parses project bytes and distinguishes duplicate document basenames by relative path', async t => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'ecadview-project-variants-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const [owner, variant] of [['Alpha', 'Economy'], ['Beta', 'Full']]) {
+    const text = [
+      '[Design]', `CurrentVariant=${variant}`, '', '[Document1]', 'DocumentPath=board.PcbDoc',
+      'DocumentUniqueId=board-id', '', '[ProjectVariant1]', 'UniqueId=VARIANT-ID', `Description=${variant}`,
+      ...(variant === 'Economy' ? ['VariationCount=1', 'Variation1=Designator=R1|UniqueId=sheet-id\\component-r|Kind=1'] : ['VariationCount=0']),
+      'ParameterCount=0', 'ParamVariationCount=0', '',
+    ].join('\r\n');
+    await mkdir(resolve(directory, owner));
+    await writeFile(resolve(directory, owner, `${owner}.PrjPcb`), text);
+    await writeFile(resolve(directory, owner, 'board.PcbDoc'), owner);
+  }
+  await writeFile(resolve(directory, 'unreferenced.PcbDoc'), 'other');
   const { page, requests } = await openPage(t, { render: (route, name) => {
+    if (/\.prjpcb$/i.test(name)) return route.continue();
     const owner = route.request().postDataBuffer().toString();
-    if (/\.prjpcb$/i.test(name)) return reply(route, { ...projectData(name, ['board.PcbDoc']), current_variant: owner === 'Alpha' ? 'Economy' : 'Full' });
     return reply(route, pcbData(`${owner}.PcbDoc`));
   } });
-  await page.locator('#file').evaluate(input => {
-    const transfer = new DataTransfer();
-    for (const owner of ['Alpha', 'Beta']) {
-      for (const name of [`${owner}.PrjPcb`, 'board.PcbDoc']) {
-        const file = new File([owner], name);
-        Object.defineProperty(file, 'webkitRelativePath', { value: `${owner}/${name}` });
-        transfer.items.add(file);
-      }
-    }
-    const unrelated = new File(['unreferenced'], 'unreferenced.PcbDoc');
-    Object.defineProperty(unrelated, 'webkitRelativePath', { value: 'unreferenced.PcbDoc' });
-    transfer.items.add(unrelated);
-    input.files = transfer.files;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  const session = await page.context().newCDPSession(page);
+  const data = { items: [], files: [directory], dragOperationsMask: 1 };
+  for (const type of ['dragEnter', 'dragOver', 'drop']) {
+    await session.send('Input.dispatchDragEvent', { type, x: 500, y: 300, data });
+  }
   await page.getByRole('tab', { name: 'Alpha.PcbDoc', exact: true }).waitFor({ state: 'visible' });
   await page.getByRole('tab', { name: 'Beta.PcbDoc', exact: true }).waitFor({ state: 'visible' });
   assert.equal(await page.getByRole('tab').count(), 2, 'unreferenced documents with supplied paths stay closed');
@@ -375,20 +375,18 @@ test('multi-file uploads distinguish duplicate document basenames when relative 
   await noLayoutCrosses(page);
 });
 
-test('ordinary uploads keep same-name projects separate and require a choice for ambiguous documents', async t => {
+test('same-name projects remain separate and require a choice for ambiguous documents', async t => {
   const second = projectData('demo.PrjPcb', ['board.PcbDoc']);
   second.variants[0].components = [
     { designator: 'U1', unique_id: 'sheet-id\\component-u', kind: 'not_fitted', parameters: {}, alternate_part: '' },
   ];
-  const { page } = await openPage(t, { render: (route, name) => name === 'demo.PrjPcb'
-    ? reply(route, { ...(route.request().postDataBuffer().toString() === 'second' ? second : projectData(name, ['board.PcbDoc'])), current_variant: 'Economy' })
-    : defaultRender(route, name) });
-  await openFiles(page, ['demo.PrjPcb', 'board.PcbDoc']); await variantReady(page);
+  const first = { ...projectData('demo.PrjPcb', ['board.PcbDoc']), current_variant: 'Economy', project_key: 'first' };
+  const { page } = await openPage(t, { initial: { documents: [first] } });
+  await openFiles(page, ['board.PcbDoc']); await variantReady(page);
   const firstProject = await page.locator('#variant-project').inputValue();
   await expectPcbBodies(page, ['U7', 'J1']);
   await noLayoutCrosses(page);
-  await page.locator('#file').setInputFiles(file('demo.PrjPcb', 'second'));
-  await dismissFolderHint(page);
+  await openProjectMetadata(page, { ...second, current_variant: 'Economy', project_key: 'second' });
   await page.waitForFunction(() => document.querySelectorAll('#variant-project option').length === 3);
   assert.equal(await page.locator('#variant-project').inputValue(), '', 'duplicate basenames do not silently pick or replace a project');
   await expectPcbBodies(page, ['R99', 'U7', 'J1']);

@@ -88,8 +88,8 @@ async function openPage(t, { render = renderReply } = {}) {
 
 // Native DragEvents use mocked browser handle/entry APIs, without exposing any
 // product internals. Every drop creates fresh wrappers for the same root id.
-async function dropFolder(page, folder, { mode = 'modern', target = '#view', track = true } = {}) {
-  await page.locator(target).evaluate((target, { folder, mode, track }) => {
+async function dropFolder(page, folder, { mode = 'modern', target = '#view', track = true, looseFiles = [] } = {}) {
+  await page.locator(target).evaluate((target, { folder, mode, track, looseFiles }) => {
     const tree = { kind: 'directory', name: folder.name, children: new Map() };
     for (const [path, data] of Object.entries(folder.files)) {
       const parts = path.split('/'); let node = tree;
@@ -120,11 +120,14 @@ async function dropFolder(page, folder, { mode = 'modern', target = '#view', tra
       },
     });
     const transfer = new DataTransfer(); transfer.items.add(new File([], folder.name));
+    for (const { name, data } of looseFiles) transfer.items.add(new File([JSON.stringify(data)], name));
     const prototype = Object.getPrototypeOf(transfer.items[0]); let live = true;
     const capture = value => { if (!live) throw new Error('Drop items were read after the event ended'); return value; };
     const methods = {
-      getAsFileSystemHandle: () => capture(Promise.resolve(mode === 'modern' ? handle(tree, folder.name) : null)),
-      webkitGetAsEntry: () => capture(entry(tree, folder.name)),
+      getAsFileSystemHandle() {
+        return capture(Promise.resolve(mode === 'modern' && this.getAsFile().name === folder.name ? handle(tree, folder.name) : null));
+      },
+      webkitGetAsEntry() { return capture(this.getAsFile().name === folder.name ? entry(tree, folder.name) : null); },
     };
     const originals = Object.fromEntries(Object.keys(methods).map(name => [name, Object.getOwnPropertyDescriptor(prototype, name)]));
     for (const [name, value] of Object.entries(methods)) Object.defineProperty(prototype, name, { configurable: true, value });
@@ -143,7 +146,7 @@ async function dropFolder(page, folder, { mode = 'modern', target = '#view', tra
         if (descriptor) Object.defineProperty(prototype, name, descriptor); else delete prototype[name];
       }
     }
-  }, { folder, mode, track });
+  }, { folder, mode, track, looseFiles });
 }
 async function dropLoose(page, files) {
   await page.locator('#view').evaluate((target, files) => {
@@ -278,7 +281,7 @@ test('different directories with identical names and project bytes remain separa
   assert.equal(await page.locator('#variant-select').inputValue(), '');
 });
 
-test('a lone project drop explains folder access and loose project-plus-document drops still open normally', async t => {
+test('dismissing the folder hint leaves a loose project unopened', async t => {
   const { page, uploads } = await openPage(t);
   const project = { name: 'demo.PRJPCB', data: projectData() };
   await dropLoose(page, [project]);
@@ -286,41 +289,62 @@ test('a lone project drop explains folder access and loose project-plus-document
   await hint.waitFor({ state: 'visible' });
   assert.match(await hint.innerText(), /schematic|\.schdoc/i);
   assert.match(await hint.innerText(), /layout|\.pcbdoc/i);
-  await page.waitForFunction(() => document.querySelector('#variant-select')?.value === 'Economy');
+  assert.deepEqual(uploads, []);
+  assert.equal(await page.locator('#variant-controls').isHidden(), true);
+  assert.equal(await page.getByRole('tab').count(), 0);
   await hint.getByRole('button', { name: 'OK', exact: true }).click();
   await hint.waitFor({ state: 'hidden' });
+  await page.waitForFunction(() => !document.getElementById('open-project').disabled);
+  assert.deepEqual(uploads, []);
+  assert.equal(await page.locator('#variant-controls').isHidden(), true);
   assert.equal(await page.getByRole('tab').count(), 0);
+});
+
+test('mixed loose drops open the supplied drawings without uploading their project', async t => {
+  const { page, uploads } = await openPage(t);
+  const project = { name: 'demo.PRJPCB', data: projectData() };
   await dropLoose(page, [project, { name: 'board.PcbDoc', data: drawing('loose-pcb') },
     { name: 'sheet.SchDoc', data: drawing('loose-sch', 'schematic') }]);
   await loaded(page, 'loose-sch');
+  const hint = page.getByRole('dialog', { name: 'Drop the whole project folder' });
+  await hint.waitFor({ state: 'visible' });
+  assert.equal(uploads.filter(upload => /\.prjpcb$/i.test(upload.name)).length, 0);
+  await hint.getByRole('button', { name: 'OK', exact: true }).click();
+  await hint.waitFor({ state: 'hidden' });
+  assert.equal(await page.getByRole('tab').count(), 2);
+  assert.equal(await page.locator('#variant-controls').isHidden(), true);
+  assert.equal(await page.locator('#variant-overlay [data-variant-component="R1"]').count(), 0);
+  assert.deepEqual(uploads.map(upload => upload.name).sort(), ['board.PcbDoc', 'sheet.SchDoc']);
+});
+
+test('dropping the containing folder on the open hint uploads the project once and loads its linked drawings', async t => {
+  const { page, uploads } = await openPage(t);
+  await dropLoose(page, [{ name: 'demo.PrjPcb', data: projectData() }]);
+  const hint = page.getByRole('dialog', { name: 'Drop the whole project folder' });
+  await hint.waitFor({ state: 'visible' });
+  assert.deepEqual(uploads, []);
+  assert.equal(await page.locator('#variant-controls').isHidden(), true);
+  assert.equal(await page.getByRole('tab').count(), 0);
+  await dropFolder(page, basicFolder(), { target: '#project-folder-hint' });
+  await finished(page);
+  await loaded(page, 'folder-one-sch');
   assert.equal(await hint.isVisible(), false);
   assert.equal(await page.getByRole('tab').count(), 2);
   assert.equal(await page.locator('#variant-select').inputValue(), 'Economy');
-  assert.equal(await page.locator('#variant-overlay [data-variant-component="R1"]').count(), 1);
-  assert.deepEqual(uploads.filter(upload => upload.data.kind !== 'project').map(upload => upload.name), ['board.PcbDoc', 'sheet.SchDoc']);
+  assert.deepEqual(uploads.map(upload => upload.name), ['demo.PrjPcb', 'board.PcbDoc', 'sheet.SchDoc']);
 });
 
-test('dropping the containing folder on the open hint loads the drawings while the loose project metadata is pending', { timeout: 15000 }, async t => {
-  let holdFirstProject;
-  const pending = new Promise(resolve => { holdFirstProject = resolve; });
-  const { page, uploads } = await openPage(t, { render: (route, name, data) => {
-    if (data.kind === 'project' && holdFirstProject) {
-      holdFirstProject({ route, name, data });
-      holdFirstProject = null;
-      return;
-    }
-    return renderReply(route, name, data);
-  } });
-  await dropLoose(page, [{ name: 'demo.PrjPcb', data: projectData() }]);
-  const first = await pending;
+test('a loose project beside an unrelated dropped directory cannot claim its drawing', async t => {
+  const { page, uploads } = await openPage(t);
+  const folder = { id: 'unrelated', name: 'Archive', files: { 'board.PcbDoc': drawing('archive-board') } };
+  await dropFolder(page, folder, { looseFiles: [{ name: 'Outside.PrjPcb', data: projectData(['board.PcbDoc']) }] });
+  await finished(page);
+  await loaded(page, 'archive-board');
   const hint = page.getByRole('dialog', { name: 'Drop the whole project folder' });
   await hint.waitFor({ state: 'visible' });
-  await loading(page);
-  await dropFolder(page, basicFolder(), { target: '#project-folder-hint', track: false });
-  await renderReply(first.route, first.name, first.data);
-  await loaded(page, 'folder-one-sch');
-  await page.waitForFunction(() => !document.getElementById('open-project').disabled);
-  assert.equal(await hint.isVisible(), false);
-  assert.equal(await page.getByRole('tab').count(), 2);
-  assert.deepEqual(uploads.filter(upload => upload.data.kind !== 'project').map(upload => upload.name), ['board.PcbDoc', 'sheet.SchDoc']);
+  await hint.getByRole('button', { name: 'OK', exact: true }).click();
+  await hint.waitFor({ state: 'hidden' });
+  assert.deepEqual(uploads.map(upload => upload.name), ['board.PcbDoc']);
+  assert.equal(await page.locator('#variant-controls').isHidden(), true);
+  assert.equal(await page.getByRole('tab').count(), 1);
 });
