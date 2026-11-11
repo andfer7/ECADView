@@ -300,14 +300,27 @@ test('a lone project drop explains folder access and loose project-plus-document
   assert.deepEqual(uploads.filter(upload => upload.data.kind !== 'project').map(upload => upload.name), ['board.PcbDoc', 'sheet.SchDoc']);
 });
 
-test('dropping the containing folder on the open hint dismisses it and loads the drawings', async t => {
-  const { page } = await openPage(t);
+test('dropping the containing folder on the open hint loads the drawings while the loose project metadata is pending', { timeout: 15000 }, async t => {
+  let holdFirstProject;
+  const pending = new Promise(resolve => { holdFirstProject = resolve; });
+  const { page, uploads } = await openPage(t, { render: (route, name, data) => {
+    if (data.kind === 'project' && holdFirstProject) {
+      holdFirstProject({ route, name, data });
+      holdFirstProject = null;
+      return;
+    }
+    return renderReply(route, name, data);
+  } });
   await dropLoose(page, [{ name: 'demo.PrjPcb', data: projectData() }]);
+  const first = await pending;
   const hint = page.getByRole('dialog', { name: 'Drop the whole project folder' });
   await hint.waitFor({ state: 'visible' });
+  await loading(page);
+  await dropFolder(page, basicFolder(), { target: '#project-folder-hint', track: false });
+  await renderReply(first.route, first.name, first.data);
+  await loaded(page, 'folder-one-sch');
   await page.waitForFunction(() => !document.getElementById('open-project').disabled);
-  await dropFolder(page, basicFolder(), { target: '#project-folder-hint' }); await finished(page);
   assert.equal(await hint.isVisible(), false);
   assert.equal(await page.getByRole('tab').count(), 2);
-  await loaded(page, 'folder-one-sch');
+  assert.deepEqual(uploads.filter(upload => upload.data.kind !== 'project').map(upload => upload.name), ['board.PcbDoc', 'sheet.SchDoc']);
 });

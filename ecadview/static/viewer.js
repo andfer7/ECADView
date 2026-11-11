@@ -546,6 +546,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
 
   $('open').onclick = () => $('file').click();
   $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
+  let pendingLooseFileUpload = null;
   async function loadProject(load) {
     const button = $('open-project'), status = $('open-project-status');
     if (button.disabled) return;
@@ -559,7 +560,8 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       const data = await load();
       if (data.cancelled) { status.textContent = ''; return; }
       if (data.files) {
-        await openFiles(data.files, { activate: navigationVersion === startedAt });
+        pendingLooseFileUpload = openFiles(data.files, { activate: navigationVersion === startedAt });
+        await pendingLooseFileUpload;
         if (data.files.some(file => /\.prjpcb$/i.test(file.name)) && !data.files.some(file => /\.(pcbdoc|schdoc)$/i.test(file.name))) {
           status.textContent = 'Drop the containing project folder to load its linked documents automatically.';
         } else if (status.textContent === 'Loading project and linked documents…') status.textContent = '';
@@ -576,6 +578,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     } catch (error) {
       status.textContent = 'Could not open project: ' + error.message;
     } finally {
+      pendingLooseFileUpload = null;
       button.disabled = false;
       button.setAttribute('aria-busy', 'false');
       $('open-project-spinner').hidden = true;
@@ -648,10 +651,14 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   async function openDroppedFiles(captured) {
     if ($('open-project').disabled) {
       const drop = await captured;
-      if (drop.hasDirectories || drop.files.some(record => /\.prjpcb$/i.test(record.file.name))) {
-        toast('A project is already being opened. Drop the folder again when it finishes.');
-      } else openFiles(drop.files.map(record => record.file));
-      return;
+      // A user can follow the folder hint before the metadata upload finishes.
+      if (drop.hasDirectories && pendingLooseFileUpload) await pendingLooseFileUpload;
+      if ($('open-project').disabled) {
+        if (drop.hasDirectories || drop.files.some(record => /\.prjpcb$/i.test(record.file.name))) {
+          toast('A project is already being opened. Drop the folder again when it finishes.');
+        } else openFiles(drop.files.map(record => record.file));
+        return;
+      }
     }
     await loadProject(async () => {
       const drop = await captured;
