@@ -2,6 +2,8 @@
 
 import argparse
 import base64
+import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -59,7 +61,7 @@ def load_initial_documents(paths: list[Path]) -> list[dict]:
         seen_projects.add(identity(path))
         print(f"Loading {path.name} ...")
         project = render_file(path, native=True)
-        project["project_key"] = f"cli-project-{len(projects) + 1}"
+        project["project_key"] = "local-project-" + hashlib.sha256(os.fsencode(os.path.normcase(str(path.resolve())))).hexdigest()
         project["project_label"] = str(path)
         project["source"] = base64.b64encode(path.read_bytes()).decode("ascii")
         projects.append(project)
@@ -95,6 +97,10 @@ def load_initial_documents(paths: list[Path]) -> list[dict]:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--project-picker-worker":
+        from .project_picker import worker
+        worker(sys.argv[2])
+        return
     if len(sys.argv) == 4 and sys.argv[1] == "--web-geometry-worker":
         from .web_geometry import worker
         worker(sys.argv[2], sys.argv[3])

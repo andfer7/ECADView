@@ -7,8 +7,11 @@
       <h1>ECADView</h1>
       <input id="file" type="file" accept=".PrjPcb,.prjpcb,.PcbDoc,.pcbdoc,.SchDoc,.schdoc,.kicad_pcb,.kicad_sch,.sch" multiple hidden>
       <button class="primary" id="open">Open files…</button>
-      <input id="project-files" type="file" webkitdirectory multiple hidden>
-      <button id="open-project">Open project folder…</button>
+      <button id="open-project" aria-busy="false">
+        <span id="open-project-spinner" aria-hidden="true" hidden></span>
+        <span id="open-project-label">Open project…</span>
+      </button>
+      <div id="open-project-status" class="hint" role="status"></div>
       <div id="filename">No document loaded</div>
       <div id="warnings" role="status" hidden></div>
       <div id="renderer-status" class="hint" role="status" hidden></div>
@@ -18,8 +21,6 @@
       <select id="variant-project"></select>
       <label for="variant-select">Assembly variant</label>
       <select id="variant-select" disabled></select>
-      <div id="variant-status" class="hint" role="status"></div>
-      <div id="variant-details"></div>
     </div>
     <div id="view-mode" data-pcb-only hidden>
       <div id="three-controls" hidden>
@@ -137,7 +138,7 @@
         </div>
       </div>
       <div id="view" role="tabpanel" aria-label="Document view" tabindex="0">
-        <div id="empty">Open Altium or KiCad PCB and schematic files<br>or drop them here</div>
+        <div id="empty">Open Altium or KiCad PCB and schematic files<br>or drop files or a project folder here</div>
         <div id="three-view" hidden></div>
         <div id="net-labels" aria-hidden="true"></div>
         <div id="measure-label"></div>
@@ -148,5 +149,10 @@
     </div>
   </div>
 </div>
+<dialog id="project-folder-hint" aria-labelledby="project-folder-hint-title" aria-describedby="project-folder-hint-message">
+  <h2 id="project-folder-hint-title">Drop the whole project folder</h2>
+  <p id="project-folder-hint-message">Drag the folder containing your <code>.PrjPcb</code> file onto the viewer to upload the project and open its linked schematics and PCB layouts.</p>
+  <form method="dialog"><button autofocus>OK</button></form>
+</dialog>
 <script type="module" src="/static/viewer.js"></script>
 </body></html>

@@ -141,10 +141,12 @@ class ProjectLaunchTests(unittest.TestCase):
                 project.write_bytes(FIXTURE.read_bytes())
                 paths.append(project)
             data = load_initial_documents(paths)
+            reopened = load_initial_documents([paths[1]])
         first, second = data[:2]
         self.assertNotEqual(first["project_key"], second["project_key"])
         self.assertNotEqual(first["project_label"], second["project_label"])
         self.assertEqual(first["name"], second["name"])
+        self.assertEqual(reopened[0]["project_key"], second["project_key"], 'project identity is stable across separate opens')
         self.assertEqual([row["project_key"] for row in data[2:]],
                          [first["project_key"], first["project_key"], second["project_key"], second["project_key"]])
 

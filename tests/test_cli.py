@@ -73,6 +73,16 @@ class BrowserLaunchTests(unittest.TestCase):
         server.assert_not_called()
         timer.assert_not_called()
 
+    def test_project_picker_worker_does_not_start_a_server_or_browser(self):
+        with (patch.object(sys, 'argv', ['ECADView', '--project-picker-worker', 'result.json']),
+              patch('ecadview.project_picker.worker') as worker,
+              patch.object(cli, 'ViewerServer') as server,
+              patch.object(cli.threading, 'Timer') as timer):
+            cli.main()
+        worker.assert_called_once_with('result.json')
+        server.assert_not_called()
+        timer.assert_not_called()
+
     def test_system_default_browser_is_opened(self):
         with patch.object(cli.webbrowser, 'open') as opened:
             cli.open_in_browser('http://127.0.0.1:12345/', 'default')

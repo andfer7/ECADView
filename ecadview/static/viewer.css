@@ -25,15 +25,23 @@
   #layers { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   h1 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
   #filename { color: var(--muted); font-size: 12px; word-break: break-all; min-height: 1.4em; }
-  #open-project { width: 100%; margin-top: 6px; }
+  #open-project { width: 100%; margin-top: 6px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  #open-project:disabled { opacity: 0.85; cursor: wait; }
+  #open-project-spinner { width: 14px; height: 14px; flex: none; border: 2px solid var(--muted);
+    border-top-color: var(--accent); border-radius: 50%; animation: project-loading 0.8s linear infinite; }
+  @keyframes project-loading { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { #open-project-spinner { animation: none; } }
+  #open-project-status { margin-top: 4px; white-space: pre-line; overflow-wrap: anywhere; }
+  #project-folder-hint { box-sizing: border-box; width: min(25rem, calc(100% - 2rem)); padding: 20px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+  #project-folder-hint::backdrop { background: #0008; }
+  #project-folder-hint h2 { margin: 0; font-size: 16px; }
+  #project-folder-hint p { margin: 8px 0 16px; }
+  #project-folder-hint form { text-align: right; }
+  #project-folder-hint button { min-width: 4rem; }
   #variant-controls > label { display: block; }
   #variant-project, #variant-select { width: 100%; box-sizing: border-box; margin: 4px 0 8px;
     background: var(--bg); color: var(--text); padding: 4px; }
-  #variant-status { white-space: pre-line; overflow-wrap: anywhere; }
-  #variant-details { max-height: 220px; overflow-y: auto; overflow-wrap: anywhere; }
-  #variant-details ul { margin: 8px 0 0; padding-left: 18px; }
-  #variant-details li { margin: 4px 0; white-space: pre-line; }
-  #variant-details .variant-note { margin-top: 6px; }
   #warnings { color: #efc578; font-size: 12px; white-space: pre-line; margin-top: 6px; }
   #component-query { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
                      border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }

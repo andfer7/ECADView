@@ -5,6 +5,7 @@ import { UNITS, distance, snapPoint, segmentAt, labelPosition } from './measurem
 import { rectangleMatches } from './rectangle-selection.js';
 import { trackViewerSession } from './viewer-session.js';
 import { variantState, renderVariantOverlay } from './variants.js';
+import { captureDrop, resolveProjectDocument } from './dropped-files.js';
 import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   schematicComponents as findSchematicComponents, reverseNets } from './cross-probe.js';
 
@@ -12,6 +13,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   trackViewerSession();
   const $ = id => document.getElementById(id);
   const view = $('view'), layersEl = $('layers'), readout = $('readout'), label = $('measure-label');
+  const projectFolderHint = $('project-folder-hint');
   const NS = 'http://www.w3.org/2000/svg';
   const netLabels = new NetLabels($('net-labels'));
   let svg = null, groups = [], vb = null, home = null;
@@ -20,6 +22,9 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   const projects = [];
   let nextProjectId = 1, selectedProjectId = null;
   let activeBoard = null, nextBoardId = 1;
+  let navigationVersion = 0;
+  const droppedRoots = [];
+  let nextDroppedRootId = 1;
   let layoutGPU = null, gpuUnavailable = false, labelTimer = 0, paintBatch = 0;
   let geometryQueue = Promise.resolve();
 
@@ -239,8 +244,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     updateVariantControls();
   }
   function registerProject(data, file) {
-    // A normal file picker omits directories. Distinct same-name projects must
-    // not silently replace one another's variants or linked documents.
+    // Keep same-name projects distinct when the payload has no project key.
     const key = data.project_key || (file.webkitRelativePath ? projectPath(file.webkitRelativePath) :
       projectPath(file.name) + '\0' + JSON.stringify([data.documents, data.variants]));
     let project = projects.find(project => project.key === key);
@@ -251,6 +255,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
       project.variants.some(variant => variant.name === data.current_variant) ? data.current_variant : '';
     selectedProjectId = project.id;
     associateProjects();
+    $('open-project-status').textContent = (project.warnings || []).join('\n');
     return project;
   }
   function refreshBoardVariant(board) {
@@ -274,41 +279,6 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     $('variant-select').replaceChildren(option('', 'Base design'), ...(project?.variants || []).map(item => option(item.name, item.name)));
     $('variant-select').value = project?.selectedVariant || '';
     $('variant-select').disabled = !project?.variants.length;
-    const details = $('variant-details'); details.replaceChildren();
-    if (!project) {
-      $('variant-status').textContent = activeBoard ? 'Choose this document’s project to view its variants.' : 'Open an Altium project and its documents.';
-      return;
-    }
-    const variant = selectedVariant(project), state = activeBoard?.variantInfo;
-    const loaded = new Set(boards.filter(board => board.projectId === project.id).map(board => projectPath(board.projectPath || board.file.webkitRelativePath || board.file.name)));
-    const messages = [!loaded.size ? 'Open the project’s PCB and schematic files, or use Open project folder.' :
-      `${loaded.size} linked document${loaded.size === 1 ? '' : 's'}.`];
-    if (!project.variants.length) messages.push('This project has no assembly variants.');
-    else if (!variant) messages.push('Base design — all components fitted.');
-    else messages.push('Not-fitted components are crossed out in schematics and omitted in 3D.');
-    if (state?.ambiguous.length) messages.push(`${state.ambiguous.length} ambiguous component variation(s) could not be applied.`);
-    if (project.warnings?.length) messages.push(...project.warnings);
-    $('variant-status').textContent = messages.join('\n');
-    if (!variant) return;
-    const rows = (activeBoard ? state?.components || [] : variant.components.map(row => ({ ...row, name: row.designator })))
-      .filter(row => row.kind !== 'not_fitted');
-    const list = document.createElement('ul');
-    for (const row of rows) {
-      const changes = [row.kind === 'alternate' ? `Alternate part: ${row.alternate_part || 'specified in project'}` : 'Fitted'];
-      for (const [name, value] of Object.entries(row.parameters || {})) changes.push(`${name}: ${value}`);
-      const item = document.createElement('li'); item.textContent = `${row.name} — ${changes.join('\n')}`; list.append(item);
-    }
-    if (list.childElementCount) details.append(list);
-    if (Object.keys(variant.parameters || {}).length) {
-      const parameters = document.createElement('div'); parameters.className = 'hint variant-note';
-      parameters.textContent = 'Variant parameters: ' + Object.entries(variant.parameters).map(([name, value]) => `${name} = ${value}`).join(', ');
-      details.append(parameters);
-    }
-    if (rows.some(row => row.kind === 'alternate' || Object.keys(row.parameters || {}).length)) {
-      const note = document.createElement('div'); note.className = 'hint variant-note';
-      note.textContent = 'Variant values are listed here. Drawing text and alternate symbol, footprint and 3D geometry remain from the base design.';
-      details.append(note);
-    }
   }
   $('variant-project').onchange = () => {
     const id = Number($('variant-project').value) || null;
@@ -388,6 +358,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     $('board-tab-' + board.id).focus();
   }
   function activateBoard(board) {
+    navigationVersion++;
     saveBoard();
     mountBoard(board);
   }
@@ -462,27 +433,20 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     if (board.gpuScene && layoutGPU?.scene === board.gpuScene) layoutGPU.release();
     board.gpuController?.abort(); board.gpuScene = null;
     boards.splice(index, 1);
-    if (board === activeBoard) mountBoard(boards[Math.min(index, boards.length - 1)] || null);
+    if (board === activeBoard) { navigationVersion++; mountBoard(boards[Math.min(index, boards.length - 1)] || null); }
     else updateTabs();
     associateProjects();
     if (activeBoard) $('board-tab-' + activeBoard.id).focus();
   }
-  async function openFiles(fileList) {
-    const files = [...fileList], batchProjects = [];
-    for (const file of files.filter(file => /\.prjpcb$/i.test(file.name))) {
-      try {
-        const response = await fetch('/render', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(file.name) }, body: file });
-        const data = await response.json();
-        if (!response.ok || data.kind !== 'project') throw new Error(data.error || 'Could not read project variants.');
-        batchProjects.push(registerProject(data, file));
-      } catch (error) { toast(`Could not open ${file.name}: ${error.message}`); }
-    }
-    for (const file of files.filter(file => !/\.prjpcb$/i.test(file.name))) {
+  function openLooseFiles(files, { activate = true } = {}) {
+    for (const file of files) {
+      if (/\.prjpcb$/i.test(file.name)) {
+        if (!projectFolderHint.open) projectFolderHint.showModal();
+        continue;
+      }
       if (file.webkitRelativePath && !/\.(pcbdoc|schdoc|kicad_pcb|kicad_sch|sch)$/i.test(file.name)) continue;
-      if (file.webkitRelativePath && batchProjects.length &&
-          !batchProjects.some(project => projectMatches(project, { file }))) continue;
       const board = createBoard(file);
-      activateBoard(board);
+      if (activate) activateBoard(board);
       renderBoard(board);
     }
   }
@@ -550,10 +514,141 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
     prepareGPU(board, data);
   }
 
+  function openRenderedDocuments(documents, activate, sourceFiles = new Map()) {
+    for (const data of documents.filter(data => data.kind === 'project')) registerProject(data, sourceFiles.get(data) || new File([], data.name));
+    const opened = [];
+    for (const data of documents) {
+      if (!data.svg) continue;
+      const existing = data.project_key && boards.find(board => board.svg && board.projectKey === data.project_key &&
+        projectPath(board.projectPath) === projectPath(data.project_path));
+      if (existing) { opened.push(existing); continue; }
+      const file = sourceFiles.get(data) || new File([Uint8Array.from(atob(data.source || ''), c => c.charCodeAt(0))], data.name);
+      const board = createBoard(file);
+      try { show(board, data); opened.push(board); }
+      catch (error) { closeBoard(board); throw error; }
+    }
+    if (activate && opened.length) activateBoard(opened.at(-1)); else updateTabs();
+    return opened;
+  }
+
   $('open').onclick = () => $('file').click();
-  $('file').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
-  $('open-project').onclick = () => $('project-files').click();
-  $('project-files').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
+  $('file').onchange = e => { openLooseFiles(e.target.files); e.target.value = ''; };
+  async function loadProject(load) {
+    const button = $('open-project'), status = $('open-project-status');
+    if (button.disabled) return;
+    const startedAt = navigationVersion;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    $('open-project-spinner').hidden = false;
+    $('open-project-label').textContent = 'Loading project…';
+    status.textContent = 'Loading project and linked documents…';
+    try {
+      const data = await load();
+      if (data.cancelled) { status.textContent = ''; return; }
+      if (data.files) {
+        openLooseFiles(data.files, { activate: navigationVersion === startedAt });
+        if (data.files.some(file => /\.prjpcb$/i.test(file.name)) && !data.files.some(file => /\.(pcbdoc|schdoc)$/i.test(file.name))) {
+          status.textContent = 'Drop the containing project folder to load its linked documents automatically.';
+        } else if (status.textContent === 'Loading project and linked documents…') status.textContent = '';
+        return;
+      }
+      if (!Array.isArray(data.documents)) throw new Error('The project could not be loaded.');
+      const shouldActivate = navigationVersion === startedAt;
+      const opened = openRenderedDocuments(data.documents, shouldActivate, data.sourceFiles);
+      if (data.additionalFiles?.length) openLooseFiles(data.additionalFiles, { activate: shouldActivate });
+      const summary = opened.length ? `Project opened: ${opened.length} document${opened.length === 1 ? '' : 's'}.` :
+        data.emptyMessage || 'Project opened. No linked documents loaded.';
+      const warnings = [...(data.warnings || []), ...data.documents.filter(document => document.kind === 'project').flatMap(project => project.warnings || [])];
+      status.textContent = [summary, ...warnings].join('\n');
+    } catch (error) {
+      status.textContent = 'Could not open project: ' + error.message;
+    } finally {
+      button.disabled = false;
+      button.setAttribute('aria-busy', 'false');
+      $('open-project-spinner').hidden = true;
+      $('open-project-label').textContent = 'Open project…';
+    }
+  }
+  $('open-project').onclick = () => loadProject(async () => {
+    const response = await fetch('/open-project', { method: 'POST', headers: { 'X-Viewer-Request': 'open-project' } });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || response.statusText);
+    return data;
+  });
+
+  async function droppedRootId(root) {
+    if (root.handle) {
+      for (const previous of droppedRoots) {
+        try { if (await root.handle.isSameEntry(previous.handle)) return previous.id; }
+        catch (_) { /* Unavailable identity must not merge different folders. */ }
+      }
+    }
+    const id = nextDroppedRootId++;
+    if (root.handle) droppedRoots.push({ id, handle: root.handle });
+    return id;
+  }
+  async function renderDroppedFile(file, project = false) {
+    const response = await fetch('/render', { method: 'POST', body: file,
+      headers: { 'X-Filename': encodeURIComponent(file.name), ...(!project && { 'X-WebGL': '1' }) } });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || response.statusText);
+    if (project ? data.kind !== 'project' : !data.svg) throw new Error('The file could not be rendered.');
+    return data;
+  }
+  async function loadDroppedFolder(drop) {
+    const records = drop.files.filter(record => record.root);
+    const projectRecords = records.filter(record => /\.prjpcb$/i.test(record.path));
+    const rootsWithProjects = new Set(projectRecords.map(record => record.root));
+    const rootIds = new Map();
+    for (const root of drop.roots) rootIds.set(root, await droppedRootId(root));
+    const documents = [], sourceFiles = new Map(), warnings = [], tasks = [];
+    for (const record of projectRecords) {
+      try {
+        if (record.error) throw record.error;
+        const project = await renderDroppedFile(record.file, true);
+        Object.assign(project, { project_key: `dropped-project-${rootIds.get(record.root)}:${record.path}`,
+          project_label: record.path, warnings: project.warnings || [] });
+        documents.push(project); sourceFiles.set(project, record.file);
+        const seen = new Set();
+        for (const reference of project.documents) {
+          try {
+            const member = resolveProjectDocument(record, reference, records);
+            if (!seen.has(member)) { tasks.push({ record: member, project, reference }); seen.add(member); }
+          } catch (error) { project.warnings.push(`Could not open ${reference}: ${error.message}`); }
+        }
+      } catch (error) { warnings.push(`Could not open ${record.path}: ${error.message}`); }
+    }
+    for (const record of records) {
+      if (!rootsWithProjects.has(record.root) && !/\.prjpcb$/i.test(record.path)) tasks.push({ record });
+    }
+    for (const { record, project, reference } of tasks) {
+      try {
+        if (record.error) throw record.error;
+        const data = await renderDroppedFile(record.file);
+        if (project) Object.assign(data, { project_name: project.name, project_key: project.project_key, project_path: reference });
+        documents.push(data); sourceFiles.set(data, record.file);
+      } catch (error) { (project?.warnings || warnings).push(`Could not open ${record.path}: ${error.message}`); }
+    }
+    return { documents, sourceFiles, warnings, additionalFiles: drop.files.filter(record => !record.root).map(record => record.file),
+      emptyMessage: projectRecords.length ? undefined : 'No supported documents found in the dropped folder.' };
+  }
+  async function openDroppedFiles(captured) {
+    if ($('open-project').disabled) {
+      const drop = await captured;
+      if ($('open-project').disabled) {
+        if (drop.hasDirectories || drop.files.some(record => /\.prjpcb$/i.test(record.file.name))) {
+          toast('A project is already being opened. Drop the folder again when it finishes.');
+        } else openLooseFiles(drop.files.map(record => record.file));
+        return;
+      }
+    }
+    await loadProject(async () => {
+      const drop = await captured;
+      if (!drop.hasDirectories) return { files: drop.files.map(record => record.file) };
+      if (projectFolderHint.open) projectFolderHint.close();
+      return loadDroppedFolder(drop);
+    });
+  }
   document.addEventListener('dragover', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
     e.preventDefault(); view.classList.add('drop');
@@ -561,7 +656,9 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   view.addEventListener('dragleave', () => view.classList.remove('drop'));
   document.addEventListener('drop', e => {
     if (![...e.dataTransfer.types].includes('Files')) return;
-    e.preventDefault(); view.classList.remove('drop'); openFiles(e.dataTransfer.files);
+    e.preventDefault(); view.classList.remove('drop');
+    // Browser handles/entries must be captured before this event returns.
+    openDroppedFiles(captureDrop(e.dataTransfer)).catch(error => toast('Could not open dropped files: ' + error.message));
   });
   document.addEventListener('dragleave', e => { if (!e.relatedTarget) view.classList.remove('drop'); });
 
@@ -1655,6 +1752,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
   $('measure-btn').onclick = () => setMeasuring(!measuring);
   $('units-toggle').onclick = toggleUnits;
   window.addEventListener('keydown', e => {
+    if (projectFolderHint.open) return;
     if (measuring && (e.key === 'Meta' || e.key === 'Control')) { snapping = Boolean(snapModifier(e)); refreshHover(); draw(); }
     const editing = e.target.closest('textarea, select, [contenteditable], input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="file"])');
     if (!editing && !is3D() && e.code === 'Space' && !e.ctrlKey && !e.metaKey && !e.altKey &&
@@ -1735,13 +1833,7 @@ import { indexLayout, indexSchematic, matchingComponents, matchingNets,
 
   // ------------------------------------------------------------ board passed on the command line
   fetch('/initial').then(r => r.ok ? r.json() : null).then(d => {
-    const documents = d?.kind === 'project' ? [d] : d?.documents || (d?.svg ? [d] : []), activate = !activeBoard, opened = [];
-    for (const data of documents.filter(data => data.kind === 'project')) registerProject(data, new File([], data.name));
-    for (const data of documents) {
-      if (!data.svg) continue;
-      const file = new File([Uint8Array.from(atob(data.source || ''), c => c.charCodeAt(0))], data.name);
-      const board = createBoard(file); opened.push(board); show(board, data);
-    }
-    if (activate && opened.length) activateBoard(opened.at(-1)); else updateTabs();
+    const documents = d?.kind === 'project' ? [d] : d?.documents || (d?.svg ? [d] : []);
+    openRenderedDocuments(documents, !activeBoard);
   }).catch(e => toast('Could not load the initial document: ' + e.message));
 })();
